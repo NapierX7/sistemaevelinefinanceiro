@@ -108,6 +108,7 @@ export function seedDemoStore(): DemoStore {
     ['Blusa de renda', 'blusas', 50, 99.90, 'BLUSA-001', 'PEQUENA'],
     ['Blusa assimétrica', 'blusas', 20, 69.90, 'BLUSA-002', 'PEQUENA'],
     ['Blusa assimétrica com renda', 'blusas', 20, 69.90, 'BLUSA-003', 'PEQUENA'],
+    ['Blusa um ombro só', 'blusas', 20, 69.90, 'BLUSA-004', 'PEQUENA'],
     ['Vestido longo rosa', 'vestidos', 59.90, 189.90, 'VESTIDO-002', 'GRANDE'],
     ['Vestido longo preto', 'vestidos', 59.90, 189.90, 'VESTIDO-003', 'GRANDE'],
     ['Conjunto saia e top amarelo', 'conjuntos', 90, 199.90, 'CONJ-001', 'GRANDE'],
@@ -115,6 +116,8 @@ export function seedDemoStore(): DemoStore {
     ['Conjunto preto', 'conjuntos', 75, 189.90, 'CONJ-003', 'GRANDE'],
     ['Conjunto rosa', 'conjuntos', 75, 189.90, 'CONJ-004', 'GRANDE'],
     ['Conjunto saia e top bege', 'conjuntos', 90, 199.90, 'CONJ-005', 'GRANDE'],
+    ['Conjunto camisa e short', 'conjuntos', 75, 159.90, 'CONJ-006', 'GRANDE'],
+    ['Conjunto saia e top poá amarelo', 'conjuntos', 75, 189.90, 'CONJ-007', 'GRANDE'],
     ['Calça marrom com lenço', 'calcas', 90, 189.90, 'CALCA-002', 'GRANDE'],
     ['Calça animal print', 'calcas', 90, 189.90, 'CALCA-003', 'GRANDE'],
   ]
@@ -156,28 +159,32 @@ export function seedDemoStore(): DemoStore {
   const pixDir: PaymentModality = { id: uid(), provider_id: pixd.id, name: 'Direto', code: 'DIRETO', active: true, created_at: todayISO() }
   s.payment_modalities.push(mpCheckout, ipTap, ipLink, pixDir)
 
-  const addFee = (prov: PaymentProvider, mod: PaymentModality | null, method: any, installments: number, fee: number) => {
+  const addFee = (prov: PaymentProvider, mod: PaymentModality | null, method: any, installments: number, fee: number, brand: string | null = null) => {
     s.payment_fee_rules.push({
       id: uid(), provider_id: prov.id, modality_id: mod?.id ?? null,
-      method, installments, receipt_term: '1 dia útil', revenue_tier: 'Plano atual',
+      method, installments, receipt_term: '1 dia útil', revenue_tier: 'Plano atual', brand,
       fee_percent: fee, fixed_fee: 0, valid_from: '2026-01-01', valid_until: null, created_at: todayISO(),
     })
   }
-  // InfinitePay LINK
-  addFee(ip, ipLink, 'PIX', 1, 1.49)
-  addFee(ip, ipLink, 'CREDITO', 1, 4.99)
+  // InfinitePay LINK (Pix 0% para lojista; cliente recebe desconto Pix config)
+  addFee(ip, ipLink, 'PIX', 1, 0)
+  addFee(ip, ipLink, 'CREDITO', 1, 4.2)
   addFee(ip, ipLink, 'CREDITO', 2, 6.09)
   addFee(ip, ipLink, 'CREDITO', 3, 7.19)
-  // InfinitePay TAP
-  addFee(ip, ipTap, 'PIX', 1, 0.99)
+  // InfinitePay TAP / Maquininha
+  addFee(ip, ipTap, 'PIX', 1, 0)
   addFee(ip, ipTap, 'DEBITO', 1, 1.89)
-  addFee(ip, ipTap, 'CREDITO', 1, 3.79)
-  addFee(ip, ipTap, 'CREDITO', 2, 4.89)
-  // MP Checkout
-  addFee(mp, mpCheckout, 'PIX', 1, 0.99)
+  // Visa / Mastercard (brand NULL)
+  addFee(ip, ipTap, 'CREDITO', 1, 3.15)
+  addFee(ip, ipTap, 'CREDITO', 2, 5.39)
+  // ELO (diferenciado)
+  addFee(ip, ipTap, 'CREDITO', 1, 4.91, 'ELO')
+  addFee(ip, ipTap, 'CREDITO', 2, 6.47, 'ELO')
+  // MP Checkout (Pix 0%)
+  addFee(mp, mpCheckout, 'PIX', 1, 0)
   addFee(mp, mpCheckout, 'CREDITO', 1, 4.49)
   addFee(mp, mpCheckout, 'CREDITO', 2, 5.49)
-  // Pix Direto
+  // Pix Direto (sempre 0%)
   addFee(pixd, pixDir, 'PIX', 1, 0)
 
   // Cupons iniciais
@@ -187,9 +194,15 @@ export function seedDemoStore(): DemoStore {
   })
 
   s.settings.push({
-    id: uid(), key: 'pix_discount',
-    value: { type: 'PERCENT', value: 0, enabled: false },
-    description: 'Desconto Pix',
+    id: uid(), key: 'pix_discount_enabled',
+    value: true,
+    description: 'Habilita desconto Pix à vista',
+    updated_at: todayISO(),
+  })
+  s.settings.push({
+    id: uid(), key: 'pix_discount_percent',
+    value: 10,
+    description: 'Percentual de desconto Pix à vista (padrão: 10%)',
     updated_at: todayISO(),
   })
 

@@ -64,11 +64,19 @@ export function formatFriendlyNumber(n: number | null | undefined, digits = 6): 
 export function parseBrl(v: string | number | null | undefined): number {
   if (typeof v === 'number') return isFinite(v) ? v : 0
   if (!v) return 0
-  const clean = String(v)
-    .replace(/[^\d,.\-]/g, '')
-    .replace(/\./g, '')
-    .replace(',', '.')
-  const num = Number(clean)
+  const s = String(v).replace(/[^\d,.\-]/g, '')
+  if (!s) return 0
+  const hasComma = s.includes(',')
+  const hasDot = s.includes('.')
+  let normalized: string
+  if (hasComma && hasDot) {
+    normalized = s.replace(/\./g, '').replace(',', '.')
+  } else if (hasComma) {
+    normalized = s.replace(',', '.')
+  } else {
+    normalized = s
+  }
+  const num = Number(normalized)
   return isFinite(num) ? num : 0
 }
 

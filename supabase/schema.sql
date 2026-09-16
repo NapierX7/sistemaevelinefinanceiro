@@ -601,7 +601,8 @@ WHERE p.code='PIX_DIRETO' AND m.code='DIRETO' AND NOT EXISTS (
 
 -- Configuração Desconto Pix (requisito 18)
 INSERT INTO public.settings (key, value, description) VALUES
-  ('pix_discount', '{"type": "PERCENT", "value": 0, "enabled": false}'::jsonb, 'Desconto automático para pagamentos via Pix')
+  ('pix_discount_enabled', true::jsonb, 'Habilita/desabilita desconto Pix à vista'),
+  ('pix_discount_percent', '10'::jsonb, 'Percentual de desconto Pix à vista (padrão: 10%)')
 ON CONFLICT (key) DO NOTHING;
 
 -- ============================================================
@@ -617,6 +618,7 @@ FROM (VALUES
   ('BLUSA-001', 'Blusa de renda', 'blusa-de-renda', 'blusas', 50.00, 99.90, 'PEQUENA'),
   ('BLUSA-002', 'Blusa assimétrica', 'blusa-assimetrica', 'blusas', 20.00, 69.90, 'PEQUENA'),
   ('BLUSA-003', 'Blusa assimétrica com renda', 'blusa-assimetrica-renda', 'blusas', 20.00, 69.90, 'PEQUENA'),
+  ('BLUSA-004', 'Blusa um ombro só', 'blusa-um-ombro-so', 'blusas', 20.00, 69.90, 'PEQUENA'),
   ('VESTIDO-002', 'Vestido longo rosa', 'vestido-longo-rosa', 'vestidos', 59.90, 189.90, 'GRANDE'),
   ('VESTIDO-003', 'Vestido longo preto', 'vestido-longo-preto', 'vestidos', 59.90, 189.90, 'GRANDE'),
   ('CONJ-001', 'Conjunto saia e top amarelo', 'conjunto-saia-top-amarelo', 'conjuntos', 90.00, 199.90, 'GRANDE'),
@@ -624,6 +626,8 @@ FROM (VALUES
   ('CONJ-003', 'Conjunto preto', 'conjunto-preto', 'conjuntos', 75.00, 189.90, 'GRANDE'),
   ('CONJ-004', 'Conjunto rosa', 'conjunto-rosa', 'conjuntos', 75.00, 189.90, 'GRANDE'),
   ('CONJ-005', 'Conjunto saia e top bege', 'conjunto-saia-top-bege', 'conjuntos', 90.00, 199.90, 'GRANDE'),
+  ('CONJ-006', 'Conjunto camisa e short', 'conjunto-camisa-short', 'conjuntos', 75.00, 159.90, 'GRANDE'),
+  ('CONJ-007', 'Conjunto saia e top poá amarelo', 'conjunto-saia-top-poa-amarelo', 'conjuntos', 75.00, 189.90, 'GRANDE'),
   ('CALCA-002', 'Calça marrom com lenço', 'calca-marrom-lenco', 'calcas', 90.00, 189.90, 'GRANDE'),
   ('CALCA-003', 'Calça animal print', 'calca-animal-print', 'calcas', 90.00, 189.90, 'GRANDE')
 ) AS seed(sku, name, slug, cat_slug, cost, price, pkg_code)
@@ -1311,3 +1315,83 @@ CREATE INDEX IF NOT EXISTS idx_inv_mov_related_purchase
 -- ALTER TABLE public.products VALIDATE CONSTRAINT fk_products_packaging_type;
 -- ALTER TABLE public.inventory_movements VALIDATE CONSTRAINT fk_inv_mov_sale;
 -- ALTER TABLE public.inventory_movements VALIDATE CONSTRAINT fk_inv_mov_purchase;
+
+-- ============================================================
+-- ANEXO 3: ATUALIZAÇÃO DE TAXAS REAIS E CONFIGS DEFAULT
+-- (Valores informados pelo cliente em 16/09/2026)
+-- Roda com segurança: se regra existir atualiza; se não, cria.
+-- ============================================================
+DO $$ DECLARE
+  v_prov_infinite UUID;
+  v_prov_mp UUID;
+  v_prov_pixdireto UUID;
+  v_mod_link UUID;
+  v_mod_tap UUID;
+  v_mod_checkout UUID;
+  v_mod_direto UUID;
+  v_brand_elo TEXT := 'ELO';
+BEGIN
+  SELECT id INTO v_prov_infinite  FROM public.payment_providers WHERE code = 'INFINITEPAY';
+  SELECT id INTO v_prov_mp        FROM public.payment_providers WHERE code = 'MERCADO_PAGO';
+  SELECT id INTO v_prov_pixdireto FROM public.payment_providers WHERE code = 'PIX_DIRETO';
+  SELECT id INTO v_mod_link       FROM public.payment_modalities WHERE provider_id = v_prov_infinite  AND code = 'LINK';
+  SELECT id INTO v_mod_tap        FROM public.payment_modalities WHERE provider_id = v_prov_infinite  AND code = 'TAP';
+  SELECT id INTO v_mod_checkout   FROM public.payment_modalities WHERE provider_id = v_prov_mp        AND code = 'CHECKOUT';
+  SELECT id INTO v_mod_direto     FROM public.payment_modalities WHERE provider_id = v_prov_pixdireto AND code = 'DIRETO';
+
+  -- ============ PIX: 0% EM TODOS OS PROVIDERS (cliente = sem taxa pix) ============
+  UPDATE public.payment_fee_rules SET fee_percent = 0
+  WHERE provider_id = v_prov_infinite AND modality_id = v_mod_link     AND method = 'PIX' AND installments = 1 AND brand IS NULL;
+  IF NOT FOUND THEN INSERT INTO public.payment_fee_rules (provider_id, modality_id, method, installments, receipt_term, revenue_tier, fee_percent, valid_from) VALUES (v_prov_infinite, v_mod_link, 'PIX', 1, '1 dia útil', 'Plano atual', 0, CURRENT_DATE) ON CONFLICT DO NOTHING; END IF;
+
+  UPDATE public.payment_fee_rules SET fee_percent = 0
+  WHERE provider_id = v_prov_infinite AND modality_id = v_mod_tap      AND method = 'PIX' AND installments = 1 AND brand IS NULL;
+  IF NOT FOUND THEN INSERT INTO public.payment_fee_rules (provider_id, modality_id, method, installments, receipt_term, revenue_tier, fee_percent, valid_from) VALUES (v_prov_infinite, v_mod_tap, 'PIX', 1, '1 dia útil', 'Plano atual', 0, CURRENT_DATE) ON CONFLICT DO NOTHING; END IF;
+
+  UPDATE public.payment_fee_rules SET fee_percent = 0
+  WHERE provider_id = v_prov_mp       AND modality_id = v_mod_checkout AND method = 'PIX' AND installments = 1 AND brand IS NULL;
+  IF NOT FOUND THEN INSERT INTO public.payment_fee_rules (provider_id, modality_id, method, installments, receipt_term, revenue_tier, fee_percent, valid_from) VALUES (v_prov_mp, v_mod_checkout, 'PIX', 1, '24h', 'Plano atual', 0, CURRENT_DATE) ON CONFLICT DO NOTHING; END IF;
+
+  UPDATE public.payment_fee_rules SET fee_percent = 0
+  WHERE provider_id = v_prov_pixdireto AND modality_id = v_mod_direto  AND method = 'PIX' AND installments = 1 AND brand IS NULL;
+  IF NOT FOUND THEN INSERT INTO public.payment_fee_rules (provider_id, modality_id, method, installments, receipt_term, revenue_tier, fee_percent, valid_from) VALUES (v_prov_pixdireto, v_mod_direto, 'PIX', 1, 'Instantâneo', 'N/A', 0, CURRENT_DATE) ON CONFLICT DO NOTHING; END IF;
+
+  -- ============ InfinitePay LINK de Pagamento ============
+  -- Crédito 1x: 4,2%
+  UPDATE public.payment_fee_rules SET fee_percent = 4.2
+  WHERE provider_id = v_prov_infinite AND modality_id = v_mod_link AND method = 'CREDITO' AND installments = 1 AND brand IS NULL;
+  IF NOT FOUND THEN INSERT INTO public.payment_fee_rules (provider_id, modality_id, method, installments, receipt_term, revenue_tier, fee_percent, valid_from) VALUES (v_prov_infinite, v_mod_link, 'CREDITO', 1, '1 dia útil', 'Plano atual', 4.2, CURRENT_DATE) ON CONFLICT DO NOTHING; END IF;
+
+  -- Crédito 2x: 6,09%
+  UPDATE public.payment_fee_rules SET fee_percent = 6.09
+  WHERE provider_id = v_prov_infinite AND modality_id = v_mod_link AND method = 'CREDITO' AND installments = 2 AND brand IS NULL;
+  IF NOT FOUND THEN INSERT INTO public.payment_fee_rules (provider_id, modality_id, method, installments, receipt_term, revenue_tier, fee_percent, valid_from) VALUES (v_prov_infinite, v_mod_link, 'CREDITO', 2, '1 dia útil', 'Plano atual', 6.09, CURRENT_DATE) ON CONFLICT DO NOTHING; END IF;
+
+  -- ============ InfinitePay InfinityTap (maquininha) ============
+  -- Visa/Mastercard (brand NULL): Crédito 1x 3,15% / 2x 5,39%
+  UPDATE public.payment_fee_rules SET fee_percent = 3.15
+  WHERE provider_id = v_prov_infinite AND modality_id = v_mod_tap AND method = 'CREDITO' AND installments = 1 AND brand IS NULL;
+  IF NOT FOUND THEN INSERT INTO public.payment_fee_rules (provider_id, modality_id, method, installments, receipt_term, revenue_tier, fee_percent, valid_from) VALUES (v_prov_infinite, v_mod_tap, 'CREDITO', 1, '1 dia útil', 'Plano atual', 3.15, CURRENT_DATE) ON CONFLICT DO NOTHING; END IF;
+
+  UPDATE public.payment_fee_rules SET fee_percent = 5.39
+  WHERE provider_id = v_prov_infinite AND modality_id = v_mod_tap AND method = 'CREDITO' AND installments = 2 AND brand IS NULL;
+  IF NOT FOUND THEN INSERT INTO public.payment_fee_rules (provider_id, modality_id, method, installments, receipt_term, revenue_tier, fee_percent, valid_from) VALUES (v_prov_infinite, v_mod_tap, 'CREDITO', 2, '1 dia útil', 'Plano atual', 5.39, CURRENT_DATE) ON CONFLICT DO NOTHING; END IF;
+
+  -- ELO (brand = ELO): Crédito 1x 4,91% / 2x 6,47%
+  UPDATE public.payment_fee_rules SET fee_percent = 4.91
+  WHERE provider_id = v_prov_infinite AND modality_id = v_mod_tap AND method = 'CREDITO' AND installments = 1 AND brand = v_brand_elo;
+  IF NOT FOUND THEN INSERT INTO public.payment_fee_rules (provider_id, modality_id, method, installments, brand, receipt_term, revenue_tier, fee_percent, valid_from) VALUES (v_prov_infinite, v_mod_tap, 'CREDITO', 1, v_brand_elo, '1 dia útil', 'Plano atual', 4.91, CURRENT_DATE) ON CONFLICT DO NOTHING; END IF;
+
+  UPDATE public.payment_fee_rules SET fee_percent = 6.47
+  WHERE provider_id = v_prov_infinite AND modality_id = v_mod_tap AND method = 'CREDITO' AND installments = 2 AND brand = v_brand_elo;
+  IF NOT FOUND THEN INSERT INTO public.payment_fee_rules (provider_id, modality_id, method, installments, brand, receipt_term, revenue_tier, fee_percent, valid_from) VALUES (v_prov_infinite, v_mod_tap, 'CREDITO', 2, v_brand_elo, '1 dia útil', 'Plano atual', 6.47, CURRENT_DATE) ON CONFLICT DO NOTHING; END IF;
+
+  -- ============ Configuração: Desconto PIX padrão = 10% (habilitado) ============
+  INSERT INTO public.settings (key, value, description)
+  VALUES ('pix_discount_enabled', true::jsonb, 'Habilita/desabilita desconto Pix à vista')
+  ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, description = EXCLUDED.description;
+
+  INSERT INTO public.settings (key, value, description)
+  VALUES ('pix_discount_percent', '10'::jsonb, 'Percentual de desconto Pix à vista (padrão: 10%)')
+  ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, description = EXCLUDED.description;
+END $$;
