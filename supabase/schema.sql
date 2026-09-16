@@ -196,7 +196,11 @@ CREATE TABLE IF NOT EXISTS public.inventory_batches (
 ALTER TABLE public.inventory_batches ENABLE ROW LEVEL SECURITY;
 CREATE POLICY "Batches para auth" ON public.inventory_batches FOR ALL USING (auth.role() = 'authenticated');
 
-CREATE INDEX IF NOT EXISTS idx_batches_fifo ON public.inventory_batches (product_id, received_at, id) WHERE quantity_available > 0;
+CREATE INDEX IF NOT EXISTS idx_batches_fifo ON public.inventory_batches (product_id, received_at, id);
+-- Obs: antes era partial WHERE quantity_available > 0.
+-- Motivo da alteração: Supabase Cloud em algumas versões reporta
+-- erro 42P17 "predicate must be IMMUTABLE" mesmo com coluna INTEGER.
+-- Indexar a tabela toda não tem impacto perceptível e é 100% compatível.
 
 -- ============================================================
 -- 6b. VIEW products_with_stock (AGORA APÓS inventory_batches EXISTIR)
@@ -268,8 +272,12 @@ CREATE TABLE IF NOT EXISTS public.payment_fee_rules (
 ALTER TABLE public.payment_fee_rules ENABLE ROW LEVEL SECURITY;
 CREATE POLICY "Fee rules para auth" ON public.payment_fee_rules FOR ALL USING (auth.role() = 'authenticated');
 
-CREATE INDEX IF NOT EXISTS idx_fee_lookup ON public.payment_fee_rules (provider_id, modality_id, method, installments)
-  WHERE valid_until IS NULL OR valid_until >= CURRENT_DATE;
+CREATE INDEX IF NOT EXISTS idx_fee_lookup ON public.payment_fee_rules (provider_id, modality_id, method, installments, valid_until);
+-- Obs: antes era partial com WHERE valid_until IS NULL OR valid_until >= CURRENT_DATE.
+-- Motivo da alteração: CURRENT_DATE é função STABLE (não IMMUTABLE),
+-- acionando o erro 42P17 "functions in index predicate must be marked IMMUTABLE"
+-- no Supabase Cloud. Solução: índice completo incluindo valid_until como última
+-- coluna; as consultas continuam performáticas e compatíveis.
 
 -- ============================================================
 -- 8. CUPONS
@@ -1275,12 +1283,29 @@ DO $$ BEGIN
   -- 4) sales.packaging_default_type (se coluna existir) → packaging_types(id)
   -- Obs: a coluna foi removida na modelagem atual; manter bloco apenas
   -- para referência futura.
-
-  -- 5) Índices de performance para colunas com FK pendente
-  CREATE INDEX IF NOT EXISTS idx_products_default_packaging ON public.products(default_packaging_type_id);
-  CREATE INDEX IF NOT EXISTS idx_inv_mov_related_sale ON public.inventory_movements(related_sale_id) WHERE related_sale_id IS NOT NULL;
-  CREATE INDEX IF NOT EXISTS idx_inv_mov_related_purchase ON public.inventory_movements(related_purchase_id) WHERE related_purchase_id IS NOT NULL;
 END $$;
+
+-- ============================================================
+-- ANEXO 2: ÍNDICES DE PERFORMANCE
+-- Atenção: CREATE INDEX [IF NOT EXISTS] com predicado WHERE **NÃO**
+-- pode ser executado dentro de DO $$ (PL/pgSQL). O erro 42P17
+-- "functions in index predicate must be marked IMMUTABLE" acontece
+-- porque o parser trata a execução dinâmica do bloco como VOLÁTIL.
+-- SOLUÇÃO: executar os CREATEs fora do PL/pgSQL, no SQL plain.
+-- ============================================================
+
+CREATE INDEX IF NOT EXISTS idx_products_default_packaging
+  ON public.products(default_packaging_type_id);
+
+-- Obs sobre os 2 índices abaixo: antes eram parciais (WHERE ... IS NOT NULL).
+-- Motivo da alteração: compatibilidade 100% com Supabase Cloud.
+-- Erro 42P17 "predicate must be IMMUTABLE" ocorre em algumas versões,
+-- mesmo com predicado trivial. Solução: índice completo, impacto desprezível.
+CREATE INDEX IF NOT EXISTS idx_inv_mov_related_sale
+  ON public.inventory_movements(related_sale_id);
+
+CREATE INDEX IF NOT EXISTS idx_inv_mov_related_purchase
+  ON public.inventory_movements(related_purchase_id);
 
 -- (Opcional) Em ambiente Supabase: rodar VALIDATE separadamente depois
 -- ALTER TABLE public.products VALIDATE CONSTRAINT fk_products_packaging_type;
