@@ -1,16 +1,18 @@
 import { useEffect, useMemo, useState } from 'react'
 import {
   DollarSign, TrendingUp, Wallet, ArrowUpRight, ArrowDownRight,
-  Calendar, ChevronDown, Filter
+  Calendar, ChevronDown, Filter, Plus, X, Trash2,
+  ShoppingBag, Gift, Tag, ScrollText, Sparkles, Wrench, Truck, Megaphone, MoreHorizontal
 } from 'lucide-react'
 import {
   formatCurrency, formatDate, rangePresets, inRange,
-  cn, pluralize, paymentMethodLabel
+  cn, pluralize, paymentMethodLabel, parseBrl, toInputDate
 } from '@/lib/format'
 import {
-  listFinancialTransactions, listSales
+  listFinancialTransactions, listSales, registrarDespesa
 } from '@/services'
 import type { FinancialTransaction, Sale } from '@/types/supabase'
+import type { RegistrarDespesaParams } from '@/services'
 
 type PresetKey = keyof ReturnType<typeof rangePresets> | 'PERSONALIZADO'
 
@@ -22,6 +24,7 @@ export default function FinancePage() {
   const [transactions, setTransactions] = useState<FinancialTransaction[]>([])
   const [sales, setSales] = useState<Sale[]>([])
   const [loading, setLoading] = useState(true)
+  const [modalDespesaOpen, setModalDespesaOpen] = useState(false)
 
   useEffect(() => {
     if (preset !== 'PERSONALIZADO') {
@@ -84,6 +87,13 @@ export default function FinancePage() {
       ENTREGA: 'Entrega',
       OUTRA_RECEITA: 'Outra receita',
       OUTRA_DESPESA: 'Outra despesa',
+      SACOLAS: 'Sacolas',
+      ETIQUETAS: 'Etiquetas',
+      PAPEL_SEDA: 'Papel seda',
+      PERFUMARIA: 'Perfumaria / Cheirinho',
+      MATERIAL: 'Material',
+      MARKETING: 'Marketing',
+      OUTROS: 'Outros',
     }
     return map[c] || c
   }
@@ -95,7 +105,10 @@ export default function FinancePage() {
           <h1 className="text-xl sm:text-2xl font-black tracking-tight text-ink-900">Financeiro</h1>
           <p className="text-sm text-ink-500 mt-0.5">Faturamento, lucro e fluxo de caixa.</p>
         </div>
-        <div className="flex flex-col sm:flex-row gap-2">
+        <div className="flex flex-col sm:flex-row gap-2 sm:items-center">
+          <button onClick={() => setModalDespesaOpen(true)} className="btn-primary">
+            <Plus className="w-4 h-4" /> Lançar despesa
+          </button>
           <div className="relative">
             <select
               value={preset}
@@ -300,6 +313,224 @@ export default function FinancePage() {
           Compras de mercadoria são despesa de caixa hoje, mas o custo só é reconhecido no lucro no momento da venda.
           Taxas, embalagens e fretes também impactam os dois indicadores em momentos diferentes.
         </p>
+      </div>
+
+      {modalDespesaOpen && (
+        <DespesaModal
+          onClose={() => setModalDespesaOpen(false)}
+          onSaved={() => { setModalDespesaOpen(false); load() }}
+        />
+      )}
+    </div>
+  )
+}
+
+type DespesaCategoria =
+  | 'SACOLAS' | 'EMBALAGEM' | 'ETIQUETAS' | 'PAPEL_SEDA'
+  | 'PERFUMARIA' | 'MATERIAL' | 'FRETE' | 'MARKETING' | 'OUTROS'
+
+const DESPESA_PRESETS: Array<{
+  k: DespesaCategoria
+  label: string
+  icon: React.ComponentType<{ className?: string }>
+  emoji?: string
+  descPadrao?: string
+}> = [
+  { k: 'SACOLAS',    label: 'Sacolas',         icon: ShoppingBag,  emoji: '🛍️', descPadrao: 'Sacolas plásticas' },
+  { k: 'EMBALAGEM',  label: 'Embalagem',       icon: Gift,         emoji: '🎁', descPadrao: 'Embalagem para pedidos' },
+  { k: 'ETIQUETAS',  label: 'Etiquetas',       icon: Tag,          emoji: '🏷️', descPadrao: 'Etiquetas / Adesivos' },
+  { k: 'PAPEL_SEDA', label: 'Papel seda',      icon: ScrollText,   emoji: '📜', descPadrao: 'Papel seda / tissue' },
+  { k: 'PERFUMARIA', label: 'Perfumaria',      icon: Sparkles,     emoji: '🌸', descPadrao: 'Cheirinho / Perfumaria' },
+  { k: 'MATERIAL',   label: 'Material',        icon: Wrench,       emoji: '🧰', descPadrao: 'Material expediente' },
+  { k: 'FRETE',      label: 'Frete',           icon: Truck,        emoji: '🚚', descPadrao: 'Frete / transporte' },
+  { k: 'MARKETING',  label: 'Marketing',       icon: Megaphone,    emoji: '📣', descPadrao: 'Marketing / anúncio' },
+  { k: 'OUTROS',     label: 'Outros',          icon: MoreHorizontal, emoji: '💼', descPadrao: 'Outra despesa operacional' },
+]
+
+const CAT_EMOJI: Record<string, string> = Object.fromEntries(
+  DESPESA_PRESETS.map(p => [p.k, p.emoji ?? '💼'])
+)
+
+function DespesaModal({
+  onClose, onSaved
+}: {
+  onClose: () => void
+  onSaved: () => void
+}) {
+  const [description, setDescription] = useState('')
+  const [amount, setAmount] = useState('0,00')
+  const [category, setCategory] = useState<DespesaCategoria>('SACOLAS')
+  const [transDate, setTransDate] = useState<string>(toInputDate())
+  const [paymentMethod, setPaymentMethod] = useState('')
+  const [notes, setNotes] = useState('')
+  const [saving, setSaving] = useState(false)
+
+  const applyPreset = (p: typeof DESPESA_PRESETS[number]) => {
+    setCategory(p.k)
+    if (!description.trim()) setDescription(p.descPadrao ?? p.label)
+  }
+
+  const submit = async () => {
+    if (!description.trim()) {
+      alert('Informe a descrição da despesa.'); return
+    }
+    const amt = parseBrl(amount)
+    if (!amt || amt <= 0) {
+      alert('Informe um valor maior que zero.'); return
+    }
+    setSaving(true)
+    try {
+      const params: RegistrarDespesaParams = {
+        description: description.trim(),
+        amount: amt,
+        category,
+        trans_date: transDate,
+        payment_method: paymentMethod.trim()?.toUpperCase() || null,
+        notes: notes.trim() || null,
+      }
+      await registrarDespesa(params)
+      alert('Despesa lançada com sucesso!')
+      onSaved()
+    } catch (e: any) {
+      console.error(e)
+      alert('Erro ao lançar despesa: ' + (e?.message ?? 'desconhecido'))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const amtNum = parseBrl(amount) || 0
+
+  return (
+    <div className="fixed inset-0 z-50 bg-ink-900/50 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4">
+      <div className="bg-white rounded-t-2xl sm:rounded-2xl shadow-xl w-full max-w-2xl max-h-[92vh] overflow-hidden flex flex-col">
+        <div className="sticky top-0 bg-white border-b border-ink-100 px-5 py-4 flex items-center justify-between z-10">
+          <div>
+            <h2 className="text-lg font-black text-ink-900">Lançar despesa operacional</h2>
+            <p className="text-xs text-ink-500 mt-0.5">
+              Sacolas, cheirinho, frete avulso, marketing — sem alterar vendas/estoque.
+            </p>
+          </div>
+          <button onClick={onClose} className="btn-ghost !p-2">
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-5 space-y-4">
+          <div>
+            <label className="label text-sm mb-2">Tipo rápido</label>
+            <div className="grid grid-cols-3 sm:grid-cols-5 gap-2">
+              {DESPESA_PRESETS.map(p => {
+                const Icon = p.icon
+                const ativo = category === p.k
+                return (
+                  <button
+                    key={p.k}
+                    onClick={() => applyPreset(p)}
+                    className={cn(
+                      'flex flex-col items-center gap-1.5 p-3 rounded-xl border transition min-h-[76px]',
+                      ativo
+                        ? 'border-brand-500 bg-brand-50/70 ring-1 ring-brand-200 shadow-sm'
+                        : 'border-ink-200 bg-white hover:bg-ink-50'
+                    )}
+                  >
+                    <span className="text-xl leading-none" aria-hidden>
+                      {p.emoji ?? ''}
+                    </span>
+                    <span className={cn(
+                      'text-xs font-semibold leading-tight',
+                      ativo ? 'text-brand-900' : 'text-ink-700'
+                    )}>
+                      {p.label}
+                    </span>
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+
+          <div>
+            <label className="label flex items-center gap-1.5">
+              <span className="text-base leading-none" aria-hidden>
+                {CAT_EMOJI[category] ?? '💼'}
+              </span>
+              Descrição
+            </label>
+            <input className="input" value={description}
+              onChange={e => setDescription(e.target.value)}
+              placeholder="Ex: Pacote 100 sacolas tamanho M" />
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+              <label className="label text-sm">Valor (R$)</label>
+              <input className="input num text-lg font-bold text-rose-700"
+                value={amount}
+                onChange={e => setAmount(e.target.value)}
+                inputMode="decimal" placeholder="0,00" />
+            </div>
+            <div>
+              <label className="label text-sm">Data</label>
+              <input type="date" className="input" value={transDate}
+                onChange={e => setTransDate(e.target.value)} />
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+              <label className="label text-sm">Categoria</label>
+              <select className="select pr-10 w-full" value={category}
+                onChange={e => setCategory(e.target.value as DespesaCategoria)}>
+                {DESPESA_PRESETS.map(p => (
+                  <option key={p.k} value={p.k}>
+                    {p.emoji ? `${p.emoji}  ${p.label}` : p.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="label text-sm">Forma de pagamento (opcional)</label>
+              <select className="select pr-10 w-full" value={paymentMethod}
+                onChange={e => setPaymentMethod(e.target.value)}>
+                <option value="">— Não informar —</option>
+                {['PIX','DINHEIRO','CREDITO','DEBITO','BOLETO','TRANSFERENCIA','OUTRO'].map(m => (
+                  <option key={m} value={m}>{paymentMethodLabel(m)}</option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          <div>
+            <label className="label">Observações (opcional)</label>
+            <textarea className="input min-h-[80px]" value={notes}
+              onChange={e => setNotes(e.target.value)}
+              placeholder="Nº NF, fornecedor, motivo etc." />
+          </div>
+
+          <div className="p-4 rounded-2xl bg-gradient-to-br from-rose-50 to-white border border-rose-100">
+            <div className="flex items-center justify-between">
+              <div>
+                <div className="text-[11px] uppercase tracking-wider text-rose-700/70 font-bold">Saída de caixa</div>
+                <div className="text-xs text-ink-500 mt-0.5">
+                  {DESPESA_PRESETS.find(p => p.k === category)?.label ?? category}
+                  {paymentMethod && ` · ${paymentMethodLabel(paymentMethod)}`}
+                </div>
+              </div>
+              <div className="text-2xl font-black num text-rose-700">
+                − {formatCurrency(amtNum)}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div className="sticky bottom-0 bg-white border-t border-ink-100 px-5 py-4 flex flex-col-reverse sm:flex-row sm:justify-between gap-2">
+          <button onClick={onClose} disabled={saving} className="btn-ghost">
+            Cancelar
+          </button>
+          <button onClick={submit} disabled={saving} className="btn-primary">
+            {saving ? 'Salvando…' : '✓ Confirmar despesa'}
+          </button>
+        </div>
       </div>
     </div>
   )

@@ -883,3 +883,37 @@ export function demoDeleteSalePayment(payment_id: UUID): void {
   s.sale_payments = (s.sale_payments as any[]).filter((x: any) => x.id !== payment_id)
   saveStore(s)
 }
+
+export function demoRegistrarDespesa(args: {
+  description: string
+  amount: number
+  category?: string
+  trans_date?: string
+  payment_method?: string | null
+  notes?: string | null
+  created_by?: string | null
+}): { id: string } {
+  const s = loadStore()
+  const cat = (args.category ?? 'OUTROS').trim().toUpperCase()
+  const ALLOWED = ['SACOLAS','EMBALAGEM','ETIQUETAS','PAPEL_SEDA','PERFUMARIA','MATERIAL','FRETE','MARKETING','OUTROS']
+  if (!ALLOWED.includes(cat)) throw new Error('Categoria de despesa inválida: ' + cat)
+  const id = uid()
+  const now = todayISO()
+  const dateOnly = args.trans_date?.slice(0, 10) ?? now.slice(0, 10)
+  s.financial_transactions.push({
+    id,
+    trans_date: dateOnly,
+    trans_type: 'SAIDA',
+    category: cat,
+    description: args.description.trim(),
+    amount: Number((args.amount ?? 0).toFixed(2)),
+    payment_method: args.payment_method ? args.payment_method.trim().toUpperCase() : null,
+    status: 'CONFIRMADO',
+    notes: args.notes?.trim() || null,
+    created_by: args.created_by ?? null,
+    created_at: now,
+    updated_at: now,
+  } as any)
+  saveStore(s)
+  return { id }
+}

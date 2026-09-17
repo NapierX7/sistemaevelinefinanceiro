@@ -457,3 +457,31 @@ export async function deleteSalePayment(payment_id: UUID): Promise<void> {
     .eq('id', payment_id)
   if (error) throw error
 }
+
+export interface RegistrarDespesaParams {
+  description: string
+  amount: number
+  category?: 'SACOLAS' | 'EMBALAGEM' | 'ETIQUETAS' | 'PAPEL_SEDA' | 'PERFUMARIA' | 'MATERIAL' | 'FRETE' | 'MARKETING' | 'OUTROS' | string
+  trans_date?: string
+  payment_method?: string | null
+  notes?: string | null
+}
+
+export async function registrarDespesa(p: RegistrarDespesaParams): Promise<{ id: UUID }> {
+  const user_id = getCurrentUserId() ?? undefined
+  if (!usingSupabase) {
+    return Demo.demoRegistrarDespesa({ ...p, created_by: user_id ?? null }) as any
+  }
+  const sup: any = supabase
+  const category = (p.category ?? 'OUTROS').toString().trim().toUpperCase()
+  const { data, error } = await sup.rpc('registrar_despesa', {
+    p_descricao: p.description.trim(),
+    p_valor: Number((p.amount ?? 0).toFixed(2)),
+    p_categoria: category,
+    p_data: p.trans_date?.slice(0, 10) ?? new Date().toISOString().slice(0, 10),
+    p_forma_pagamento: p.payment_method?.trim()?.toUpperCase() || null,
+    p_observacoes: p.notes?.trim() || null,
+  })
+  if (error) throw error
+  return { id: data as UUID }
+}

@@ -336,6 +336,7 @@ export interface FinancialTransaction {
   created_by?: UUID | null;
   notes?: string | null;
   created_at: string;
+  updated_at?: string;
 }
 
 export interface Setting {
