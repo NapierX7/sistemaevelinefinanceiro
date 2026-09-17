@@ -274,6 +274,57 @@ export async function cancelSale(sale_id: UUID, reason: string) {
   return data
 }
 
+export interface RecordRemainingPaymentParams {
+  payment: {
+    provider_id?: UUID | null
+    modality_id?: UUID | null
+    method: 'PIX' | 'CREDITO' | 'DEBITO' | 'BOLETO' | 'DINHEIRO' | 'OUTRO' | string
+    installments?: number
+    amount?: number
+    fee_percent?: number
+    fee_expected?: number
+    fee_actual?: number
+    provider_snapshot?: string | null
+    modality_snapshot?: string | null
+    fee_rule_id?: UUID | null
+  }
+  amount?: number | null
+  trans_date?: string | null
+  notes?: string | null
+}
+
+export async function recordRemainingPayment(
+  sale_id: UUID,
+  p: RecordRemainingPaymentParams
+) {
+  const userId = getCurrentUserId()
+  if (!usingSupabase) {
+    return Demo.demoRecordRemainingPayment(sale_id, { ...p, user_id: userId ?? undefined } as any)
+  }
+  const { data, error } = await (supabase as any).rpc('record_remaining_payment', {
+    p_sale_id: sale_id,
+    p_payment: {
+      provider_id: p.payment.provider_id ?? null,
+      modality_id: p.payment.modality_id ?? null,
+      method: p.payment.method,
+      installments: p.payment.installments ?? 1,
+      amount: p.payment.amount ?? null,
+      fee_percent: p.payment.fee_percent ?? 0,
+      fee_expected: p.payment.fee_expected ?? 0,
+      fee_actual: p.payment.fee_actual ?? null,
+      provider_snapshot: p.payment.provider_snapshot ?? null,
+      modality_snapshot: p.payment.modality_snapshot ?? null,
+      fee_rule_id: p.payment.fee_rule_id ?? null,
+    } as any,
+    p_amount: p.amount ?? null,
+    p_trans_date: p.trans_date ?? null,
+    p_user_id: userId ?? null,
+    p_notes: p.notes ?? null,
+  })
+  if (error) throw error
+  return data
+}
+
 // =====================================================
 // COMPRAS / ENTRADAS
 // =====================================================
@@ -348,4 +399,61 @@ export async function listInventoryBatches(product_id?: UUID): Promise<Inventory
   if (product_id) q = q.eq('product_id', product_id)
   const { data } = await q.order('received_at', { ascending: false })
   return (data as InventoryBatch[]) ?? []
+}
+
+export async function updateSale(sale_id: UUID, patch: Partial<Sale>): Promise<Sale | null> {
+  if (!usingSupabase) {
+    const s = Demo.demoUpdateSale(sale_id, patch)
+    return s
+  }
+  const sup: any = supabase
+  const patchSafe: any = {}
+  if (patch.customer_name !== undefined) patchSafe.customer_name = patch.customer_name
+  if (patch.customer_phone !== undefined) patchSafe.customer_phone = patch.customer_phone
+  if (patch.sale_date !== undefined) patchSafe.sale_date = patch.sale_date
+  if (patch.source !== undefined) patchSafe.source = patch.source
+  if (patch.status !== undefined) patchSafe.status = patch.status
+  if ((patch as any).notes !== undefined) patchSafe.notes = (patch as any).notes
+  if (patch.total_customer !== undefined) patchSafe.total_customer = Number(patch.total_customer)
+  if (patch.updated_at === undefined || !patch.updated_at) patchSafe.updated_at = new Date().toISOString()
+  const { data, error } = await sup
+    .from('sales')
+    .update(patchSafe)
+    .eq('id', sale_id)
+    .select()
+    .maybeSingle()
+  if (error) throw error
+  return (data as Sale) ?? null
+}
+
+export async function updateSalePayment(payment_id: UUID, patch: Partial<SalePayment>): Promise<SalePayment | null> {
+  if (!usingSupabase) { return (Demo.demoUpdateSalePayment(payment_id, patch) ?? null) }
+  const sup: any = supabase
+  const patchSafe: any = {}
+  if (patch.method !== undefined) patchSafe.method = patch.method
+  if (patch.amount !== undefined) patchSafe.amount = Number(patch.amount)
+  if ((patch as any).trans_date !== undefined) patchSafe.trans_date = (patch as any).trans_date
+  if ((patch as any).provider_snapshot !== undefined) patchSafe.provider_snapshot = (patch as any).provider_snapshot
+  if ((patch as any).modality_snapshot !== undefined) patchSafe.modality_snapshot = (patch as any).modality_snapshot
+  if ((patch as any).fee_expected_snapshot !== undefined) patchSafe.fee_expected_snapshot = Number((patch as any).fee_expected_snapshot ?? 0)
+  if ((patch as any).fee_real_snapshot !== undefined) patchSafe.fee_real_snapshot = Number((patch as any).fee_real_snapshot ?? 0)
+  if ((patch as any).installments_snapshot !== undefined) patchSafe.installments_snapshot = Number((patch as any).installments_snapshot ?? 1)
+  if ((patch as any).notes !== undefined) patchSafe.notes = (patch as any).notes
+  const { data, error } = await sup
+    .from('sale_payments')
+    .update(patchSafe)
+    .eq('id', payment_id)
+    .select()
+    .maybeSingle()
+  if (error) throw error
+  return (data as SalePayment) ?? null
+}
+
+export async function deleteSalePayment(payment_id: UUID): Promise<void> {
+  if (!usingSupabase) { Demo.demoDeleteSalePayment(payment_id); return }
+  const { error } = await (supabase as any)
+    .from('sale_payments')
+    .delete()
+    .eq('id', payment_id)
+  if (error) throw error
 }

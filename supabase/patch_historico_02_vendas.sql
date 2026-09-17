@@ -223,19 +223,19 @@ BEGIN
 
   -- ================================================================================
   -- 3. VENDA Lorrany | 23/08/26 | 4 itens | LINK 3x | 399,90 | CONCLUIDA
-  --    1x CONJ-004 (cat 189,90) | 1x BLUSA-001 (99,90) | 1x REGATA-001 (69,90) | 1x BLUSA-002 (69,90)
+  --    1x CONJ-004 (cat 189,90) | 1x BLUSA-003 (assimétrica com renda cat 99,90) | 1x REGATA-001 (69,90) | 1x BLUSA-002 (69,90)
   --    Total catálogo = 429,60. Cobrado 399,90. Desconto total = 29,70.
   -- ================================================================================
   v_ext := 'HIST-VENDA-003-LORRANY-230826';
   IF NOT EXISTS (SELECT 1 FROM public.sales s WHERE customer_name='Lorrany' AND sale_date::DATE='2026-08-23')
-     THEN
+  THEN
     v_lines := ARRAY[]::JSONB[];
     -- Rateio do desconto de 29,70 proporcional ao valor cobrado
-    -- Valores cobrados (estimados): CONJ004 180 + BLUSA001 95 + REGATA 60 + BLUSA002 64,90 = 399,90
-    FOR sku IN SELECT p.id,p.sku,p.sale_price FROM public.products p WHERE p.sku IN ('CONJ-004','BLUSA-001','REGATA-001','BLUSA-002') ORDER BY p.sku LOOP
+    -- Valores cobrados (estimados): CONJ004 180 + BLUSA003 95 + REGATA 60 + BLUSA002 64,90 = 399,90
+    FOR sku IN SELECT p.id,p.sku,p.sale_price FROM public.products p WHERE p.sku IN ('CONJ-004','BLUSA-003','REGATA-001','BLUSA-002') ORDER BY p.sku LOOP
       v_tmp := CASE sku.sku
         WHEN 'CONJ-004' THEN 180.00
-        WHEN 'BLUSA-001' THEN 95.00
+        WHEN 'BLUSA-003' THEN 95.00
         WHEN 'REGATA-001' THEN 60.00
         WHEN 'BLUSA-002' THEN 64.90
       END;
@@ -326,7 +326,7 @@ BEGIN
   END vendaspixsimples;
 
   -- ================================================================================
-  -- 9. Emilly Gabrielly | 09/09 | 1x REGATA + 1x BLUSA-001 | PIX R$139,30
+  -- 9. Emilly Gabrielly | 09/09 | 1x REGATA + 1x BLUSA-003 (assimétrica com renda, não BLUSA-001 renda) | PIX R$139,30
   --    cat: 69,90 + 99,90 = 169,80. Desconto total = 30,50. Cobrado 139,30.
   -- ================================================================================
   v_ext := 'HIST-VENDA-009-EMILLY-090926';
@@ -337,8 +337,8 @@ BEGIN
         'unit_sale_price',sku.sale_price,'unit_actual_price',60.00,'discount',ROUND(sku.sale_price-60.00,2));
       v_lines := array_append(v_lines,v_line);
     END LOOP;
-    FOR sku IN SELECT p.id,p.sku,p.sale_price FROM public.products p WHERE p.sku='BLUSA-001' LOOP
-      v_line := JSONB_BUILD_OBJECT('product_id',sku.id,'variant_id',NULL,'product_name','Blusa de renda','variant',NULL,'sku',sku.sku,'quantity',1,
+    FOR sku IN SELECT p.id,p.sku,p.sale_price FROM public.products p WHERE p.sku='BLUSA-003' LOOP
+      v_line := JSONB_BUILD_OBJECT('product_id',sku.id,'variant_id',NULL,'product_name','Blusa assimétrica com renda (histórico Emilly)','variant',NULL,'sku',sku.sku,'quantity',1,
         'unit_sale_price',sku.sale_price,'unit_actual_price',79.30,'discount',ROUND(sku.sale_price-79.30,2));
       v_lines := array_append(v_lines,v_line);
     END LOOP;
@@ -354,7 +354,7 @@ BEGIN
       'fee_percent',0,'fee_expected',0,'fee_actual',0,'provider_snapshot','Pix Direto','modality_snapshot','Pix à vista');
     v_items := array_to_json(v_lines)::jsonb;
     IF COALESCE(array_length(v_lines, 1), 0) = 0 THEN
-      RAISE EXCEPTION 'VENDA Emilly Gabrielly: 0 itens criados. SKUs: REGATA-001, BLUSA-001.';
+      RAISE EXCEPTION 'VENDA Emilly Gabrielly: 0 itens criados. SKUs: REGATA-001, BLUSA-003 (assimétrica com renda).';
     END IF;
     v_sale_id := (public.finalize_sale(p_source:='DISTANCIA',p_items:=v_items,p_general_discount:=v_general_discount,p_payment:=v_payment,
       p_customer_name:='Emilly Gabrielly',p_user_id:=v_admin)->>'sale_id')::UUID;
@@ -452,7 +452,7 @@ BEGIN
 
   -- ================================================================================
   -- 14. Evelyn | PENDENTE | 1x CALCA-001 + 1x BLUSA-002 | TOTAL 240,00 | PAGO 0
-  -- 15. Day    | 15/09 | PARCIAL | 1x CALCA-001 + 1x BLUSA-001 | TOTAL 260 | PIX 130
+  -- 15. Day    | 15/09 | PARCIAL | 1x CALCA-001 + 1x BLUSA-003 (assimétrica com renda, não era BLUSA-001 renda normal) | TOTAL 260 | PIX 130
   -- 16. Cristina| 14/09 | PARCIAL | 2x REGATA-001 | TOTAL 139,80 | PIX 69,90
   -- 17. Francisca | 16/09 | PARCIAL | 1x VESTIDO-003 (preto) | TOTAL 149,90 | RECEBIDO 80
   -- ================================================================================
@@ -464,7 +464,7 @@ BEGIN
       ARRAY[ROW('CALCA-001'::TEXT,1,NULL::NUMERIC),ROW('BLUSA-002',1,NULL)]::__import_line[],
       240.00, 0.00, NULL::TIMESTAMPTZ, 'PENDENTE', 'OUTRO'::TEXT, NULL::UUID, NULL::UUID, 0::NUMERIC, 1),
     ('HIST-VENDA-015-DAY-150926-PARCIAL','Day',
-      ARRAY[ROW('CALCA-001',1,NULL),ROW('BLUSA-001',1,NULL)]::__import_line[],
+      ARRAY[ROW('CALCA-001',1,NULL),ROW('BLUSA-003',1,NULL)]::__import_line[],
       260.00, 130.00, '2026-09-15 14:00:00-03'::TIMESTAMPTZ, 'PARCIAL','PIX', v_prov_pixdir, v_mod_pixd, 0.00, 1),
     ('HIST-VENDA-016-CRISTINA-140926-PARCIAL','Cristina',
       ARRAY[ROW('REGATA-001',2,69.90::NUMERIC)]::__import_line[], -- valor cobrado c/u 69.90 * 2 = 139,80

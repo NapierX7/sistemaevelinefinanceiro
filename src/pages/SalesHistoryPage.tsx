@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import {
-  Plus, Search, ChevronDown, Calendar, Filter, X, AlertTriangle, Check, ShoppingBag, Trash2
+  Plus, Search, ChevronDown, Calendar, Filter, X, AlertTriangle, Check, ShoppingBag, Trash2, UserCircle, Edit3, Phone, Clock
 } from 'lucide-react'
 import {
   formatCurrency, formatPercent, formatDate, formatDateTime, formatFriendlyNumber, parseBrl, sourceLabel, statusLabel, paymentMethodLabel, pluralize, rangePresets, inRange, cn
@@ -28,6 +28,7 @@ export default function SalesHistoryPage() {
   const [to, setTo] = useState<string>(presets.ESTE_MES.to.toISOString().slice(0, 10))
 
   const [filtersOpen, setFiltersOpen] = useState(false)
+  const [fCustomer, setFCustomer] = useState<string>('')
   const [fProduct, setFProduct] = useState<string>('')
   const [fSource, setFSource] = useState<SaleSource | 'TODOS'>('TODOS')
   const [fProvider, setFProvider] = useState<string>('')
@@ -66,6 +67,7 @@ export default function SalesHistoryPage() {
 
   const activeFiltersCount = useMemo(() => {
     let c = 0
+    if (fCustomer.trim()) c++
     if (fProduct) c++
     if (fSource !== 'TODOS') c++
     if (fProvider) c++
@@ -75,13 +77,18 @@ export default function SalesHistoryPage() {
     if (fStatus !== 'TODOS') c++
     if (preset === 'PERSONALIZADO') c++
     return c
-  }, [fProduct, fSource, fProvider, fModality, fMethod, fInstallments, fStatus, preset])
+  }, [fCustomer, fProduct, fSource, fProvider, fModality, fMethod, fInstallments, fStatus, preset])
 
   const filtered = useMemo(() => {
     return sales.filter(s => {
       if (!inRange(s.sale_date ?? s.created_at, fromDate, toDate)) return false
       if (fSource !== 'TODOS' && s.source !== fSource) return false
       if (fStatus !== 'TODOS' && s.status !== fStatus) return false
+      if (fCustomer.trim()) {
+        const cname = (s.customer_name ?? '').toLowerCase()
+        const q = fCustomer.trim().toLowerCase()
+        if (!cname.includes(q)) return false
+      }
       const snapMethod = (s as any).payment_method_snapshot
       if (fMethod !== 'TODOS' && snapMethod !== fMethod) return false
       const snapProvider = (s as any).payment_provider_snapshot
@@ -100,7 +107,7 @@ export default function SalesHistoryPage() {
       if (fInstallments === '3+' && inst < 3) return false
       return true
     })
-  }, [sales, fromDate, toDate, fSource, fStatus, fMethod, fProvider, fModality, fInstallments, providers, modalities])
+  }, [sales, fromDate, toDate, fCustomer, fSource, fStatus, fMethod, fProvider, fModality, fInstallments, providers, modalities])
 
   const totalCliente = filtered.reduce((s, v) => s + (v.status !== 'CANCELADA' ? Number(v.total_customer ?? 0) : 0), 0)
   const totalLucro = filtered.reduce((s, v) => s + (v.status !== 'CANCELADA' ? Number(v.real_profit ?? 0) : 0), 0)
@@ -134,7 +141,7 @@ export default function SalesHistoryPage() {
 
   const clearFilters = () => {
     setPreset('ESTE_MES')
-    setFProduct(''); setFSource('TODOS'); setFProvider(''); setFModality('')
+    setFCustomer(''); setFProduct(''); setFSource('TODOS'); setFProvider(''); setFModality('')
     setFMethod('TODOS'); setFInstallments('TODOS'); setFStatus('TODOS')
   }
 
@@ -181,7 +188,17 @@ export default function SalesHistoryPage() {
 
       <div className="card p-4">
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-3">
-          <div className="flex items-center gap-2 flex-wrap">
+          <div className="flex flex-col lg:flex-row lg:items-center gap-2 w-full lg:w-auto">
+            <div className="relative w-full lg:w-[240px]">
+              <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-ink-400" />
+              <input
+                type="text"
+                value={fCustomer}
+                onChange={e => setFCustomer(e.target.value)}
+                placeholder="Buscar por nome do cliente…"
+                className="input pl-9 !py-2 !text-sm"
+              />
+            </div>
             <div className="relative">
               <select
                 value={preset}
@@ -195,9 +212,9 @@ export default function SalesHistoryPage() {
               </select>
               <ChevronDown className="w-4 h-4 absolute right-3 top-1/2 -translate-y-1/2 text-ink-400 pointer-events-none" />
             </div>
-            <div className="flex gap-2 items-center">
-              <div className="flex items-center gap-1.5 px-3 py-2 rounded-card bg-white border border-ink-200">
-                <Calendar className="w-4 h-4 text-ink-500" />
+            <div className="flex gap-2 items-center flex-wrap sm:flex-nowrap">
+              <div className="flex items-center gap-1.5 px-3 py-2 rounded-card bg-white border border-ink-200 min-w-0">
+                <Calendar className="w-4 h-4 text-ink-500 flex-shrink-0" />
                 <input
                   type="date"
                   value={from}
@@ -206,8 +223,8 @@ export default function SalesHistoryPage() {
                 />
               </div>
               <span className="text-ink-400 text-sm">à</span>
-              <div className="flex items-center gap-1.5 px-3 py-2 rounded-card bg-white border border-ink-200">
-                <Calendar className="w-4 h-4 text-ink-500" />
+              <div className="flex items-center gap-1.5 px-3 py-2 rounded-card bg-white border border-ink-200 min-w-0">
+                <Calendar className="w-4 h-4 text-ink-500 flex-shrink-0" />
                 <input
                   type="date"
                   value={to}
@@ -217,7 +234,7 @@ export default function SalesHistoryPage() {
               </div>
             </div>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 sm:justify-end">
             {activeFiltersCount > 0 && (
               <button onClick={clearFilters} className="btn-ghost text-xs !py-2">
                 <X className="w-3.5 h-3.5" /> Limpar filtros ({activeFiltersCount})
@@ -316,7 +333,7 @@ export default function SalesHistoryPage() {
             <div className="sm:col-span-2">
               <label className="label">Status</label>
               <div className="flex flex-wrap gap-2">
-                {(['TODOS', 'CONCLUIDA', 'PENDENTE', 'CANCELADA'] as const).map(st => {
+                {(['TODOS', 'CONCLUIDA', 'PENDENTE', 'PARCIAL', 'CANCELADA'] as const).map(st => {
                   const active = fStatus === st
                   const meta = st === 'TODOS' ? { label: 'Todos', cls: '' } : statusLabel(st)
                   return (
@@ -357,83 +374,212 @@ export default function SalesHistoryPage() {
             </Link>
           </div>
         ) : (
-          <div className="table-wrap">
-            <table className="table-base">
-              <thead>
-                <tr>
-                  <th>Nº</th>
-                  <th>Data e hora</th>
-                  <th>Origem</th>
-                  <th>Pagamento</th>
-                  <th className="text-right">Peças</th>
-                  <th className="text-right">Total cliente</th>
-                  <th className="text-right">Lucro real</th>
-                  <th>Status</th>
-                  <th className="text-right">Ações</th>
-                </tr>
-              </thead>
-              <tbody>
+          <>
+            <div className="hidden sm:block">
+              <div className="table-wrap">
+                <table className="table-base">
+                  <thead>
+                    <tr>
+                      <th>Nº</th>
+                      <th>Data e hora</th>
+                      <th>Origem</th>
+                      <th>Cliente</th>
+                      <th>Pagamento</th>
+                      <th className="text-right">Peças</th>
+                      <th className="text-right">Total cliente</th>
+                      <th className="text-right">Lucro real</th>
+                      <th>Status</th>
+                      <th className="text-right">Ações</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filtered.map(s => {
+                      const st = statusLabel(s.status)
+                      const snapProvider = (s as any).payment_provider_snapshot
+                      const snapMethod = (s as any).payment_method_snapshot
+                      const snapInstallments = Number((s as any).installments_snapshot ?? 1)
+                      return (
+                        <tr key={s.id} className="hover:bg-ink-50/50 transition">
+                          <td className="font-bold num">
+                            <button
+                              onClick={() => navigate(`/vendas/${s.id}`)}
+                              className="text-brand-800 hover:underline text-left"
+                            >
+                              #{formatFriendlyNumber(s.friendly_number)}
+                            </button>
+                          </td>
+                          <td className="text-ink-700 num whitespace-nowrap">{formatDateTime(s.sale_date ?? s.created_at)}</td>
+                          <td>
+                            <span className="chip bg-ink-100 text-ink-700">{sourceLabel(s.source)}</span>
+                          </td>
+                          <td className="min-w-[160px]">
+                            {s.customer_name ? (
+                              <div className="flex items-start gap-2">
+                                <UserCircle className="w-4 h-4 text-ink-400 mt-0.5 flex-shrink-0" />
+                                <div className="min-w-0">
+                                  <div className="font-semibold text-ink-900 truncate">{s.customer_name}</div>
+                                  {s.customer_phone && (
+                                    <div className="text-xs text-ink-500 num truncate">{s.customer_phone}</div>
+                                  )}
+                                </div>
+                              </div>
+                            ) : (
+                              <span className="text-ink-400 text-sm italic">Não identificado</span>
+                            )}
+                          </td>
+                          <td className="text-ink-700 text-sm whitespace-nowrap">
+                            {[snapProvider, paymentMethodLabel(snapMethod), snapInstallments > 1 ? `${snapInstallments}x` : null]
+                              .filter(Boolean).join(' · ') || '-'}
+                          </td>
+                          <td className="text-right num font-semibold">{formatFriendlyNumber(Number((s as any).total_items ?? 0))}</td>
+                          <td className="text-right num font-bold text-ink-900">{formatCurrency(s.total_customer)}</td>
+                          <td className={cn('text-right num font-bold',
+                            s.status === 'CANCELADA' ? 'text-ink-400 line-through' :
+                            Number(s.real_profit ?? 0) >= 0 ? 'text-emerald-700' : 'text-rose-700')}>
+                            {s.status === 'CANCELADA' ? formatCurrency(0) : formatCurrency(s.real_profit)}
+                          </td>
+                          <td><span className={st.class}>{st.label}</span></td>
+                          <td className="text-right">
+                            <div className="flex items-center justify-end gap-1.5 flex-wrap">
+                              <button
+                                onClick={() => navigate(`/vendas/${s.id}#editar`)}
+                                className="btn-secondary !py-1.5 !px-2.5 text-xs whitespace-nowrap min-h-[36px]"
+                                title="Editar venda"
+                              >
+                                <Edit3 className="w-3.5 h-3.5" /> Editar
+                              </button>
+                              <button
+                                onClick={() => navigate(`/vendas/${s.id}`)}
+                                className="btn-secondary !py-1.5 !px-2.5 text-xs whitespace-nowrap min-h-[36px]"
+                                title="Ver detalhe"
+                              >
+                                Ver detalhe
+                              </button>
+                              <button
+                                onClick={() => openCancel(s)}
+                                disabled={s.status === 'CANCELADA'}
+                                className={cn(
+                                  '!py-1.5 !px-2.5 text-xs whitespace-nowrap min-h-[36px] rounded-lg border transition inline-flex items-center gap-1.5 font-semibold',
+                                  s.status === 'CANCELADA'
+                                    ? 'border-ink-100 bg-ink-50 text-ink-400 cursor-not-allowed'
+                                    : 'border-rose-200 bg-white text-rose-700 hover:bg-rose-50'
+                                )}
+                                title="Cancelar venda"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" /> Cancelar
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <div className="block sm:hidden">
+              <ul className="divide-y divide-ink-100">
                 {filtered.map(s => {
                   const st = statusLabel(s.status)
                   const snapProvider = (s as any).payment_provider_snapshot
                   const snapMethod = (s as any).payment_method_snapshot
                   const snapInstallments = Number((s as any).installments_snapshot ?? 1)
                   return (
-                    <tr key={s.id} className="hover:bg-ink-50/50 transition">
-                      <td className="font-bold num">
+                    <li key={s.id} className="p-4 space-y-3">
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-2">
+                            <button
+                              onClick={() => navigate(`/vendas/${s.id}`)}
+                              className="text-brand-800 hover:underline font-black num text-base"
+                            >
+                              #{formatFriendlyNumber(s.friendly_number)}
+                            </button>
+                            <span className={st.class + ' !py-0.5'}>{st.label}</span>
+                          </div>
+                          <div className="flex items-center gap-1.5 mt-1 text-xs text-ink-500">
+                            <Clock className="w-3.5 h-3.5 flex-shrink-0" />
+                            <span className="num">{formatDateTime(s.sale_date ?? s.created_at)}</span>
+                            <span className="text-ink-300">·</span>
+                            <span className="chip bg-ink-100 text-ink-600 !py-0 !text-[10px]">{sourceLabel(s.source)}</span>
+                          </div>
+                        </div>
+                        <div className="text-right min-w-[110px]">
+                          <div className={cn('font-black text-lg num',
+                            s.status === 'CANCELADA' ? 'text-ink-400 line-through' : 'text-ink-900')}>
+                            {formatCurrency(s.total_customer)}
+                          </div>
+                          {s.status !== 'CANCELADA' && (
+                            <div className={cn('text-xs font-semibold num mt-0.5',
+                              Number(s.real_profit ?? 0) >= 0 ? 'text-emerald-700' : 'text-rose-700')}>
+                              Lucro {formatCurrency(s.real_profit ?? 0)}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="rounded-xl border border-ink-100 bg-ink-50/60 p-3 space-y-1.5">
+                        {s.customer_name ? (
+                          <div className="flex items-start gap-2">
+                            <UserCircle className="w-4 h-4 text-brand-700 mt-0.5 flex-shrink-0" />
+                            <div className="min-w-0 flex-1">
+                              <div className="font-bold text-ink-900 break-words">{s.customer_name}</div>
+                              {s.customer_phone && (
+                                <div className="flex items-center gap-1.5 mt-0.5 text-xs text-ink-600">
+                                  <Phone className="w-3.5 h-3.5 flex-shrink-0" />
+                                  <span className="num">{s.customer_phone}</span>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="text-sm text-ink-500 italic">Cliente não identificado</div>
+                        )}
+                        <div className="flex items-center justify-between gap-2 pt-1 text-xs text-ink-600 border-t border-ink-200/70 mt-1.5">
+                          <span className="flex items-center gap-1.5 flex-wrap">
+                            <span className="chip bg-white text-ink-600 !py-0 border border-ink-200">
+                              {[snapProvider, paymentMethodLabel(snapMethod), snapInstallments > 1 ? `${snapInstallments}x` : null]
+                                .filter(Boolean).join(' · ') || 'Sem pagamento'}
+                            </span>
+                          </span>
+                          <span className="font-bold num text-ink-700 flex-shrink-0">
+                            {pluralize(Number((s as any).total_items ?? 0), 'peça')}
+                          </span>
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-2 pt-0.5">
+                        <button
+                          onClick={() => navigate(`/vendas/${s.id}#editar`)}
+                          className="btn-secondary !py-2.5 text-sm min-h-[44px]"
+                        >
+                          <Edit3 className="w-4 h-4" /> Editar
+                        </button>
                         <button
                           onClick={() => navigate(`/vendas/${s.id}`)}
-                          className="text-brand-800 hover:underline text-left"
+                          className="btn-primary !py-2.5 text-sm min-h-[44px]"
                         >
-                          #{formatFriendlyNumber(s.friendly_number)}
+                          Ver detalhe
                         </button>
-                      </td>
-                      <td className="text-ink-700 num whitespace-nowrap">{formatDateTime(s.sale_date ?? s.created_at)}</td>
-                      <td>
-                        <span className="chip bg-ink-100 text-ink-700">{sourceLabel(s.source)}</span>
-                      </td>
-                      <td className="text-ink-700 text-sm whitespace-nowrap">
-                        {[snapProvider, paymentMethodLabel(snapMethod), snapInstallments > 1 ? `${snapInstallments}x` : null]
-                          .filter(Boolean).join(' · ') || '-'}
-                      </td>
-                      <td className="text-right num font-semibold">{formatFriendlyNumber(Number((s as any).total_items ?? 0))}</td>
-                      <td className="text-right num font-bold text-ink-900">{formatCurrency(s.total_customer)}</td>
-                      <td className={cn('text-right num font-bold',
-                        s.status === 'CANCELADA' ? 'text-ink-400 line-through' :
-                        Number(s.real_profit ?? 0) >= 0 ? 'text-emerald-700' : 'text-rose-700')}>
-                        {s.status === 'CANCELADA' ? formatCurrency(0) : formatCurrency(s.real_profit)}
-                      </td>
-                      <td><span className={st.class}>{st.label}</span></td>
-                      <td className="text-right">
-                        <div className="flex items-center justify-end gap-1.5">
-                          <button
-                            onClick={() => navigate(`/vendas/${s.id}`)}
-                            className="btn-secondary !py-1.5 !px-2.5 text-xs whitespace-nowrap min-h-[36px]"
-                            title="Ver detalhe"
-                          >
-                            Ver detalhe
-                          </button>
-                          <button
-                            onClick={() => openCancel(s)}
-                            disabled={s.status === 'CANCELADA'}
-                            className={cn(
-                              '!py-1.5 !px-2.5 text-xs whitespace-nowrap min-h-[36px] rounded-lg border transition inline-flex items-center gap-1.5 font-semibold',
-                              s.status === 'CANCELADA'
-                                ? 'border-ink-100 bg-ink-50 text-ink-400 cursor-not-allowed'
-                                : 'border-rose-200 bg-white text-rose-700 hover:bg-rose-50'
-                            )}
-                            title="Cancelar venda"
-                          >
-                            <Trash2 className="w-3.5 h-3.5" /> Cancelar
-                          </button>
-                        </div>
-                      </td>
-                    </tr>
+                      </div>
+                      {s.status !== 'CANCELADA' && (
+                        <button
+                          onClick={() => openCancel(s)}
+                          className={cn(
+                            'w-full text-sm rounded-lg border transition inline-flex items-center justify-center gap-1.5 font-semibold min-h-[40px]',
+                            'border-rose-200 bg-white text-rose-700 hover:bg-rose-50'
+                          )}
+                        >
+                          <Trash2 className="w-4 h-4" /> Cancelar venda
+                        </button>
+                      )}
+                    </li>
                   )
                 })}
-              </tbody>
-            </table>
-          </div>
+              </ul>
+            </div>
+          </>
         )}
       </div>
 
@@ -445,7 +591,14 @@ export default function SalesHistoryPage() {
                 <AlertTriangle className="w-5.5 h-5.5" />
               </div>
               <div className="flex-1">
-                <h3 className="text-lg font-black text-ink-900">Cancelar venda #{formatFriendlyNumber(cancelModal.sale.friendly_number)}</h3>
+                <h3 className="text-lg font-black text-ink-900">
+                  Cancelar venda #{formatFriendlyNumber(cancelModal.sale.friendly_number)}
+                </h3>
+                {cancelModal.sale.customer_name && (
+                  <div className="text-sm text-ink-600 mt-0.5">
+                    Cliente: <strong>{cancelModal.sale.customer_name}</strong>
+                  </div>
+                )}
                 <p className="text-sm text-ink-600 mt-1">
                   Esta ação é <strong>irreversível</strong>. O estoque será devolvido e os valores ajustados.
                 </p>

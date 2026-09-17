@@ -1,0 +1,98 @@
+================================================================================
+PROMPT PARA O CLAUDE — RESOLVER SCRIPT SQL SUPABASE EVELINE GESTÃO
+================================================================================
+CONTEXTO GERAL:
+- Projeto: EvelineGestão — Sistema de gestão (vendas, estoque, financeiro) em Next.js + Supabase Cloud
+- Arquivo problemático: "SCRIPT_UNICO_EXECUTAR_UMA_VEZ_SQL_EDITOR.sql" (transacional BEGIN...COMMIT — tudo ou nada)
+- Ambiente alvo: SQL Editor do Supabase Cloud (Postgres 15+ com RLS, extansões padrão, auth.users existente)
+- Objetivo: Este script ALL-IN-ONE deve ser colado na aba do SQL Editor do Supabase e rodar de ponta a ponta SEM ERRO.
+  Se der qualquer erro a transação inteira dá ROLLBACK. Precisa ser PROVA DE FALHA.
+
+================================================================================
+COMO VOCÊ DEVE TRABALHAR:
+1. Eu (usuário) já corrigi 6 erros nas últimas 20 tentativas (abaixo). A 7ª tentativa deu outro erro.
+2. VOCÊ (Claude) vai:
+   a) Receber o ERRO ATUAL exato do último Run no Supabase.
+   b) Analisar a causa raiz NO CÓDIGO ABAIXO.
+   c) CORRIGIR o arquivo todo.
+   d) APLICAR blindagens adicionais para que erros SEMELHANTES não voltem a acontecer
+      (ex: blindagem de colunas que faltam, blindagem de tipo incompatível, blindagem de placeholder quebrado).
+   e) NÃO INVENTAR DADOS FINANCEIROS! Os valores que já estão no código são reais (R$1.070 passivo, etc).
+   f) NÃO DIMINUIR ESCALAS: sempre NUMERIC(12,4) ou NUMERIC(12,2) como já está no schema.
+   g) Manter a estrutura BEGIN...COMMIT intacta no topo e rodapé.
+   h) Manter todos os DROP FUNCTION IF EXISTS para evitar erro 42725.
+   i) Manter idempotência: script tem que poder rodar 100x e não duplicar dados (PASSO 0 de limpeza já existe).
+================================================================================
+
+================================================================================
+CHECK CONSTRAINTS OBRIGATÓRIOS (pegos de schema.sql — NÃO PODEM SER ALTERADOS):
+  sales.source           IN ('SITE','PRESENCIAL','DISTANCIA','OUTRO')  → NÃO USAR 'LOJA'
+  sales.status           IN ('PENDENTE','CONCLUIDA','CANCELADA','REEMBOLSADA','PARCIAL')
+  sale_payments.method   IN ('PIX','CREDITO','DEBITO','BOLETO','DINHEIRO','OUTRO')  → NÃO USAR 'LINK'
+  payment_fee_rules.method = mesmo acima (LINK é modality, NÃO method)
+================================================================================
+
+================================================================================
+COLUNAS QUE EXISTEM/NÃO EXISTEM nas tabelas:
+  EXISTEM updated_at EM: profiles, products, product_variants, packaging_components,
+                          packaging_types, sales, settings
+  NÃO EXISTIAM updated_at EM (agora já tem blindagem PASSO 0⅔ mas não confie):
+    inventory_batches, purchase_entries, purchase_entry_items, purchase_costs,
+    inventory_movements, sale_items, sale_payments, sale_packaging, sale_costs,
+    financial_transactions
+  public.counters.value = JSONB! NÃO É INTEGER → SEMPRE use:
+    ESCRITA: to_jsonb(inteiro)
+    LEITURA: (value #>> '{}')::INT   (nunca value::INT)
+================================================================================
+
+================================================================================
+REGRAS DO RAISE NOTICE / EXCEPTION (Postgres PL/pgSQL) — REGRAS NOVAS ATUALIZADAS:
+  PROBLEMA CRÍTICO: em certas versões/compilações do Postgres/Supabase, QUALQUER caractere
+  `%` isolado numa format string (mesmo que NÃO existam parametros) PODE SER INTERPRETADO
+  COMO PLACEHOLDER VAZIO e causa "ERROR 42601: too few parameters specified for RAISE".
+  SOLUÇÃO DEFINITIVA (SIGA ISSO SEM EXCEÇÃO):
+
+  CASO 1 — TEXTO 100% FIXO (nenhum valor dinâmico):
+    MÁXIMA SEGURANÇA: SEMPRE escape TODO `%` como `%%` E SEMPRE adicione NO MINIMO 1 parâmetro
+    dummy vazio no final (que nunca é impresso pois não há placeholder `%` sozinho):
+      RAISE NOTICE 'texto com 100%% de literalismo e 4.2%% aqui.', '';
+    → 2 vantagens: (a) `%%` NUNCA vira placeholder acidental;
+                    (b) o parâmetro extra é ignorado (Postgres permite params a mais).
+
+  CASO 2 — COM 1 ou mais valores dinâmicos (placeholder real):
+    Escreva `%` normal para cada placeholder + 1 placeholder extra escapado `%%` por segurança
+    + 1 parâmetro dummy adicional no final:
+      RAISE NOTICE 'SKU "%" NÃO EXISTE. Total 100%% processado.', COALESCE(v_sku,''), '';
+
+  CASO 3 — VALOR DINÂMICO ÚNICO (msg em variável):
+    Continuam OK: RAISE NOTICE '%', _msg_var;  (apenas 1 placeholder real, 1 parametro real)
+
+  EM RESUMO: SEMPRE que houver qualquer `%` ou `%%` no texto, passe AO MENOS 1 parâmetro
+  (pode ser `''` vazio) no final. Isso ELIMINA 100% o erro "too few parameters".
+================================================================================
+
+ERROS JÁ CORRIGIDOS (7) — NÃO VOLTAR ATRÁS:
+#1 CHECK 23514: 'LOJA' inválido → default p_source trocado → 'PRESENCIAL' em
+   hist_finalize_sale e wrapper finalize_sale
+#2 CHECK 23514: 'LINK' inválido nas 5 vendas (Lorrany, Carol, Ruth, Ingrid, Maria Clara)
+   → v_method := 'OUTRO' (Link permanece em modality_snapshot TEXT)
+#3 42804: counters.value JSONB vs INT → to_jsonb() na escrita + (value #>> '{}')::INT na leitura
+#4 42703: inventory_batches.updated_at NÃO EXISTE no schema.sql original
+   → removido do UPDATE inventory_batches + ADICIONADO PASSO 0⅔ (ALTER TABLE ADD COLUMN IF NOT EXISTS para 10 tabelas)
+#5 42601 RAISE EXCEPTION de hist_create_purchase_entry com %% SEM parâmetro
+   → trocado por '%' real com parâmetro COALESCE(v_sku,'(null)') DIRETO na format string
+#6 42601 too few parameters no PASSO 0½: "100%% tolerante" sem parâmetro
+   → AGORA USA REGRA CASO 1: "100%% tolerante" + 1 dummy '' no final
+#7 42601 too few parameters AUDITORIA FINAL notices 24 e 26 com "4.2%/6.09%" e "100%"
+   → AGORA USA REGRA CASO 1: "4.2%%/6.09%% ... 0%%" com 7 dummies '' + "100%%" com 1 dummy ''
+================================================================================
+
+================================================================================
+ÚLTIMO ERRO QUE APARECEU NO SUPABASE — EXATAMENTE COMO VEIO:
+Failed to run sql query: ERROR:  42601: too few parameters specified for RAISE
+CONTEXT:  compilation of PL/pgSQL function "inline_code_block" near line 1
+================================================================================
+
+================================================================================
+CONTEÚDO COMPLETO ATUAL DO SCRIPT (cole o arquivo inteiro abaixo):
+================================================================================

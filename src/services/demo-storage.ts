@@ -750,3 +750,136 @@ export function demoCancelSale(sale_id: UUID, reason: string, user_id?: UUID) {
   saveStore(s)
   return { ok: true, sale_id, friendly_number: sale.friendly_number }
 }
+
+export function demoRecordRemainingPayment(
+  sale_id: UUID,
+  p: {
+    payment: {
+      provider_id?: UUID | null; modality_id?: UUID | null; method: string; installments?: number;
+      amount?: number; fee_percent?: number; fee_expected?: number; fee_actual?: number;
+      provider_snapshot?: string | null; modality_snapshot?: string | null; fee_rule_id?: UUID | null;
+    };
+    amount?: number | null; trans_date?: string | null; notes?: string | null; user_id?: UUID;
+  }
+) {
+  const s = loadStore()
+  const sale = s.sales.find(x => x.id === sale_id)
+  if (!sale) return { ok: false, error: 'Venda não encontrada' }
+  if (sale.status !== 'PARCIAL' && sale.status !== 'PENDENTE') {
+    return { ok: false, error: `Status ${sale.status} não pode receber pagamento restante` }
+  }
+  const pay = s.sale_payments.filter(x => x.sale_id === sale_id).reduce((sum, p) => sum + Number(p.amount ?? 0), 0)
+  const pending = Math.max(0, +(Number(sale.total_customer) - pay).toFixed(2))
+  const amount = +((p.amount ?? pending) || pending).toFixed(2)
+  if (amount <= 0) return { ok: false, error: 'Valor recebido deve ser > 0' }
+  if (amount > (pending + 0.01)) return { ok: false, error: 'Valor informado > saldo pendente R$' + pending.toFixed(2) }
+
+  const paym = p.payment
+  const method = paym?.method ?? 'PIX'
+  const fee_pct = Number(paym?.fee_percent ?? 0)
+  const fee_expected = Number(paym?.fee_expected ?? (amount * fee_pct / 100)) || 0
+  const fee_actual = Number(paym?.fee_actual ?? fee_expected) || 0
+  const installments = paym?.installments ?? 1
+  const uid_salepay = (crypto as any).randomUUID?.() ?? 'demo-sp-' + Math.random().toString(36).slice(2)
+  const uid_tr = (crypto as any).randomUUID?.() ?? 'demo-ft-' + Math.random().toString(36).slice(2)
+
+  s.sale_payments.push({
+    id: uid_salepay, sale_id,
+    method: method as any, installments,
+    provider_id: paym?.provider_id ?? null,
+    modality_id: paym?.modality_id ?? null,
+    fee_rule_id: paym?.fee_rule_id ?? null,
+    fee_percent_snapshot: fee_pct,
+    fee_expected_snapshot: fee_expected,
+    fee_real_snapshot: fee_actual,
+    amount,
+    provider_snapshot: paym?.provider_snapshot ?? null,
+    modality_snapshot: paym?.modality_snapshot ?? null,
+    created_at: todayISO(),
+  })
+
+  s.financial_transactions.push({
+    id: uid_tr,
+    trans_date: (p.trans_date ? new Date(p.trans_date).toISOString().slice(0,10) : new Date().toISOString().slice(0,10)),
+    trans_type: 'ENTRADA', category: 'VENDA',
+    description: `Pagamento complementar Venda #${String(sale.friendly_number).padStart(6,'0')} (${method} ${installments}x)`,
+    amount, related_sale_id: sale.id, payment_method: method,
+    status: 'CONFIRMADO',
+    created_by: p.user_id ?? null,
+    notes: p.notes ?? '',
+    created_at: todayISO(),
+  })
+  if (fee_actual > 0) {
+    s.financial_transactions.push({
+      id: (crypto as any).randomUUID?.() ?? 'demo-ft2-'+Math.random().toString(36).slice(2),
+      trans_date: new Date().toISOString().slice(0,10),
+      trans_type: 'SAIDA', category: 'TAXA',
+      description: `Taxa complementar Venda #${sale.friendly_number}`,
+      amount: +fee_actual.toFixed(2), related_sale_id: sale.id, payment_method: method,
+      status: 'CONFIRMADO', created_by: p.user_id ?? null, created_at: todayISO(),
+    })
+  }
+
+  for (const ft of s.financial_transactions) {
+    if (ft.related_sale_id === sale_id && ft.status === 'PENDENTE' && ft.trans_type === 'ENTRADA' && ft.category === 'VENDA') {
+      ft.status = 'CONFIRMADO'
+      ft.notes = (ft.notes ?? '') + ' [quitado por pagamento complementar]'
+    }
+  }
+
+  const payTot = pay + amount
+  const pendAfter = Math.max(0, +(Number(sale.total_customer) - payTot).toFixed(2))
+  sale.status = pendAfter <= 0.005 ? 'CONCLUIDA' : 'PARCIAL'
+  sale.fee_actual = +(Number(sale.fee_actual) + fee_actual).toFixed(2)
+  sale.fee_expected = +(Number(sale.fee_expected) + fee_expected).toFixed(2)
+  sale.real_profit = +(Number(sale.total_customer) - (Number(sale.items_cost) + Number(sale.packaging_cost) + Number(sale.extra_costs) + Number(sale.fee_actual))).toFixed(2)
+  sale.real_margin = sale.total_customer ? (sale.real_profit / Number(sale.total_customer) * 100) : 0
+  sale.updated_at = todayISO()
+  saveStore(s)
+  return {
+    ok: true, sale_id, amount, fee_actual,
+    new_status: sale.status,
+    pending_after: pendAfter,
+    sale_payment_id: uid_salepay,
+    financial_transaction_id: uid_tr,
+  }
+}
+
+export function demoUpdateSale(sale_id: UUID, patch: any): Sale | null {
+  const s = loadStore()
+  const sale = s.sales.find(x => x.id === sale_id)
+  if (!sale) return null
+  if (patch.customer_name !== undefined) sale.customer_name = patch.customer_name
+  if (patch.customer_phone !== undefined) sale.customer_phone = patch.customer_phone
+  if (patch.sale_date !== undefined) sale.sale_date = patch.sale_date
+  if (patch.source !== undefined) sale.source = patch.source
+  if (patch.status !== undefined) sale.status = patch.status
+  if (patch.notes !== undefined) (sale as any).notes = patch.notes
+  if (patch.total_customer !== undefined) sale.total_customer = Number(patch.total_customer)
+  sale.updated_at = todayISO()
+  saveStore(s)
+  return sale as Sale
+}
+
+export function demoUpdateSalePayment(payment_id: UUID, patch: any): any | null {
+  const s = loadStore()
+  const p = s.sale_payments.find((x: any) => x.id === payment_id)
+  if (!p) return null
+  if (patch.method !== undefined) p.method = patch.method
+  if (patch.amount !== undefined) p.amount = Number(patch.amount)
+  if (patch.trans_date !== undefined) p.trans_date = patch.trans_date
+  if (patch.provider_snapshot !== undefined) p.provider_snapshot = patch.provider_snapshot
+  if (patch.modality_snapshot !== undefined) p.modality_snapshot = patch.modality_snapshot
+  if (patch.fee_expected_snapshot !== undefined) p.fee_expected_snapshot = Number(patch.fee_expected_snapshot ?? 0)
+  if (patch.fee_real_snapshot !== undefined) p.fee_real_snapshot = Number(patch.fee_real_snapshot ?? 0)
+  if (patch.installments_snapshot !== undefined) p.installments_snapshot = Number(patch.installments_snapshot ?? 1)
+  if (patch.notes !== undefined) p.notes = patch.notes
+  saveStore(s)
+  return p
+}
+
+export function demoDeleteSalePayment(payment_id: UUID): void {
+  const s = loadStore()
+  s.sale_payments = (s.sale_payments as any[]).filter((x: any) => x.id !== payment_id)
+  saveStore(s)
+}

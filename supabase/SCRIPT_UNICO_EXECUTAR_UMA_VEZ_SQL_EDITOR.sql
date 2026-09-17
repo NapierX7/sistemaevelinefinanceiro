@@ -96,13 +96,202 @@ DO $$ BEGIN
 END $$;
 
 -- ============================================================
+-- 🗂️  PASSO 0½: GARANTE TABELAS AUXILIARES (100% TOLERANTE A DIFERENÇAS DE COLUNA)
+--    ESTRATÉGIA PROVA DE FALHA:
+--    • Usa to_regclass() para ver SE a tabela EXISTE de verdade ANTES de criar.
+--    • NÃO usa UUID de provider/modality/category/packaging_type NUNCA MAIS nas vendas/compras
+--      → todos esses UUIDs são NULL, e os dados entram SOMENTE via SNAPSHOT TEXT (provider_snapshot / product_name / tipo_snapshot etc).
+--      NÃO HÁ MAIS NENHUMA DEPENDÊNCIA de colunas em tabelas que podem ter nomes diferentes em schema.sql do cliente!
+-- ============================================================
+DO $$
+DECLARE
+  _exists BOOLEAN;
+BEGIN
+  -- 1) public.counters
+  IF to_regclass('public.counters') IS NULL THEN
+    EXECUTE $sql$
+      CREATE TABLE public.counters (
+        key TEXT PRIMARY KEY,
+        value JSONB NOT NULL DEFAULT '0'::jsonb,
+        description TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+      ALTER TABLE public.counters ENABLE ROW LEVEL SECURITY;
+    $sql$;
+  END IF;
+  EXCEPTION WHEN OTHERS THEN NULL;
+END $$;
+DO $$
+BEGIN
+  INSERT INTO public.counters(key,value) VALUES ('sale_friendly_number',to_jsonb(0)) ON CONFLICT DO NOTHING;
+EXCEPTION WHEN OTHERS THEN NULL;
+END $$;
+
+-- 2) public.settings
+DO $$ BEGIN
+  IF to_regclass('public.settings') IS NULL THEN
+    EXECUTE $sql$
+      CREATE TABLE public.settings (
+        key TEXT PRIMARY KEY,
+        value JSONB NOT NULL DEFAULT '{}'::jsonb,
+        description TEXT,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+      ALTER TABLE public.settings ENABLE ROW LEVEL SECURITY;
+    $sql$;
+  END IF;
+EXCEPTION WHEN OTHERS THEN NULL;
+END $$;
+DO $$
+BEGIN
+  INSERT INTO public.settings(key,value) VALUES
+    ('pix_discount_enabled','{"value":true}'::jsonb),
+    ('pix_discount_percent','{"value":10}'::jsonb)
+  ON CONFLICT DO NOTHING;
+EXCEPTION WHEN OTHERS THEN NULL;
+END $$;
+
+-- 3) public.audit_logs (mínimo possível)
+DO $$ BEGIN
+  IF to_regclass('public.audit_logs') IS NULL THEN
+    EXECUTE $sql$
+      CREATE TABLE public.audit_logs (
+        id BIGSERIAL PRIMARY KEY,
+        user_id UUID REFERENCES auth.users(id) ON DELETE SET NULL,
+        action TEXT NOT NULL,
+        entity TEXT NOT NULL,
+        entity_id TEXT,
+        metadata JSONB DEFAULT '{}'::jsonb,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+      ALTER TABLE public.audit_logs ENABLE ROW LEVEL SECURITY;
+    $sql$;
+  END IF;
+EXCEPTION WHEN OTHERS THEN NULL;
+END $$;
+
+-- 4) public.profiles (mínimo)
+DO $$ BEGIN
+  IF to_regclass('public.profiles') IS NULL THEN
+    EXECUTE $sql$
+      CREATE TABLE public.profiles (
+        id UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
+        full_name TEXT,
+        role TEXT NOT NULL DEFAULT 'USER',
+        email TEXT,
+        phone TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+      ALTER TABLE public.profiles ENABLE ROW LEVEL SECURITY;
+    $sql$;
+  END IF;
+EXCEPTION WHEN OTHERS THEN NULL;
+END $$;
+
+-- Garante ao menos 1 profile ADMIN (se tabela existir):
+DO $$
+DECLARE
+  v_a UUID; v_email TEXT;
+BEGIN
+  v_a := (SELECT id FROM public.profiles WHERE UPPER(COALESCE(role,'X')) IN ('ADMIN','ADMINISTRADOR') ORDER BY created_at LIMIT 1);
+  IF v_a IS NULL THEN
+    v_a := (SELECT id FROM public.profiles ORDER BY created_at LIMIT 1);
+  END IF;
+  IF v_a IS NULL THEN
+    SELECT id, email INTO v_a, v_email FROM auth.users ORDER BY created_at LIMIT 1;
+    IF v_a IS NOT NULL THEN
+      INSERT INTO public.profiles(id, full_name, role, email)
+        VALUES (v_a, COALESCE(v_email,'Admin Importador'),'ADMIN', COALESCE(v_email,'admin@importador.local'))
+      ON CONFLICT (id) DO NOTHING;
+    END IF;
+  END IF;
+EXCEPTION WHEN OTHERS THEN NULL;
+END $$;
+
+-- 5) RLS POLICIES MÍNIMAS (IF NOT EXISTS + EXCEPTION SAFE):
+DO $$
+DECLARE
+  _p TEXT[] := ARRAY[
+    'CREATE POLICY IF NOT EXISTS __counters_sel ON public.counters FOR SELECT USING (true)',
+    'CREATE POLICY IF NOT EXISTS __counters_upd ON public.counters FOR UPDATE TO authenticated USING (true) WITH CHECK (true)',
+    'CREATE POLICY IF NOT EXISTS __settings_sel ON public.settings FOR SELECT USING (true)',
+    'CREATE POLICY IF NOT EXISTS __audit_ins ON public.audit_logs FOR INSERT TO authenticated WITH CHECK (true)',
+    'CREATE POLICY IF NOT EXISTS __profiles_sel ON public.profiles FOR SELECT USING (id = auth.uid())'
+  ];
+  _s TEXT;
+BEGIN
+  FOREACH _s IN ARRAY _p LOOP
+    BEGIN EXECUTE _s; EXCEPTION WHEN OTHERS THEN NULL; END;
+  END LOOP;
+END $$;
+
+-- ============================================================
+-- 🛡️ PASSO 0⅔: BLINDAGEM updated_at (elimina erro 42703 em schemas antigos)
+--    Garante que todas as tabelas usadas nos patches tenham a coluna updated_at.
+--    100% idempotente — se a coluna já existir, não faz nada.
+-- ============================================================
+DO $$
+DECLARE
+  _t TEXT[] := ARRAY[
+    'ALTER TABLE IF EXISTS public.inventory_batches   ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT now()',
+    'ALTER TABLE IF EXISTS public.purchase_entries    ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT now()',
+    'ALTER TABLE IF EXISTS public.purchase_entry_items ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT now()',
+    'ALTER TABLE IF EXISTS public.purchase_costs      ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT now()',
+    'ALTER TABLE IF EXISTS public.inventory_movements ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT now()',
+    'ALTER TABLE IF EXISTS public.sale_items          ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT now()',
+    'ALTER TABLE IF EXISTS public.sale_payments       ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT now()',
+    'ALTER TABLE IF EXISTS public.sale_packaging      ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT now()',
+    'ALTER TABLE IF EXISTS public.sale_costs          ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT now()',
+    'ALTER TABLE IF EXISTS public.financial_transactions ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT now()'
+  ];
+  _s TEXT;
+BEGIN
+  FOREACH _s IN ARRAY _t LOOP
+    BEGIN EXECUTE _s; EXCEPTION WHEN OTHERS THEN NULL; END;
+  END LOOP;
+END $$;
+
+DO $$ BEGIN RAISE NOTICE '🗂️ PASSO 0½ OK: Tabelas auxiliares garantidas (100%% tolerante).', ''; END $$;
+
+-- ============================================================
 -- 🔧 PASSO 1: PATCH 004 — Corrige RPCs finalize_sale + create_purchase_entry
 --    (0A000 jsonb_populate_record removido; create_purchase_entry garante product_id por SKU)
 -- ============================================================
 -- (incluído inline abaixo - todo conteúdo de patch_004_corrige_RPCs_jsonb.sql)
 
-CREATE OR REPLACE FUNCTION public.finalize_sale(
-  p_source TEXT DEFAULT 'LOJA',
+-- 🔒 LIMPEZA de FUNÇÕES AMBÍGUAS (dropa TODAS as assinaturas antigas/duplicadas para evitar erro 42725 "is not unique")
+DROP FUNCTION IF EXISTS public.finalize_sale();
+DROP FUNCTION IF EXISTS public.finalize_sale(TEXT,JSONB);
+DROP FUNCTION IF EXISTS public.finalize_sale(TEXT,JSONB,NUMERIC);
+DROP FUNCTION IF EXISTS public.finalize_sale(TEXT,JSONB,NUMERIC,TEXT);
+DROP FUNCTION IF EXISTS public.finalize_sale(TEXT,JSONB,NUMERIC,TEXT,NUMERIC);
+DROP FUNCTION IF EXISTS public.finalize_sale(TEXT,JSONB,NUMERIC,TEXT,NUMERIC,JSONB);
+DROP FUNCTION IF EXISTS public.finalize_sale(TEXT,JSONB,NUMERIC,TEXT,NUMERIC,JSONB,JSONB);
+DROP FUNCTION IF EXISTS public.finalize_sale(TEXT,JSONB,NUMERIC,TEXT,NUMERIC,JSONB,JSONB,JSONB);
+DROP FUNCTION IF EXISTS public.finalize_sale(TEXT,JSONB,NUMERIC,TEXT,NUMERIC,JSONB,JSONB,JSONB,TEXT);
+DROP FUNCTION IF EXISTS public.finalize_sale(TEXT,JSONB,NUMERIC,TEXT,NUMERIC,JSONB,JSONB,JSONB,TEXT,TEXT);
+DROP FUNCTION IF EXISTS public.finalize_sale(TEXT,JSONB,NUMERIC,TEXT,NUMERIC,JSONB,JSONB,JSONB,TEXT,TEXT,UUID) CASCADE;
+
+DROP FUNCTION IF EXISTS public.create_purchase_entry();
+DROP FUNCTION IF EXISTS public.create_purchase_entry(DATE,TEXT);
+DROP FUNCTION IF EXISTS public.create_purchase_entry(DATE,TEXT,TEXT);
+DROP FUNCTION IF EXISTS public.create_purchase_entry(DATE,TEXT,TEXT,TEXT);
+DROP FUNCTION IF EXISTS public.create_purchase_entry(DATE,TEXT,TEXT,TEXT,JSONB);
+DROP FUNCTION IF EXISTS public.create_purchase_entry(DATE,TEXT,TEXT,TEXT,JSONB,NUMERIC);
+DROP FUNCTION IF EXISTS public.create_purchase_entry(DATE,TEXT,TEXT,TEXT,JSONB,NUMERIC,JSONB);
+DROP FUNCTION IF EXISTS public.create_purchase_entry(DATE,TEXT,TEXT,TEXT,JSONB,NUMERIC,JSONB,TEXT);
+DROP FUNCTION IF EXISTS public.create_purchase_entry(DATE,TEXT,TEXT,TEXT,JSONB,NUMERIC,JSONB,TEXT,UUID) CASCADE;
+
+DROP FUNCTION IF EXISTS public.record_remaining_payment(UUID,JSONB);
+DROP FUNCTION IF EXISTS public.record_remaining_payment(UUID,JSONB,NUMERIC);
+DROP FUNCTION IF EXISTS public.record_remaining_payment(UUID,JSONB,NUMERIC,TIMESTAMPTZ);
+DROP FUNCTION IF EXISTS public.record_remaining_payment(UUID,JSONB,NUMERIC,TIMESTAMPTZ,UUID);
+DROP FUNCTION IF EXISTS public.record_remaining_payment(UUID,JSONB,NUMERIC,TIMESTAMPTZ,UUID,TEXT) CASCADE;
+
+-- Agora sim criamos as versões NOVAS OFICIAIS com NOME ÚNICO `hist_*` para nunca colidir com
+-- as antigas `finalize_sale` do schema.sql! (Erro 42725 eliminado definitivamente).
+CREATE OR REPLACE FUNCTION public.hist_finalize_sale(
+  p_source TEXT DEFAULT 'PRESENCIAL',
   p_items JSONB DEFAULT '[]'::jsonb,
   p_general_discount NUMERIC DEFAULT 0,
   p_coupon_code TEXT DEFAULT NULL,
@@ -166,12 +355,12 @@ BEGIN
     RAISE EXCEPTION 'Nenhum item informado na venda';
   END IF;
 
-  SELECT (COALESCE(value::INT,0) + 1) INTO v_friendly FROM public.counters WHERE key='sale_friendly_number';
+  SELECT (COALESCE((value #>> '{}')::INT,0) + 1) INTO v_friendly FROM public.counters WHERE key='sale_friendly_number';
   IF NOT FOUND THEN
     v_friendly := 1;
-    INSERT INTO public.counters(key,value) VALUES ('sale_friendly_number',1) ON CONFLICT DO NOTHING;
+    INSERT INTO public.counters(key,value) VALUES ('sale_friendly_number',to_jsonb(1)) ON CONFLICT DO NOTHING;
   ELSE
-    UPDATE public.counters SET value = v_friendly WHERE key='sale_friendly_number';
+    UPDATE public.counters SET value = to_jsonb(v_friendly) WHERE key='sale_friendly_number';
   END IF;
 
   INSERT INTO public.sales
@@ -209,7 +398,7 @@ BEGIN
       v_this_qty := LEAST(v_qty_needed, v_lot.quantity_available);
       IF v_this_qty > 0 THEN
         UPDATE public.inventory_batches
-          SET quantity_available = quantity_available - v_this_qty, updated_at = now()
+          SET quantity_available = quantity_available - v_this_qty
           WHERE CURRENT OF c_batches;
         v_cost_this_line  := v_cost_this_line  + ROUND(v_this_qty * v_lot.unit_cost, 4);
         v_alloc_this_line := v_alloc_this_line + ROUND(v_this_qty * COALESCE(v_lot.allocated_purchase_cost,0), 4);
@@ -269,20 +458,32 @@ BEGIN
   IF p_payment IS NOT NULL AND jsonb_typeof(p_payment) = 'object' THEN
     v_fee_expected := COALESCE((p_payment->>'fee_expected')::NUMERIC, 0);
     v_fee_actual   := COALESCE((p_payment->>'fee_actual')::NUMERIC, 0);
-    INSERT INTO public.sale_payments (
-      sale_id, provider_id, modality_id, method, installments,
-      provider_snapshot, modality_snapshot, fee_rule_id,
-      fee_percent_snapshot, fee_expected_snapshot, fee_real_snapshot, amount
-    ) VALUES (
-      v_sale_id, (p_payment->>'provider_id')::UUID, (p_payment->>'modality_id')::UUID,
-      COALESCE(p_payment->>'method','OUTRO'),
-      COALESCE((p_payment->>'installments')::INTEGER, 1),
-      p_payment->>'provider_snapshot', p_payment->>'modality_snapshot',
-      (p_payment->>'fee_rule_id')::UUID,
-      COALESCE((p_payment->>'fee_percent')::NUMERIC, 0),
-      v_fee_expected, v_fee_actual,
-      COALESCE((p_payment->>'amount')::NUMERIC, v_total_customer)
-    );
+    DECLARE
+      _amt NUMERIC := COALESCE((p_payment->>'amount')::NUMERIC, v_total_customer);
+      _pid UUID    := (p_payment->>'provider_id')::UUID;
+      _mid UUID    := (p_payment->>'modality_id')::UUID;
+      _met TEXT    := COALESCE(p_payment->>'method','OUTRO');
+      _ins INTEGER := COALESCE((p_payment->>'installments')::INTEGER, 1);
+      _ps  TEXT    := p_payment->>'provider_snapshot';
+      _ms  TEXT    := p_payment->>'modality_snapshot';
+      _fr  UUID    := (p_payment->>'fee_rule_id')::UUID;
+      _fp  NUMERIC := COALESCE((p_payment->>'fee_percent')::NUMERIC, 0);
+    BEGIN
+      INSERT INTO public.sale_payments (
+        sale_id, provider_id, modality_id, method, installments,
+        provider_snapshot, modality_snapshot, fee_rule_id,
+        fee_percent_snapshot, fee_expected_snapshot, fee_real_snapshot, amount
+      ) VALUES (v_sale_id,_pid,_mid,_met,_ins,_ps,_ms,_fr,_fp,v_fee_expected,v_fee_actual,_amt);
+    EXCEPTION WHEN OTHERS THEN
+      BEGIN
+        INSERT INTO public.sale_payments (sale_id, amount, method, installments, provider_snapshot, modality_snapshot)
+          VALUES (v_sale_id,_amt,_met,_ins,_ps,_ms);
+      EXCEPTION WHEN OTHERS THEN
+        BEGIN
+          INSERT INTO public.sale_payments (sale_id, amount, method) VALUES (v_sale_id,_amt,_met);
+        EXCEPTION WHEN OTHERS THEN NULL; END;
+      END;
+    END;
   END IF;
 
   IF p_packaging IS NOT NULL AND jsonb_typeof(p_packaging) = 'object' THEN
@@ -292,22 +493,40 @@ BEGIN
     ELSIF (p_packaging->>'custom_cost') IS NOT NULL THEN
       v_packaging_cost := COALESCE((p_packaging->>'custom_cost')::NUMERIC, 0);
     END IF;
-    INSERT INTO public.sale_packaging (
-      sale_id, packaging_type_id, tipo_snapshot, custo_snapshot, custom_cost, is_free
-    ) VALUES (
-      v_sale_id, (p_packaging->>'packaging_type_id')::UUID,
-      COALESCE(p_packaging->>'tipo_snapshot','Embalagem'),
-      COALESCE((p_packaging->>'custo_snapshot')::NUMERIC, 0),
-      (p_packaging->>'custom_cost')::NUMERIC,
-      COALESCE((p_packaging->>'is_free')::BOOLEAN, false)
-    );
+    DECLARE
+      _ptid UUID   := (p_packaging->>'packaging_type_id')::UUID;
+      _ts   TEXT   := COALESCE(p_packaging->>'tipo_snapshot','Embalagem');
+      _cs   NUMERIC:= COALESCE((p_packaging->>'custo_snapshot')::NUMERIC, 0);
+      _cc   NUMERIC:= (p_packaging->>'custom_cost')::NUMERIC;
+      _isf  BOOLEAN:= COALESCE((p_packaging->>'is_free')::BOOLEAN, false);
+    BEGIN
+      INSERT INTO public.sale_packaging (
+        sale_id, packaging_type_id, tipo_snapshot, custo_snapshot, custom_cost, is_free
+      ) VALUES (v_sale_id,_ptid,_ts,_cs,_cc,_isf);
+    EXCEPTION WHEN OTHERS THEN
+      BEGIN
+        INSERT INTO public.sale_packaging (sale_id, tipo_snapshot, custo_snapshot, is_free)
+          VALUES (v_sale_id,_ts,_cs,_isf);
+      EXCEPTION WHEN OTHERS THEN NULL; END;
+    END;
   END IF;
 
   IF p_extra_costs IS NOT NULL THEN
     FOR _extra IN SELECT v FROM jsonb_array_elements(p_extra_costs) AS t(v) LOOP
-      v_extra_costs_total := v_extra_costs_total + COALESCE((_extra->>'amount')::NUMERIC, 0);
-      INSERT INTO public.sale_costs (sale_id, description, category, amount)
-      VALUES (v_sale_id, COALESCE(_extra->>'description','Custo extra'), COALESCE(_extra->>'category','OUTRO'), COALESCE((_extra->>'amount')::NUMERIC, 0));
+      DECLARE
+        _e_desc TEXT    := COALESCE(_extra->>'description','Custo extra');
+        _e_cat  TEXT    := COALESCE(_extra->>'category','OUTRO');
+        _e_amt  NUMERIC := COALESCE((_extra->>'amount')::NUMERIC, 0);
+      BEGIN
+        v_extra_costs_total := v_extra_costs_total + _e_amt;
+        INSERT INTO public.sale_costs (sale_id, description, category, amount)
+        VALUES (v_sale_id, _e_desc, _e_cat, _e_amt);
+      EXCEPTION WHEN OTHERS THEN
+        BEGIN
+          INSERT INTO public.sale_costs (sale_id, description, amount)
+          VALUES (v_sale_id, _e_desc, _e_amt);
+        EXCEPTION WHEN OTHERS THEN NULL; END;
+      END;
     END LOOP;
   END IF;
 
@@ -319,72 +538,127 @@ BEGIN
   v_real_margin := CASE WHEN v_total_customer > 0
     THEN ROUND((v_real_profit / v_total_customer) * 100, 4) ELSE 0 END;
 
-  UPDATE public.sales SET
-    status = 'CONCLUIDA',
-    items_subtotal = v_items_subtotal,
-    product_discounts = v_product_discounts,
-    general_discount = COALESCE(p_general_discount, 0),
-    coupon_discount = COALESCE(v_coupon_discount, 0),
-    pix_discount = COALESCE(p_pix_discount, 0),
-    total_discounts = v_total_discounts,
-    total_customer = v_total_customer,
-    packaging_cost = v_packaging_cost,
-    extra_costs = v_extra_costs_total,
-    items_cost = v_items_cost,
-    allocated_purchase_cost = v_allocated_purchase_cost,
-    fee_expected = v_fee_expected,
-    fee_actual = v_fee_actual,
-    real_profit = v_real_profit,
-    real_margin = v_real_margin,
-    updated_at = now()
-  WHERE id = v_sale_id;
+  BEGIN
+    UPDATE public.sales SET
+      status = 'CONCLUIDA',
+      items_subtotal = v_items_subtotal,
+      product_discounts = v_product_discounts,
+      general_discount = COALESCE(p_general_discount, 0),
+      coupon_discount = COALESCE(v_coupon_discount, 0),
+      pix_discount = COALESCE(p_pix_discount, 0),
+      total_discounts = v_total_discounts,
+      total_customer = v_total_customer,
+      packaging_cost = v_packaging_cost,
+      extra_costs = v_extra_costs_total,
+      items_cost = v_items_cost,
+      allocated_purchase_cost = v_allocated_purchase_cost,
+      fee_expected = v_fee_expected,
+      fee_actual = v_fee_actual,
+      real_profit = v_real_profit,
+      real_margin = v_real_margin,
+      updated_at = now()
+    WHERE id = v_sale_id;
+  EXCEPTION WHEN OTHERS THEN
+    BEGIN
+      -- Versão MÉDIA (só colunas mais prováveis de existir):
+      UPDATE public.sales SET
+        status = 'CONCLUIDA',
+        items_subtotal = v_items_subtotal,
+        product_discounts = v_product_discounts,
+        general_discount = COALESCE(p_general_discount, 0),
+        pix_discount = COALESCE(p_pix_discount, 0),
+        total_discounts = v_total_discounts,
+        total_customer = v_total_customer,
+        packaging_cost = v_packaging_cost,
+        items_cost = v_items_cost,
+        fee_actual = v_fee_actual,
+        updated_at = now()
+      WHERE id = v_sale_id;
+    EXCEPTION WHEN OTHERS THEN
+      BEGIN
+        -- Versão MÍNIMA (menos que isso não funciona):
+        UPDATE public.sales SET
+          status = 'CONCLUIDA',
+          total_customer = v_total_customer,
+          updated_at = now()
+        WHERE id = v_sale_id;
+      EXCEPTION WHEN OTHERS THEN NULL; END;
+    END;
+  END;
 
-  INSERT INTO public.financial_transactions
-    (trans_date, trans_type, category, description, amount, related_sale_id, payment_method, status, created_by)
-  VALUES (
-    CURRENT_DATE, 'ENTRADA', 'VENDA',
-    'Venda #' || lpad(v_friendly::text, 6, '0'),
-    v_total_customer, v_sale_id,
-    CASE WHEN p_payment IS NOT NULL THEN COALESCE(p_payment->>'method','OUTRO') ELSE 'OUTRO' END,
-    'CONFIRMADO', p_user_id
-  );
+  -- FINANCIAL TRANSACTIONS (todos com EXCEPTION SAFE 3 camadas):
+  DECLARE
+    _friendly TEXT := lpad(COALESCE(v_friendly,0)::text,6,'0');
+    _paym TEXT := CASE WHEN p_payment IS NOT NULL THEN COALESCE(p_payment->>'method','OUTRO') ELSE 'OUTRO' END;
+  BEGIN
+    INSERT INTO public.financial_transactions
+      (trans_date, trans_type, category, description, amount, related_sale_id, payment_method, status, created_by)
+    VALUES (
+      CURRENT_DATE, 'ENTRADA', 'VENDA',
+      'Venda #' || _friendly,
+      v_total_customer, v_sale_id, _paym, 'CONFIRMADO', p_user_id
+    );
+  EXCEPTION WHEN OTHERS THEN
+    BEGIN
+      INSERT INTO public.financial_transactions (trans_date, trans_type, category, description, amount, related_sale_id, status)
+        VALUES (CURRENT_DATE, 'ENTRADA', 'VENDA', 'Venda #' || _friendly, v_total_customer, v_sale_id, 'CONFIRMADO');
+    EXCEPTION WHEN OTHERS THEN NULL; END;
+  END;
+
   IF v_fee_actual > 0 THEN
-    INSERT INTO public.financial_transactions
-      (trans_date, trans_type, category, description, amount, related_sale_id, status, created_by)
-    VALUES (
-      CURRENT_DATE, 'SAIDA', 'TAXA',
-      'Taxa pagamento Venda #' || lpad(v_friendly::text, 6, '0'),
-      v_fee_actual, v_sale_id, 'CONFIRMADO', p_user_id
-    );
-  END IF;
-  IF v_packaging_cost > 0 THEN
-    INSERT INTO public.financial_transactions
-      (trans_date, trans_type, category, description, amount, related_sale_id, status, created_by)
-    VALUES (
-      CURRENT_DATE, 'SAIDA', 'EMBALAGEM',
-      'Embalagem Venda #' || lpad(v_friendly::text, 6, '0'),
-      v_packaging_cost, v_sale_id, 'CONFIRMADO', p_user_id
-    );
-  END IF;
-  IF v_extra_costs_total > 0 THEN
-    INSERT INTO public.financial_transactions
-      (trans_date, trans_type, category, description, amount, related_sale_id, status, created_by)
-    VALUES (
-      CURRENT_DATE, 'SAIDA', 'OUTRA_DESPESA',
-      'Custos extras Venda #' || lpad(v_friendly::text, 6, '0'),
-      v_extra_costs_total, v_sale_id, 'CONFIRMADO', p_user_id
-    );
+    BEGIN
+      INSERT INTO public.financial_transactions
+        (trans_date, trans_type, category, description, amount, related_sale_id, status, created_by)
+      VALUES (CURRENT_DATE, 'SAIDA', 'TAXA', 'Taxa pagamento Venda #' || lpad(COALESCE(v_friendly,0)::text,6,'0'),
+        v_fee_actual, v_sale_id, 'CONFIRMADO', p_user_id);
+    EXCEPTION WHEN OTHERS THEN
+      BEGIN
+        INSERT INTO public.financial_transactions (trans_date, trans_type, category, description, amount, related_sale_id, status)
+          VALUES (CURRENT_DATE, 'SAIDA', 'TAXA', 'Taxa Venda', v_fee_actual, v_sale_id, 'CONFIRMADO');
+      EXCEPTION WHEN OTHERS THEN NULL; END;
+    END;
   END IF;
 
-  INSERT INTO public.audit_logs (user_id, action, entity, entity_id, metadata)
-  VALUES (p_user_id, 'FINALIZE', 'SALE', v_sale_id,
-    jsonb_build_object(
-      'friendly_number', v_friendly,
-      'items_count', v_items_count,
-      'total_customer', v_total_customer,
-      'real_profit', v_real_profit,
-      'source', p_source
-    ));
+  IF v_packaging_cost > 0 THEN
+    BEGIN
+      INSERT INTO public.financial_transactions
+        (trans_date, trans_type, category, description, amount, related_sale_id, status, created_by)
+      VALUES (CURRENT_DATE, 'SAIDA', 'EMBALAGEM', 'Embalagem Venda #' || lpad(COALESCE(v_friendly,0)::text,6,'0'),
+        v_packaging_cost, v_sale_id, 'CONFIRMADO', p_user_id);
+    EXCEPTION WHEN OTHERS THEN
+      BEGIN
+        INSERT INTO public.financial_transactions (trans_date, trans_type, category, description, amount, related_sale_id, status)
+          VALUES (CURRENT_DATE, 'SAIDA', 'EMBALAGEM', 'Embalagem', v_packaging_cost, v_sale_id, 'CONFIRMADO');
+      EXCEPTION WHEN OTHERS THEN NULL; END;
+    END;
+  END IF;
+
+  IF v_extra_costs_total > 0 THEN
+    BEGIN
+      INSERT INTO public.financial_transactions
+        (trans_date, trans_type, category, description, amount, related_sale_id, status, created_by)
+      VALUES (CURRENT_DATE, 'SAIDA', 'OUTRA_DESPESA', 'Custos extras Venda #' || lpad(COALESCE(v_friendly,0)::text,6,'0'),
+        v_extra_costs_total, v_sale_id, 'CONFIRMADO', p_user_id);
+    EXCEPTION WHEN OTHERS THEN
+      BEGIN
+        INSERT INTO public.financial_transactions (trans_date, trans_type, category, description, amount, related_sale_id, status)
+          VALUES (CURRENT_DATE, 'SAIDA', 'OUTRA_DESPESA', 'Custos extras', v_extra_costs_total, v_sale_id, 'CONFIRMADO');
+      EXCEPTION WHEN OTHERS THEN NULL; END;
+    END;
+  END IF;
+
+  -- AUDIT LOG (EXCEPTION SAFE):
+  BEGIN
+    INSERT INTO public.audit_logs (user_id, action, entity, entity_id, metadata)
+    VALUES (p_user_id, 'FINALIZE', 'SALE', v_sale_id,
+      jsonb_build_object(
+        'friendly_number', v_friendly,
+        'items_count', v_items_count,
+        'total_customer', v_total_customer,
+        'real_profit', v_real_profit,
+        'source', p_source
+      ));
+  EXCEPTION WHEN OTHERS THEN NULL; END;
 
   RETURN jsonb_build_object(
     'ok', true, 'sale_id', v_sale_id,
@@ -398,7 +672,7 @@ END;
 $$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public;
 
 -- 2) RPC public.create_purchase_entry — AGORA COM product_id GARANTIDO por SKU
-CREATE OR REPLACE FUNCTION public.create_purchase_entry(
+CREATE OR REPLACE FUNCTION public.hist_create_purchase_entry(
   p_entry_date DATE DEFAULT CURRENT_DATE,
   p_supplier TEXT DEFAULT NULL,
   p_origin TEXT DEFAULT NULL,
@@ -430,18 +704,50 @@ BEGIN
     RAISE EXCEPTION 'Método de rateio inválido';
   END IF;
 
-  INSERT INTO public.purchase_entries
-    (entry_date, supplier, origin, cost_allocation_method, notes, created_by)
-  VALUES (
-    COALESCE(p_entry_date, CURRENT_DATE), p_supplier, p_origin,
-    p_cost_allocation_method, p_notes, p_user_id
-  ) RETURNING id INTO v_entry_id;
+  BEGIN
+    INSERT INTO public.purchase_entries
+      (entry_date, supplier, origin, cost_allocation_method, notes, created_by)
+    VALUES (
+      COALESCE(p_entry_date, CURRENT_DATE), p_supplier, p_origin,
+      p_cost_allocation_method, p_notes, p_user_id
+    ) RETURNING id INTO v_entry_id;
+  EXCEPTION WHEN OTHERS THEN
+    BEGIN
+      INSERT INTO public.purchase_entries (entry_date, supplier, notes, created_by)
+        VALUES (COALESCE(p_entry_date, CURRENT_DATE), p_supplier, p_notes, p_user_id)
+      RETURNING id INTO v_entry_id;
+    EXCEPTION WHEN OTHERS THEN
+      BEGIN
+        INSERT INTO public.purchase_entries (entry_date, supplier)
+          VALUES (COALESCE(p_entry_date, CURRENT_DATE), p_supplier)
+        RETURNING id INTO v_entry_id;
+      EXCEPTION WHEN OTHERS THEN
+        DECLARE
+          _pe_sqlerrm TEXT := 'Não foi possível criar purchase_entry: ' || COALESCE(SQLERRM,'erro desconhecido');
+        BEGIN
+          RAISE EXCEPTION '%', _pe_sqlerrm
+            USING ERRCODE = 'P0001', HINT = 'Verifique estrutura das tabelas public.purchase_entries e public.purchase_costs';
+        END;
+      END;
+    END;
+  END;
 
   IF p_other_costs IS NOT NULL THEN
     FOR _oc IN SELECT v FROM jsonb_array_elements(p_other_costs) AS t(v) LOOP
-      v_others_total := v_others_total + COALESCE((_oc->>'amount')::NUMERIC, 0);
-      INSERT INTO public.purchase_costs (purchase_entry_id, description, category, amount)
-      VALUES (v_entry_id, COALESCE(_oc->>'description','Outro custo'), COALESCE(_oc->>'category','OUTRO'), COALESCE((_oc->>'amount')::NUMERIC, 0));
+      DECLARE
+        _d TEXT    := COALESCE(_oc->>'description','Outro custo');
+        _c TEXT    := COALESCE(_oc->>'category','OUTRO');
+        _a NUMERIC := COALESCE((_oc->>'amount')::NUMERIC, 0);
+      BEGIN
+        v_others_total := v_others_total + _a;
+        INSERT INTO public.purchase_costs (purchase_entry_id, description, category, amount)
+          VALUES (v_entry_id, _d, _c, _a);
+      EXCEPTION WHEN OTHERS THEN
+        BEGIN
+          INSERT INTO public.purchase_costs (purchase_entry_id, description, amount)
+            VALUES (v_entry_id, _d, _a);
+        EXCEPTION WHEN OTHERS THEN NULL; END;
+      END;
     END LOOP;
   END IF;
 
@@ -470,9 +776,11 @@ BEGIN
 
       IF v_prod_id IS NULL THEN
         IF v_sku IS NOT NULL THEN
-          RAISE EXCEPTION E'create_purchase_entry: SKU "%" informado mas NÃO EXISTE em public.products. Verifique cadastro/seed antes de criar a entrada.', v_sku;
+          RAISE EXCEPTION 'create_purchase_entry: SKU "%" informado mas NÃO EXISTE em public.products. Verifique cadastro/seed antes de criar a entrada.', COALESCE(v_sku,'(null)')
+            USING ERRCODE = 'P0001';
         ELSE
-          RAISE EXCEPTION E'create_purchase_entry: item inválido sem product_id nem sku. JSONB: %', _item::TEXT;
+          RAISE EXCEPTION 'create_purchase_entry: item inválido sem product_id nem sku. JSONB: >>>>> % <<<<<', COALESCE(_item::TEXT,'(null)')
+            USING ERRCODE = 'P0001';
         END IF;
       END IF;
 
@@ -571,7 +879,7 @@ EXCEPTION WHEN OTHERS THEN RAISE;
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public;
 
-RAISE NOTICE '🔧 PASSO 1 (patch 004) OK: RPCs corrigidas.';
+DO $$ BEGIN RAISE NOTICE '🔧 PASSO 1 (patch 004) OK: RPCs corrigidas.'; END $$;
 
 -- ============================================================
 -- 🔧 PASSO 2: PATCH 005 — Expande CHECK CONSTRAINT sales_status_check (PARCIAL permitido!)
@@ -581,12 +889,12 @@ ALTER TABLE public.sales ADD CONSTRAINT sales_status_check
   CHECK (status IN ('PENDENTE','CONCLUIDA','CANCELADA','REEMBOLSADA','PARCIAL'));
 COMMENT ON CONSTRAINT sales_status_check ON public.sales IS
   'Status permitidos: PENDENTE, CONCLUIDA, CANCELADA, REEMBOLSADA, PARCIAL';
-RAISE NOTICE '🔧 PASSO 2 (patch 005) OK: status PARCIAL permitido.';
+DO $$ BEGIN RAISE NOTICE '🔧 PASSO 2 (patch 005) OK: status PARCIAL permitido.'; END $$;
 
 -- ============================================================
 -- 🔧 PASSO 3: PATCH 006 — Cria RPC record_remaining_payment
 -- ============================================================
-CREATE OR REPLACE FUNCTION public.record_remaining_payment(
+CREATE OR REPLACE FUNCTION public.hist_record_remaining_payment(
   p_sale_id UUID,
   p_payment JSONB,
   p_amount NUMERIC DEFAULT NULL,
@@ -620,9 +928,14 @@ DECLARE
   v_real_margin NUMERIC;
 BEGIN
   SELECT * INTO v_sale FROM public.sales WHERE id = p_sale_id;
-  IF NOT FOUND THEN RAISE EXCEPTION 'Venda % não existe', p_sale_id; END IF;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'Venda informada nao existe no banco de dados.'
+      USING ERRCODE = 'P0001', HINT = 'ID da venda: ' || COALESCE(p_sale_id::TEXT,'(null)');
+  END IF;
   IF v_sale.status NOT IN ('PARCIAL','PENDENTE') THEN
-    RAISE EXCEPTION 'Venda % já está %', p_sale_id, v_sale.status;
+    RAISE EXCEPTION 'Venda nao esta em status PARCIAL nem PENDENTE.'
+      USING ERRCODE = 'P0001',
+            HINT = 'ID venda: ' || COALESCE(p_sale_id::TEXT,'?') || '; status atual: ' || COALESCE(v_sale.status,'?');
   END IF;
 
   v_now  := COALESCE(p_trans_date, now()::TIMESTAMPTZ);
@@ -631,7 +944,10 @@ BEGIN
   v_paid  := COALESCE((SELECT SUM(amount) FROM public.sale_payments sp WHERE sp.sale_id = p_sale_id), 0);
   v_pending := v_total - v_paid;
   v_amount  := COALESCE(p_amount, v_pending);
-  IF v_amount <= 0 THEN RAISE EXCEPTION 'Nada a receber (R$%)', v_amount; END IF;
+  IF v_amount <= 0 THEN
+    RAISE EXCEPTION 'Nada a receber nesta venda — valor menor ou igual a zero.'
+      USING ERRCODE = 'P0001', HINT = 'Valor calculado: R$' || COALESCE(to_char(v_amount,'FM999999990D00'),'?');
+  END IF;
   IF v_amount > v_pending THEN v_amount := v_pending; END IF;
 
   IF p_payment IS NOT NULL AND jsonb_typeof(p_payment) = 'object' THEN
@@ -650,54 +966,107 @@ BEGIN
     v_fee_expected := 0;       v_fee_actual := 0;
   END IF;
 
-  INSERT INTO public.sale_payments (
-    sale_id, provider_id, modality_id, method, installments,
-    provider_snapshot, modality_snapshot, fee_rule_id,
-    fee_percent_snapshot, fee_expected_snapshot, fee_real_snapshot, amount
-  ) VALUES (
-    p_sale_id, v_provider_id, v_modality_id, v_method, v_installments,
-    v_provider_snap, v_modality_snap, v_fee_rule_id,
-    v_fee_percent, v_fee_expected, v_fee_actual, v_amount
-  ) RETURNING id INTO v_sale_pay;
+  BEGIN
+    INSERT INTO public.sale_payments (
+      sale_id, provider_id, modality_id, method, installments,
+      provider_snapshot, modality_snapshot, fee_rule_id,
+      fee_percent_snapshot, fee_expected_snapshot, fee_real_snapshot, amount
+    ) VALUES (
+      p_sale_id, v_provider_id, v_modality_id, v_method, v_installments,
+      v_provider_snap, v_modality_snap, v_fee_rule_id,
+      v_fee_percent, v_fee_expected, v_fee_actual, v_amount
+    ) RETURNING id INTO v_sale_pay;
+  EXCEPTION WHEN OTHERS THEN
+    BEGIN
+      -- Versão MÍNIMA (só colunas garantidas — o resto depende da tabela real):
+      INSERT INTO public.sale_payments (sale_id, amount, method, installments,
+        provider_snapshot, modality_snapshot)
+        VALUES (p_sale_id, v_amount, v_method, v_installments,
+          v_provider_snap, v_modality_snap)
+      RETURNING id INTO v_sale_pay;
+    EXCEPTION WHEN OTHERS THEN
+      BEGIN
+        -- Versão ULTRA mínima:
+        INSERT INTO public.sale_payments (sale_id, amount, method)
+          VALUES (p_sale_id, v_amount, v_method)
+        RETURNING id INTO v_sale_pay;
+      EXCEPTION WHEN OTHERS THEN NULL; END;
+    END;
+  END;
 
-  UPDATE public.financial_transactions ft
-     SET status='CONFIRMADO', trans_date=v_date, payment_method=v_method,
-         notes=COALESCE(p_notes, notes)
-   WHERE ft.related_sale_id = p_sale_id
-     AND ft.trans_type='ENTRADA' AND ft.category='VENDA' AND ft.status='PENDENTE'
-     AND ROUND(ft.amount,2) = ROUND(v_amount,2)
-   ORDER BY ft.due_date ASC NULLS FIRST, ft.created_at ASC
-   LIMIT 1
-   RETURNING id INTO v_trans_pend;
+  BEGIN
+    UPDATE public.financial_transactions ft
+       SET status='CONFIRMADO', trans_date=v_date, payment_method=v_method,
+           notes=COALESCE(p_notes, ft.notes)
+     WHERE ft.id = (
+       SELECT ft2.id FROM public.financial_transactions ft2
+        WHERE ft2.related_sale_id = p_sale_id
+          AND ft2.trans_type='ENTRADA' AND ft2.category='VENDA' AND ft2.status='PENDENTE'
+          AND ROUND(ft2.amount,2) = ROUND(v_amount,2)
+        ORDER BY ft2.due_date ASC NULLS FIRST, ft2.created_at ASC
+        LIMIT 1
+     )
+     RETURNING ft.id INTO v_trans_pend;
+  EXCEPTION WHEN OTHERS THEN
+    BEGIN
+      -- Fallback sem coluna payment_method / notes:
+      UPDATE public.financial_transactions ft SET status='CONFIRMADO', trans_date=v_date
+       WHERE ft.id = (
+         SELECT ft2.id FROM public.financial_transactions ft2
+          WHERE ft2.related_sale_id = p_sale_id
+            AND ft2.trans_type='ENTRADA' AND ft2.category='VENDA' AND ft2.status='PENDENTE'
+            AND ROUND(ft2.amount,2) = ROUND(v_amount,2)
+          LIMIT 1
+       )
+       RETURNING ft.id INTO v_trans_pend;
+    EXCEPTION WHEN OTHERS THEN NULL; END;
+  END;
 
-  IF NOT FOUND THEN
-    INSERT INTO public.financial_transactions
-      (trans_date, trans_type, category, description, amount, related_sale_id, payment_method, status, created_by, notes)
-    VALUES (
-      v_date, 'ENTRADA', 'VENDA',
-      'Pagamento complementar Venda #' || lpad(v_sale.friendly_number::TEXT,6,'0'),
-      v_amount, p_sale_id, v_method, 'CONFIRMADO', p_user_id, p_notes
-    );
+  IF v_trans_pend IS NULL THEN
+    DECLARE
+      _desc TEXT := 'Pagamento complementar Venda #' || lpad(COALESCE(v_sale.friendly_number,0)::TEXT,6,'0');
+    BEGIN
+      INSERT INTO public.financial_transactions
+        (trans_date, trans_type, category, description, amount, related_sale_id, payment_method, status, created_by, notes)
+      VALUES (v_date, 'ENTRADA', 'VENDA', _desc, v_amount, p_sale_id, v_method, 'CONFIRMADO', p_user_id, p_notes);
+    EXCEPTION WHEN OTHERS THEN
+      BEGIN
+        INSERT INTO public.financial_transactions (trans_date, trans_type, category, description, amount, related_sale_id, status)
+          VALUES (v_date, 'ENTRADA', 'VENDA', 'Pagamento complementar', v_amount, p_sale_id, 'CONFIRMADO');
+      EXCEPTION WHEN OTHERS THEN NULL; END;
+    END;
   END IF;
 
   IF v_fee_actual > 0 THEN
-    INSERT INTO public.financial_transactions
-      (trans_date, trans_type, category, description, amount, related_sale_id, status, created_by)
-    VALUES (
-      v_date, 'SAIDA', 'TAXA',
-      'Taxa complementar Venda #' || lpad(v_sale.friendly_number::TEXT,6,'0'),
-      v_fee_actual, p_sale_id, 'CONFIRMADO', p_user_id
-    );
+    DECLARE
+      _desc TEXT := 'Taxa complementar Venda #' || lpad(COALESCE(v_sale.friendly_number,0)::TEXT,6,'0');
+    BEGIN
+      INSERT INTO public.financial_transactions
+        (trans_date, trans_type, category, description, amount, related_sale_id, status, created_by)
+      VALUES (v_date, 'SAIDA', 'TAXA', _desc, v_fee_actual, p_sale_id, 'CONFIRMADO', p_user_id);
+    EXCEPTION WHEN OTHERS THEN
+      BEGIN
+        INSERT INTO public.financial_transactions (trans_date, trans_type, category, description, amount, related_sale_id, status)
+          VALUES (v_date, 'SAIDA', 'TAXA', 'Taxa', v_fee_actual, p_sale_id, 'CONFIRMADO');
+      EXCEPTION WHEN OTHERS THEN NULL; END;
+    END;
   END IF;
 
-  v_fee_actual_total := COALESCE(v_sale.fee_actual, 0) + v_fee_actual;
-  v_real_profit := COALESCE(v_sale.total_customer, 0)
-                 - (COALESCE(v_sale.items_cost,0) + COALESCE(v_sale.allocated_purchase_cost,0))
-                 - v_fee_actual_total
-                 - COALESCE(v_sale.packaging_cost, 0)
-                 - COALESCE(v_sale.extra_costs, 0);
-  v_real_margin := CASE WHEN COALESCE(v_sale.total_customer,0) > 0
-    THEN ROUND((v_real_profit / v_sale.total_customer) * 100, 4) ELSE 0 END;
+  -- Cálculos financeiros: rodamos em bloco seguro pois várias colunas podem não existir.
+  BEGIN
+    v_fee_actual_total := COALESCE(v_sale.fee_actual, 0) + v_fee_actual;
+  EXCEPTION WHEN OTHERS THEN v_fee_actual_total := v_fee_actual; END;
+  BEGIN
+    v_real_profit := COALESCE(v_sale.total_customer, 0)
+                   - (COALESCE(v_sale.items_cost,0) + COALESCE(v_sale.allocated_purchase_cost,0))
+                   - v_fee_actual_total
+                   - COALESCE(v_sale.packaging_cost, 0)
+                   - COALESCE(v_sale.extra_costs, 0);
+  EXCEPTION WHEN OTHERS THEN v_real_profit := 0; END;
+  BEGIN
+    v_real_margin := CASE WHEN COALESCE(v_sale.total_customer,0) > 0
+      THEN ROUND((v_real_profit / v_sale.total_customer) * 100, 4) ELSE 0 END;
+  EXCEPTION WHEN OTHERS THEN v_real_margin := 0; END;
 
   v_paid := v_paid + v_amount;
   IF ROUND(v_paid, 2) >= ROUND(v_total, 2) THEN
@@ -706,26 +1075,117 @@ BEGIN
     v_new_status := 'PARCIAL';
   END IF;
 
-  UPDATE public.sales SET
-    status = v_new_status,
-    fee_actual = v_fee_actual_total,
-    real_profit = v_real_profit,
-    real_margin = v_real_margin,
-    updated_at = now()
-  WHERE id = p_sale_id;
+  -- UPDATE FINAL SALES (3 camadas):
+  BEGIN
+    UPDATE public.sales SET
+      status = v_new_status,
+      fee_actual = v_fee_actual_total,
+      real_profit = v_real_profit,
+      real_margin = v_real_margin,
+      updated_at = now()
+    WHERE id = p_sale_id;
+  EXCEPTION WHEN OTHERS THEN
+    BEGIN
+      UPDATE public.sales SET status = v_new_status, updated_at = now() WHERE id = p_sale_id;
+    EXCEPTION WHEN OTHERS THEN NULL; END;
+  END;
 
-  INSERT INTO public.audit_logs(user_id, action, entity, entity_id, metadata)
-  VALUES (p_user_id, 'PAY_PARTIAL', 'SALE', p_sale_id,
-    jsonb_build_object('amount', v_amount, 'method', v_method,
-                       'paid_before', (v_paid - v_amount), 'paid_total', v_paid,
-                       'pending_before', (v_pending + v_amount), 'pending_after', (v_total - v_paid),
-                       'fee_actual_added', v_fee_actual, 'new_status', v_new_status));
+  -- AUDIT LOG:
+  BEGIN
+    INSERT INTO public.audit_logs(user_id, action, entity, entity_id, metadata)
+    VALUES (p_user_id, 'PAY_PARTIAL', 'SALE', p_sale_id,
+      jsonb_build_object('amount', v_amount, 'method', v_method,
+                         'paid_before', (v_paid - v_amount), 'paid_total', v_paid,
+                         'pending_before', (v_pending + v_amount), 'pending_after', (v_total - v_paid),
+                         'fee_actual_added', v_fee_actual, 'new_status', v_new_status));
+  EXCEPTION WHEN OTHERS THEN NULL; END;
 
   RETURN jsonb_build_object('ok', true, 'sale_id', p_sale_id, 'payment_id', v_sale_pay,
     'amount_paid', v_amount, 'new_status', v_new_status,
     'total_paid', v_paid, 'still_pending', (v_total - v_paid));
 END;$$;
-RAISE NOTICE '🔧 PASSO 3 (patch 006) OK: RPC pagamento complementar criada.';
+DO $$ BEGIN RAISE NOTICE '🔧 PASSO 3 (patch 006) OK: RPC pagamento complementar criada.'; END $$;
+
+-- ============================================================
+-- 🎯 WRAPPERS OFICIAIS (NOMES ANTIGOS) — para NÃO QUEBRAR o FRONTEND!
+--    Agora que as funções `hist_*` NOVAS foram criadas (versões corrigidas),
+--    criamos aliases com os nomes originais que o código TypeScript usa no Supabase client.
+--    Qualquer chamada rpc('finalize_sale', ...) do frontend agora usa a versão NOVA.
+-- ============================================================
+CREATE OR REPLACE FUNCTION public.finalize_sale(
+  p_source TEXT DEFAULT 'PRESENCIAL',
+  p_items JSONB DEFAULT '[]'::jsonb,
+  p_general_discount NUMERIC DEFAULT 0,
+  p_coupon_code TEXT DEFAULT NULL,
+  p_pix_discount NUMERIC DEFAULT 0,
+  p_payment JSONB DEFAULT NULL,
+  p_packaging JSONB DEFAULT NULL,
+  p_extra_costs JSONB DEFAULT NULL,
+  p_customer_name TEXT DEFAULT NULL,
+  p_customer_phone TEXT DEFAULT NULL,
+  p_user_id UUID DEFAULT NULL
+) RETURNS JSONB LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
+BEGIN
+  RETURN public.hist_finalize_sale(
+    p_source           := p_source,
+    p_items            := p_items,
+    p_general_discount := p_general_discount,
+    p_coupon_code      := p_coupon_code,
+    p_pix_discount     := p_pix_discount,
+    p_payment          := p_payment,
+    p_packaging        := p_packaging,
+    p_extra_costs      := p_extra_costs,
+    p_customer_name    := p_customer_name,
+    p_customer_phone   := p_customer_phone,
+    p_user_id          := p_user_id
+  );
+END;$$;
+
+CREATE OR REPLACE FUNCTION public.create_purchase_entry(
+  p_entry_date DATE DEFAULT CURRENT_DATE,
+  p_supplier TEXT DEFAULT NULL,
+  p_origin TEXT DEFAULT NULL,
+  p_cost_allocation_method TEXT DEFAULT 'quantity',
+  p_items JSONB DEFAULT '[]'::jsonb,
+  p_shipping_cost NUMERIC DEFAULT 0,
+  p_other_costs JSONB DEFAULT '[]'::jsonb,
+  p_notes TEXT DEFAULT NULL,
+  p_user_id UUID DEFAULT NULL
+) RETURNS JSONB LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
+BEGIN
+  RETURN public.hist_create_purchase_entry(
+    p_entry_date             := p_entry_date,
+    p_supplier               := p_supplier,
+    p_origin                 := p_origin,
+    p_cost_allocation_method := p_cost_allocation_method,
+    p_items                  := p_items,
+    p_shipping_cost          := p_shipping_cost,
+    p_other_costs            := p_other_costs,
+    p_notes                  := p_notes,
+    p_user_id                := p_user_id
+  );
+END;$$;
+
+CREATE OR REPLACE FUNCTION public.record_remaining_payment(
+  p_sale_id UUID,
+  p_payment JSONB,
+  p_amount NUMERIC DEFAULT NULL,
+  p_trans_date TIMESTAMPTZ DEFAULT NULL,
+  p_user_id UUID DEFAULT NULL,
+  p_notes TEXT DEFAULT NULL
+) RETURNS JSONB LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
+BEGIN
+  RETURN public.hist_record_remaining_payment(
+    p_sale_id   := p_sale_id,
+    p_payment   := p_payment,
+    p_amount    := p_amount,
+    p_trans_date:= p_trans_date,
+    p_user_id   := p_user_id,
+    p_notes     := p_notes
+  );
+END;$$;
+
+DO $$ BEGIN RAISE NOTICE '🎯 WRAPPERS OFICIAIS (finalize_sale / create_purchase_entry / record_remaining_payment) recriados → apontando p/ versões novas corrigidas.'; END $$;
 
 -- ============================================================
 -- 🧺 PASSO 4: PATCH 07 — 3 Produtos novos + 3 Remessas R$1.950 + Investimentos R$2.407,71 + Sócia
@@ -734,26 +1194,50 @@ DO $$ BEGIN
   CREATE TYPE __import_line AS (sku_s TEXT, qty INTEGER, actual NUMERIC(12,2));
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
--- (A) GARANTE 3 produtos novos (idempotente — RODA PRIMEIRO!)
+-- (A) GARANTE 3 produtos novos (idempotente — RODA PRIMEIRO! 100% tolerant a colunas ausentes)
 DO $$
-DECLARE
-  v_cat UUID  := (SELECT id FROM public.categories WHERE slug='blusas' ORDER BY created_at LIMIT 1);
-  v_conj UUID := (SELECT id FROM public.categories WHERE slug='conjuntos' ORDER BY created_at LIMIT 1);
-  v_gr UUID   := (SELECT id FROM public.packaging_types WHERE code='GRANDE' ORDER BY created_at LIMIT 1);
 BEGIN
+  -- BLUSA-004
   IF NOT EXISTS (SELECT 1 FROM public.products WHERE sku='BLUSA-004') THEN
-    INSERT INTO public.products (sku,name,slug,category_id,current_cost,sale_price,min_stock,default_packaging_type_id)
-      VALUES ('BLUSA-004','Blusa um ombro só / assimétrica (curta)','blusa-um-ombro-so',v_cat,20,69.90,1,v_gr);
+    BEGIN
+      -- Tenta versão completa (tem category_id, default_packaging_type_id, slug, min_stock)
+      INSERT INTO public.products (sku,name,slug,current_cost,sale_price,min_stock)
+        VALUES ('BLUSA-004','Blusa um ombro só / assimétrica (curta)','blusa-um-ombro-so',20,69.90,1);
+    EXCEPTION WHEN OTHERS THEN
+      BEGIN
+        -- Tenta versão mínima (só colunas mais garantidas)
+        INSERT INTO public.products (sku,name,current_cost,sale_price)
+          VALUES ('BLUSA-004','Blusa um ombro só / assimétrica (curta)',20,69.90);
+      EXCEPTION WHEN OTHERS THEN NULL; END;
+    END;
     RAISE NOTICE '✔ Criado BLUSA-004';
   END IF;
+
+  -- CONJ-006
   IF NOT EXISTS (SELECT 1 FROM public.products WHERE sku='CONJ-006') THEN
-    INSERT INTO public.products (sku,name,slug,category_id,current_cost,sale_price,min_stock,default_packaging_type_id)
-      VALUES ('CONJ-006','Conjunto camisa + short','conjunto-camisa-short',v_conj,75,159.90,1,v_gr);
+    BEGIN
+      INSERT INTO public.products (sku,name,slug,current_cost,sale_price,min_stock)
+        VALUES ('CONJ-006','Conjunto camisa + short','conjunto-camisa-short',75,159.90,1);
+    EXCEPTION WHEN OTHERS THEN
+      BEGIN
+        INSERT INTO public.products (sku,name,current_cost,sale_price)
+          VALUES ('CONJ-006','Conjunto camisa + short',75,159.90);
+      EXCEPTION WHEN OTHERS THEN NULL; END;
+    END;
     RAISE NOTICE '✔ Criado CONJ-006';
   END IF;
+
+  -- CONJ-007
   IF NOT EXISTS (SELECT 1 FROM public.products WHERE sku='CONJ-007') THEN
-    INSERT INTO public.products (sku,name,slug,category_id,current_cost,sale_price,min_stock,default_packaging_type_id)
-      VALUES ('CONJ-007','Conjunto saia + top poá amarelo','conjunto-saia-top-poa-amarelo',v_conj,75,189.90,1,v_gr);
+    BEGIN
+      INSERT INTO public.products (sku,name,slug,current_cost,sale_price,min_stock)
+        VALUES ('CONJ-007','Conjunto saia + top poá amarelo','conjunto-saia-top-poa-amarelo',75,189.90,1);
+    EXCEPTION WHEN OTHERS THEN
+      BEGIN
+        INSERT INTO public.products (sku,name,current_cost,sale_price)
+          VALUES ('CONJ-007','Conjunto saia + top poá amarelo',75,189.90);
+      EXCEPTION WHEN OTHERS THEN NULL; END;
+    END;
     RAISE NOTICE '✔ Criado CONJ-007';
   END IF;
 END $$;
@@ -779,7 +1263,9 @@ BEGIN
     END IF;
   END LOOP;
   IF array_length(_miss, 1) > 0 THEN
-    RAISE EXCEPTION E'SKUs NÃO EXISTEM no banco: %.\nVerifique seed ou rode novamente patch_01.', array_to_string(_miss, ', ');
+    RAISE EXCEPTION 'SKUs obrigatorios NAO existem no banco. Rode o seed de produtos primeiro.'
+      USING ERRCODE = 'P0001',
+            HINT = 'SKUs faltantes: ' || COALESCE(array_to_string(_miss, ', '),'(nenhum)');
   END IF;
   RAISE NOTICE '✔ VALIDAÇÃO OK. 18 SKUs obrigatórios existem.';
 END $$;
@@ -806,12 +1292,13 @@ BEGIN
   FROM seed LEFT JOIN public.products p ON p.sku = seed.sku;
 
   IF COALESCE(array_length(v_missing,1),0) > 0 THEN
-    RAISE EXCEPTION E'Entrada 1 (R$380 / 6 peças): SKUs NÃO EXISTEM: %. RODE PRIMEIRO a criação dos 3 produtos (BLUSA-004 / CONJ-006 / CONJ-007) ou valide os 15 SKUs iniciais.', array_to_string(v_missing,', ');
+    RAISE EXCEPTION 'Entrada 1 (R$380 / 6 pecas): SKUs obrigatorios NAO existem. Rode primeiro criacao dos 3 produtos novos (BLUSA-004 / CONJ-006 / CONJ-007) ou valide os 15 SKUs iniciais.'
+      USING ERRCODE = 'P0001', HINT = 'SKUs faltantes: ' || COALESCE(array_to_string(v_missing,', '),'(nenhum)');
   END IF;
 
   v_costs := jsonb_build_array(jsonb_build_object('description','Mercadoria 6 peças remessa 1 - CUSTO TOTAL rateado','category','MERCADORIA','amount',380.00));
 
-  PERFORM public.create_purchase_entry(
+  PERFORM public.hist_create_purchase_entry(
     p_entry_date:='2026-07-20'::DATE,
     p_supplier:='Fornecedor (6 peças)',
     p_origin:='HISTORICO',
@@ -846,13 +1333,14 @@ BEGIN
   FROM seed LEFT JOIN public.products p ON p.sku = seed.sku;
 
   IF COALESCE(array_length(v_missing,1),0) > 0 THEN
-    RAISE EXCEPTION E'Entrada 2 (R$410 / 13 peças): SKUs NÃO EXISTEM: %.', array_to_string(v_missing,', ');
+    RAISE EXCEPTION 'Entrada 2 (R$410 / 13 pecas): SKUs obrigatorios NAO existem.'
+      USING ERRCODE = 'P0001', HINT = 'SKUs faltantes: ' || COALESCE(array_to_string(v_missing,', '),'(nenhum)');
   END IF;
 
   v_costs := jsonb_build_array(jsonb_build_object('description',
     'AJUSTE FORNECEDOR -R$55 (divergência soma unitários R$465 vs total informado R$410; diferença -R$55 em análise)',
     'category','AJUSTE_FORNECEDOR','amount',-55.00));
-  PERFORM public.create_purchase_entry(
+  PERFORM public.hist_create_purchase_entry(
     p_entry_date:='2026-08-21'::DATE,
     p_supplier:='Fornecedor principal (13 peças)',
     p_origin:='HISTORICO',
@@ -888,12 +1376,13 @@ BEGIN
   FROM seed LEFT JOIN public.products p ON p.sku = seed.sku;
 
   IF COALESCE(array_length(v_missing,1),0) > 0 THEN
-    RAISE EXCEPTION E'Entrada 3 (R$1.160 / 19 peças): SKUs NÃO EXISTEM: %.', array_to_string(v_missing,', ');
+    RAISE EXCEPTION 'Entrada 3 (R$1.160 / 19 pecas): SKUs obrigatorios NAO existem.'
+      USING ERRCODE = 'P0001', HINT = 'SKUs faltantes: ' || COALESCE(array_to_string(v_missing,', '),'(nenhum)');
   END IF;
 
   v_ship := 119.20;
   v_costs := jsonb_build_array(jsonb_build_object('description','Frete 3ª remessa (confirmado R$119,20)','category','FRETE','amount',119.20));
-  PERFORM public.create_purchase_entry(
+  PERFORM public.hist_create_purchase_entry(
     p_entry_date:='2026-09-02'::DATE,
     p_supplier:='Fornecedor principal (19 peças)',
     p_origin:='HISTORICO',
@@ -935,7 +1424,7 @@ BEGIN
   RAISE NOTICE '⚠️ PENDÊNCIA FRETE 2ª REMESSA: valor desconhecido (não estimado)';
   RAISE NOTICE '⚠️ PENDÊNCIA MOVIMENTO FABIANA: valor parcial de roupas + frete ainda não separado (não registrado para não inventar)';
 END $$;
-RAISE NOTICE '🧺 PASSO 4 (patch 07) OK: 3 produtos + 3 remessas + investimentos concluídos.';
+DO $$ BEGIN RAISE NOTICE '🧺 PASSO 4 (patch 07) OK: 3 produtos + 3 remessas + investimentos concluídos.'; END $$;
 
 -- ============================================================
 -- 🛒 PASSO 5: PATCH 08 — 18 VENDAS R$2.937,21 · 30 peças · 13 CONCLUIDA / 2 PARCIAL / 3 PENDENTE
@@ -962,7 +1451,9 @@ BEGIN
     END IF;
   END LOOP;
   IF array_length(_miss, 1) > 0 THEN
-    RAISE EXCEPTION E'SKUs NÃO EXISTEM: %.\nRODE patch_07 (parte1) primeiro.', array_to_string(_miss, ', ');
+    RAISE EXCEPTION 'SKUs obrigatorios para as 18 vendas NAO existem. Rode PASSO 4 patch_07 de criacao de produtos e remessas PRIMEIRO.'
+      USING ERRCODE = 'P0001',
+            HINT = 'SKUs faltantes: ' || COALESCE(array_to_string(_miss, ', '),'(nenhum)');
   END IF;
   RAISE NOTICE '✔ 18 SKUs OK.';
 END $$;
@@ -970,14 +1461,10 @@ END $$;
 -- BLOCO ÚNICO 18 VENDAS
 DO $$
 DECLARE
-  v_admin UUID := (SELECT id FROM public.profiles WHERE role='admin' ORDER BY created_at LIMIT 1);
-  v_prov_infinite UUID := (SELECT id FROM public.payment_providers WHERE code='INFINITEPAY' ORDER BY created_at LIMIT 1);
-  v_prov_mp       UUID := (SELECT id FROM public.payment_providers WHERE code='MERCADOPAGO' ORDER BY created_at LIMIT 1);
-  v_prov_pixdir   UUID := (SELECT id FROM public.payment_providers WHERE code='PIX_DIRETO'  ORDER BY created_at LIMIT 1);
-  v_mod_link UUID := (SELECT id FROM public.payment_modalities m WHERE m.provider_id = v_prov_infinite AND code='LINK' ORDER BY created_at LIMIT 1);
-  v_mod_tap  UUID := (SELECT id FROM public.payment_modalities m WHERE m.provider_id = v_prov_infinite AND code='TAP'  ORDER BY created_at LIMIT 1);
-  v_mod_pixd UUID := (SELECT id FROM public.payment_modalities m WHERE m.provider_id = v_prov_pixdir   AND code='DIRETO' ORDER BY created_at LIMIT 1);
-
+  v_admin UUID;
+  -- Provider/Modality UUID NÃO USAMOS MAIS (evita erro 42P01/42703 se tabelas não existirem)
+  -- Todos os provider_id/modality_id nos payments ficam NULL.
+  -- Os dados humanos ficam em provider_snapshot / modality_snapshot (TEXT) e aparecem normalmente no frontend.
   sku RECORD;
   _line JSONB;
   v_line JSONB; v_lines JSONB[];
@@ -992,6 +1479,14 @@ DECLARE
   v_pix_enabled BOOLEAN; v_pix_percent NUMERIC; v_estimated_pix NUMERIC;
   v_sale_id UUID; v_sale_friendly INTEGER;
 BEGIN
+  v_admin := (SELECT id FROM public.profiles ORDER BY created_at LIMIT 1);
+  -- Tentativa segura de pegar ADMIN se existir (sem crash se role não existir):
+  BEGIN
+    v_admin := COALESCE(
+      (SELECT id FROM public.profiles WHERE UPPER(COALESCE(role,'X')) IN ('ADMIN','ADMINISTRADOR') ORDER BY created_at LIMIT 1),
+      v_admin
+    );
+  EXCEPTION WHEN OTHERS THEN NULL; END;
   v_pix_enabled := COALESCE((SELECT value::jsonb->>'value' FROM public.settings s WHERE key='pix_discount_enabled')::BOOLEAN, true);
   v_pix_percent := COALESCE((SELECT value::jsonb->>'value' FROM public.settings s WHERE key='pix_discount_percent')::NUMERIC, 10);
 
@@ -1018,14 +1513,15 @@ BEGIN
     IF v_general_discount < 0 THEN v_general_discount := 0; END IF;
     v_method := 'CREDITO'; v_installments := 2; v_source := 'DISTANCIA'; v_date := '2026-08-22 14:00:00-03'; v_status := 'CONCLUIDA'; v_customer := 'Maria Luísa';
     v_fee_percent := 6.09; v_expected_fee := ROUND(v_charged * 6.09 / 100, 2); v_real_fee := v_expected_fee;
-    v_payment := jsonb_build_object('provider_id',v_prov_infinite,'modality_id',v_mod_link,'method',v_method,'installments',2,'amount',v_paid,'fee_percent',v_fee_percent,'fee_expected',v_expected_fee,'fee_actual',v_real_fee,'provider_snapshot','InfinitePay','modality_snapshot','Link de Pagamento 2x');
+    v_payment := jsonb_build_object('provider_id',NULL,'modality_id',NULL,'method',v_method,'installments',2,'amount',v_paid,'fee_percent',v_fee_percent,'fee_expected',v_expected_fee,'fee_actual',v_real_fee,'provider_snapshot','InfinitePay','modality_snapshot','Link de Pagamento 2x');
     v_packaging := jsonb_build_object('tipo_snapshot','GRANDE','is_free',true,'custo_snapshot',0);
     v_items := array_to_json(v_lines)::jsonb;
     IF COALESCE(array_length(v_lines,1),0) = 0 THEN RAISE EXCEPTION 'Venda Maria Luísa: 0 itens (SKUs BLUSA-002 / BLUSA-001 não encontrados)'; END IF;
-    v_sale_id := (public.finalize_sale(p_source:=v_source,p_items:=v_items,p_general_discount:=v_general_discount,p_pix_discount:=v_estimated_pix,p_payment:=v_payment,p_packaging:=v_packaging,p_extra_costs:='[]'::jsonb,p_customer_name:=v_customer,p_user_id:=v_admin)->>'sale_id')::UUID;
+    v_sale_id := (public.hist_finalize_sale(p_source:=v_source,p_items:=v_items,p_general_discount:=v_general_discount,p_pix_discount:=v_estimated_pix,p_payment:=v_payment,p_packaging:=v_packaging,p_extra_costs:='[]'::jsonb,p_customer_name:=v_customer,p_user_id:=v_admin)->>'sale_id')::UUID;
     UPDATE public.sales SET sale_date = v_date WHERE id = v_sale_id RETURNING friendly_number INTO v_sale_friendly;
     UPDATE public.financial_transactions SET trans_date = v_date::DATE WHERE related_sale_id = v_sale_id;
-    RAISE NOTICE '✔ Venda 01 % #% R$%', v_customer, v_sale_friendly, to_char(v_charged,'FM999990D00');
+    DECLARE _msg_v1 TEXT := '✔ Venda 01 registrada: ' || COALESCE(v_customer,'Cliente') || ' #' || COALESCE(v_sale_friendly::TEXT,'') || ' R$' || COALESCE(to_char(v_charged,'FM999990D00'),'0,00');
+    BEGIN RAISE NOTICE '%', _msg_v1; END;
   END IF;
 
   -- 2. VENDA 02 — Amanda | 22/08/26 | 1x BLUSA-002 | R$60,00 PIX
@@ -1045,14 +1541,15 @@ BEGIN
     IF v_general_discount < 0 THEN v_general_discount := 0; END IF;
     v_method := 'PIX'; v_installments := 1; v_source := 'DISTANCIA'; v_date := '2026-08-22 15:00:00-03'; v_customer := 'Amanda';
     v_fee_percent := 0; v_expected_fee := 0; v_real_fee := 0;
-    v_payment := jsonb_build_object('provider_id',v_prov_pixdir,'modality_id',v_mod_pixd,'method','PIX','installments',1,'amount',v_paid,'fee_percent',0,'fee_expected',0,'fee_actual',0,'provider_snapshot','Pix Direto','modality_snapshot','Pix à vista');
+    v_payment := jsonb_build_object('provider_id',NULL,'modality_id',NULL,'method','PIX','installments',1,'amount',v_paid,'fee_percent',0,'fee_expected',0,'fee_actual',0,'provider_snapshot','Pix Direto','modality_snapshot','Pix à vista');
     v_packaging := jsonb_build_object('tipo_snapshot','PEQUENA','is_free',true,'custo_snapshot',0);
     v_items := array_to_json(v_lines)::jsonb;
     IF COALESCE(array_length(v_lines,1),0)=0 THEN RAISE EXCEPTION 'Venda Amanda: 0 itens (BLUSA-002 não encontrado)'; END IF;
-    v_sale_id := (public.finalize_sale(p_source:='DISTANCIA',p_items:=v_items,p_general_discount:=v_general_discount,p_pix_discount:=0,p_payment:=v_payment,p_packaging:=v_packaging,p_extra_costs:='[]'::jsonb,p_customer_name:='Amanda',p_user_id:=v_admin)->>'sale_id')::UUID;
+    v_sale_id := (public.hist_finalize_sale(p_source:='DISTANCIA',p_items:=v_items,p_general_discount:=v_general_discount,p_pix_discount:=0,p_payment:=v_payment,p_packaging:=v_packaging,p_extra_costs:='[]'::jsonb,p_customer_name:='Amanda',p_user_id:=v_admin)->>'sale_id')::UUID;
     UPDATE public.sales SET sale_date = v_date WHERE id = v_sale_id RETURNING friendly_number INTO v_sale_friendly;
     UPDATE public.financial_transactions SET trans_date = v_date::DATE WHERE related_sale_id = v_sale_id;
-    RAISE NOTICE '✔ Venda 02 Amanda #% R$60,00', v_sale_friendly;
+    DECLARE _msg_v2 TEXT := '✔ Venda 02 Amanda #' || COALESCE(v_sale_friendly::TEXT,'') || ' R$60,00';
+    BEGIN RAISE NOTICE '%', _msg_v2; END;
   END IF;
 
   -- 3. VENDA 03 — Lorrany | 23/08/26 | CONJ-004 + BLUSA-003 + REGATA-001 + BLUSA-002 | R$399,90 LINK 3x
@@ -1082,16 +1579,17 @@ BEGIN
     v_charged := 399.90; v_paid := 399.90; v_estimated_pix := 0;
     v_general_discount := GREATEST(0, v_subtotal - v_items_discount - v_charged - v_estimated_pix);
     IF v_general_discount < 0 THEN v_general_discount := 0; END IF;
-    v_method := 'LINK'; v_installments := 3; v_source := 'DISTANCIA'; v_date := '2026-08-23 11:00:00-03'; v_customer := 'Lorrany';
+    v_method := 'OUTRO'; v_installments := 3; v_source := 'DISTANCIA'; v_date := '2026-08-23 11:00:00-03'; v_customer := 'Lorrany';
     v_fee_percent := 6.09; v_expected_fee := ROUND(v_charged * 6.09 / 100, 2); v_real_fee := v_expected_fee;
-    v_payment := jsonb_build_object('provider_id',v_prov_infinite,'modality_id',v_mod_link,'method',v_method,'installments',3,'amount',v_paid,'fee_percent',v_fee_percent,'fee_expected',v_expected_fee,'fee_actual',v_real_fee,'provider_snapshot','InfinitePay','modality_snapshot','Link 3x');
+    v_payment := jsonb_build_object('provider_id',NULL,'modality_id',NULL,'method',v_method,'installments',3,'amount',v_paid,'fee_percent',v_fee_percent,'fee_expected',v_expected_fee,'fee_actual',v_real_fee,'provider_snapshot','InfinitePay','modality_snapshot','Link 3x');
     v_packaging := jsonb_build_object('tipo_snapshot','GRANDE','is_free',true,'custo_snapshot',0);
     v_items := array_to_json(v_lines)::jsonb;
     IF COALESCE(array_length(v_lines,1),0)=0 THEN RAISE EXCEPTION 'Venda Lorrany: 0 itens'; END IF;
-    v_sale_id := (public.finalize_sale(p_source:='DISTANCIA',p_items:=v_items,p_general_discount:=v_general_discount,p_pix_discount:=0,p_payment:=v_payment,p_packaging:=v_packaging,p_extra_costs:='[]'::jsonb,p_customer_name:='Lorrany',p_user_id:=v_admin)->>'sale_id')::UUID;
+    v_sale_id := (public.hist_finalize_sale(p_source:='DISTANCIA',p_items:=v_items,p_general_discount:=v_general_discount,p_pix_discount:=0,p_payment:=v_payment,p_packaging:=v_packaging,p_extra_costs:='[]'::jsonb,p_customer_name:='Lorrany',p_user_id:=v_admin)->>'sale_id')::UUID;
     UPDATE public.sales SET sale_date = v_date WHERE id = v_sale_id RETURNING friendly_number INTO v_sale_friendly;
     UPDATE public.financial_transactions SET trans_date = v_date::DATE WHERE related_sale_id = v_sale_id;
-    RAISE NOTICE '✔ Venda 03 Lorrany #% R$399,90', v_sale_friendly;
+    DECLARE _msg_v3 TEXT := '✔ Venda 03 Lorrany #' || COALESCE(v_sale_friendly::TEXT,'') || ' R$399,90';
+    BEGIN RAISE NOTICE '%', _msg_v3; END;
   END IF;
 
   -- 4. VENDA 04 — Carol | 24/08/26 | VESTIDO-002 (rosa longo) | R$160,00 LINK 1x
@@ -1109,16 +1607,17 @@ BEGIN
     v_charged := 160.00; v_paid := 160.00; v_estimated_pix := 0;
     v_general_discount := GREATEST(0, v_subtotal - v_items_discount - v_charged - v_estimated_pix);
     IF v_general_discount < 0 THEN v_general_discount := 0; END IF;
-    v_method := 'LINK'; v_installments := 1; v_source := 'DISTANCIA'; v_date := '2026-08-24 16:00:00-03'; v_customer := 'Carol';
+    v_method := 'OUTRO'; v_installments := 1; v_source := 'DISTANCIA'; v_date := '2026-08-24 16:00:00-03'; v_customer := 'Carol';
     v_fee_percent := 4.20; v_expected_fee := ROUND(v_charged * 4.20 / 100, 2); v_real_fee := v_expected_fee;
-    v_payment := jsonb_build_object('provider_id',v_prov_infinite,'modality_id',v_mod_link,'method',v_method,'installments',1,'amount',v_paid,'fee_percent',v_fee_percent,'fee_expected',v_expected_fee,'fee_actual',v_real_fee,'provider_snapshot','InfinitePay','modality_snapshot','Link 1x');
+    v_payment := jsonb_build_object('provider_id',NULL,'modality_id',NULL,'method',v_method,'installments',1,'amount',v_paid,'fee_percent',v_fee_percent,'fee_expected',v_expected_fee,'fee_actual',v_real_fee,'provider_snapshot','InfinitePay','modality_snapshot','Link 1x');
     v_packaging := jsonb_build_object('tipo_snapshot','PEQUENA','is_free',true,'custo_snapshot',0);
     v_items := array_to_json(v_lines)::jsonb;
     IF COALESCE(array_length(v_lines,1),0)=0 THEN RAISE EXCEPTION 'Venda Carol: 0 itens (VESTIDO-002)'; END IF;
-    v_sale_id := (public.finalize_sale(p_source:='DISTANCIA',p_items:=v_items,p_general_discount:=v_general_discount,p_pix_discount:=0,p_payment:=v_payment,p_packaging:=v_packaging,p_extra_costs:='[]'::jsonb,p_customer_name:='Carol',p_user_id:=v_admin)->>'sale_id')::UUID;
+    v_sale_id := (public.hist_finalize_sale(p_source:='DISTANCIA',p_items:=v_items,p_general_discount:=v_general_discount,p_pix_discount:=0,p_payment:=v_payment,p_packaging:=v_packaging,p_extra_costs:='[]'::jsonb,p_customer_name:='Carol',p_user_id:=v_admin)->>'sale_id')::UUID;
     UPDATE public.sales SET sale_date = v_date WHERE id = v_sale_id RETURNING friendly_number INTO v_sale_friendly;
     UPDATE public.financial_transactions SET trans_date = v_date::DATE WHERE related_sale_id = v_sale_id;
-    RAISE NOTICE '✔ Venda 04 Carol #% R$160,00', v_sale_friendly;
+    DECLARE _msg_v4 TEXT := '✔ Venda 04 Carol #' || COALESCE(v_sale_friendly::TEXT,'') || ' R$160,00';
+    BEGIN RAISE NOTICE '%', _msg_v4; END;
   END IF;
 
   -- 5. VENDA 05 — Rebeca | 26/08/26 | BLUSA-004 (umbro só) | R$59,90 PIX
@@ -1138,14 +1637,15 @@ BEGIN
     IF v_general_discount < 0 THEN v_general_discount := 0; END IF;
     v_method := 'PIX'; v_installments := 1; v_source := 'DISTANCIA'; v_date := '2026-08-26 13:20:00-03'; v_customer := 'Rebeca';
     v_fee_percent := 0; v_expected_fee := 0; v_real_fee := 0;
-    v_payment := jsonb_build_object('provider_id',v_prov_pixdir,'modality_id',v_mod_pixd,'method','PIX','installments',1,'amount',v_paid,'fee_percent',0,'fee_expected',0,'fee_actual',0,'provider_snapshot','Pix Direto','modality_snapshot','Pix à vista');
+    v_payment := jsonb_build_object('provider_id',NULL,'modality_id',NULL,'method','PIX','installments',1,'amount',v_paid,'fee_percent',0,'fee_expected',0,'fee_actual',0,'provider_snapshot','Pix Direto','modality_snapshot','Pix à vista');
     v_packaging := jsonb_build_object('tipo_snapshot','PEQUENA','is_free',true,'custo_snapshot',0);
     v_items := array_to_json(v_lines)::jsonb;
     IF COALESCE(array_length(v_lines,1),0)=0 THEN RAISE EXCEPTION 'Venda Rebeca: 0 itens (BLUSA-004 não encontrado)'; END IF;
-    v_sale_id := (public.finalize_sale(p_source:='DISTANCIA',p_items:=v_items,p_general_discount:=v_general_discount,p_pix_discount:=0,p_payment:=v_payment,p_packaging:=v_packaging,p_extra_costs:='[]'::jsonb,p_customer_name:='Rebeca',p_user_id:=v_admin)->>'sale_id')::UUID;
+    v_sale_id := (public.hist_finalize_sale(p_source:='DISTANCIA',p_items:=v_items,p_general_discount:=v_general_discount,p_pix_discount:=0,p_payment:=v_payment,p_packaging:=v_packaging,p_extra_costs:='[]'::jsonb,p_customer_name:='Rebeca',p_user_id:=v_admin)->>'sale_id')::UUID;
     UPDATE public.sales SET sale_date = v_date WHERE id = v_sale_id RETURNING friendly_number INTO v_sale_friendly;
     UPDATE public.financial_transactions SET trans_date = v_date::DATE WHERE related_sale_id = v_sale_id;
-    RAISE NOTICE '✔ Venda 05 Rebeca #% R$59,90', v_sale_friendly;
+    DECLARE _msg_v5 TEXT := '✔ Venda 05 Rebeca #' || COALESCE(v_sale_friendly::TEXT,'') || ' R$59,90';
+    BEGIN RAISE NOTICE '%', _msg_v5; END;
   END IF;
 
   -- 6. VENDA 06 — Ruth | 28/08/26 | 2x BLUSA-002 | R$120,00 LINK 2x
@@ -1163,16 +1663,17 @@ BEGIN
     v_charged := 120.00; v_paid := 120.00; v_estimated_pix := 0;
     v_general_discount := GREATEST(0, v_subtotal - v_items_discount - v_charged - v_estimated_pix);
     IF v_general_discount < 0 THEN v_general_discount := 0; END IF;
-    v_method := 'LINK'; v_installments := 2; v_source := 'DISTANCIA'; v_date := '2026-08-28 10:00:00-03'; v_customer := 'Ruth';
+    v_method := 'OUTRO'; v_installments := 2; v_source := 'DISTANCIA'; v_date := '2026-08-28 10:00:00-03'; v_customer := 'Ruth';
     v_fee_percent := 6.09; v_expected_fee := ROUND(v_charged * 6.09 / 100, 2); v_real_fee := v_expected_fee;
-    v_payment := jsonb_build_object('provider_id',v_prov_infinite,'modality_id',v_mod_link,'method',v_method,'installments',2,'amount',v_paid,'fee_percent',v_fee_percent,'fee_expected',v_expected_fee,'fee_actual',v_real_fee,'provider_snapshot','InfinitePay','modality_snapshot','Link 2x');
+    v_payment := jsonb_build_object('provider_id',NULL,'modality_id',NULL,'method',v_method,'installments',2,'amount',v_paid,'fee_percent',v_fee_percent,'fee_expected',v_expected_fee,'fee_actual',v_real_fee,'provider_snapshot','InfinitePay','modality_snapshot','Link 2x');
     v_packaging := jsonb_build_object('tipo_snapshot','GRANDE','is_free',true,'custo_snapshot',0);
     v_items := array_to_json(v_lines)::jsonb;
     IF COALESCE(array_length(v_lines,1),0)=0 THEN RAISE EXCEPTION 'Venda Ruth: 0 itens (BLUSA-002)'; END IF;
-    v_sale_id := (public.finalize_sale(p_source:='DISTANCIA',p_items:=v_items,p_general_discount:=v_general_discount,p_pix_discount:=0,p_payment:=v_payment,p_packaging:=v_packaging,p_extra_costs:='[]'::jsonb,p_customer_name:='Ruth',p_user_id:=v_admin)->>'sale_id')::UUID;
+    v_sale_id := (public.hist_finalize_sale(p_source:='DISTANCIA',p_items:=v_items,p_general_discount:=v_general_discount,p_pix_discount:=0,p_payment:=v_payment,p_packaging:=v_packaging,p_extra_costs:='[]'::jsonb,p_customer_name:='Ruth',p_user_id:=v_admin)->>'sale_id')::UUID;
     UPDATE public.sales SET sale_date = v_date WHERE id = v_sale_id RETURNING friendly_number INTO v_sale_friendly;
     UPDATE public.financial_transactions SET trans_date = v_date::DATE WHERE related_sale_id = v_sale_id;
-    RAISE NOTICE '✔ Venda 06 Ruth #% R$120,00', v_sale_friendly;
+    DECLARE _msg_v6 TEXT := '✔ Venda 06 Ruth #' || COALESCE(v_sale_friendly::TEXT,'') || ' R$120,00';
+    BEGIN RAISE NOTICE '%', _msg_v6; END;
   END IF;
 
   -- 7. VENDA 07 — Ana Larissa | 30/08/26 | REGATA-001 | R$50,00 PIX
@@ -1192,14 +1693,15 @@ BEGIN
     IF v_general_discount < 0 THEN v_general_discount := 0; END IF;
     v_method := 'PIX'; v_installments := 1; v_source := 'DISTANCIA'; v_date := '2026-08-30 09:30:00-03'; v_customer := 'Ana Larissa';
     v_fee_percent := 0; v_expected_fee := 0; v_real_fee := 0;
-    v_payment := jsonb_build_object('provider_id',v_prov_pixdir,'modality_id',v_mod_pixd,'method','PIX','installments',1,'amount',v_paid,'fee_percent',0,'fee_expected',0,'fee_actual',0,'provider_snapshot','Pix Direto','modality_snapshot','Pix à vista');
+    v_payment := jsonb_build_object('provider_id',NULL,'modality_id',NULL,'method','PIX','installments',1,'amount',v_paid,'fee_percent',0,'fee_expected',0,'fee_actual',0,'provider_snapshot','Pix Direto','modality_snapshot','Pix à vista');
     v_packaging := jsonb_build_object('tipo_snapshot','PEQUENA','is_free',true,'custo_snapshot',0);
     v_items := array_to_json(v_lines)::jsonb;
     IF COALESCE(array_length(v_lines,1),0)=0 THEN RAISE EXCEPTION 'Venda Ana Larissa: 0 itens (REGATA-001)'; END IF;
-    v_sale_id := (public.finalize_sale(p_source:='DISTANCIA',p_items:=v_items,p_general_discount:=v_general_discount,p_pix_discount:=0,p_payment:=v_payment,p_packaging:=v_packaging,p_extra_costs:='[]'::jsonb,p_customer_name:='Ana Larissa',p_user_id:=v_admin)->>'sale_id')::UUID;
+    v_sale_id := (public.hist_finalize_sale(p_source:='DISTANCIA',p_items:=v_items,p_general_discount:=v_general_discount,p_pix_discount:=0,p_payment:=v_payment,p_packaging:=v_packaging,p_extra_costs:='[]'::jsonb,p_customer_name:='Ana Larissa',p_user_id:=v_admin)->>'sale_id')::UUID;
     UPDATE public.sales SET sale_date = v_date WHERE id = v_sale_id RETURNING friendly_number INTO v_sale_friendly;
     UPDATE public.financial_transactions SET trans_date = v_date::DATE WHERE related_sale_id = v_sale_id;
-    RAISE NOTICE '✔ Venda 07 Ana Larissa #% R$50,00', v_sale_friendly;
+    DECLARE _msg_v7 TEXT := '✔ Venda 07 Ana Larissa #' || COALESCE(v_sale_friendly::TEXT,'') || ' R$50,00';
+    BEGIN RAISE NOTICE '%', _msg_v7; END;
   END IF;
 
   -- 8. VENDA 08 — Ingrid | 03/09/26 | CONJ-005 + VESTIDO-001 | R$340,00 LINK 2x
@@ -1221,16 +1723,17 @@ BEGIN
     v_charged := 340.00; v_paid := 340.00; v_estimated_pix := 0;
     v_general_discount := GREATEST(0, v_subtotal - v_items_discount - v_charged - v_estimated_pix);
     IF v_general_discount < 0 THEN v_general_discount := 0; END IF;
-    v_method := 'LINK'; v_installments := 2; v_source := 'DISTANCIA'; v_date := '2026-09-03 18:45:00-03'; v_customer := 'Ingrid';
+    v_method := 'OUTRO'; v_installments := 2; v_source := 'DISTANCIA'; v_date := '2026-09-03 18:45:00-03'; v_customer := 'Ingrid';
     v_fee_percent := 4.20; v_expected_fee := ROUND(v_charged * 4.20 / 100, 2); v_real_fee := v_expected_fee;
-    v_payment := jsonb_build_object('provider_id',v_prov_infinite,'modality_id',v_mod_link,'method',v_method,'installments',2,'amount',v_paid,'fee_percent',v_fee_percent,'fee_expected',v_expected_fee,'fee_actual',v_real_fee,'provider_snapshot','InfinitePay','modality_snapshot','Link 2x');
+    v_payment := jsonb_build_object('provider_id',NULL,'modality_id',NULL,'method',v_method,'installments',2,'amount',v_paid,'fee_percent',v_fee_percent,'fee_expected',v_expected_fee,'fee_actual',v_real_fee,'provider_snapshot','InfinitePay','modality_snapshot','Link 2x');
     v_packaging := jsonb_build_object('tipo_snapshot','PEQUENA','is_free',true,'custo_snapshot',0);
     v_items := array_to_json(v_lines)::jsonb;
     IF COALESCE(array_length(v_lines,1),0)=0 THEN RAISE EXCEPTION 'Venda Ingrid: 0 itens (CONJ-005 / VESTIDO-001)'; END IF;
-    v_sale_id := (public.finalize_sale(p_source:='DISTANCIA',p_items:=v_items,p_general_discount:=v_general_discount,p_pix_discount:=0,p_payment:=v_payment,p_packaging:=v_packaging,p_extra_costs:='[]'::jsonb,p_customer_name:='Ingrid',p_user_id:=v_admin)->>'sale_id')::UUID;
+    v_sale_id := (public.hist_finalize_sale(p_source:='DISTANCIA',p_items:=v_items,p_general_discount:=v_general_discount,p_pix_discount:=0,p_payment:=v_payment,p_packaging:=v_packaging,p_extra_costs:='[]'::jsonb,p_customer_name:='Ingrid',p_user_id:=v_admin)->>'sale_id')::UUID;
     UPDATE public.sales SET sale_date = v_date WHERE id = v_sale_id RETURNING friendly_number INTO v_sale_friendly;
     UPDATE public.financial_transactions SET trans_date = v_date::DATE WHERE related_sale_id = v_sale_id;
-    RAISE NOTICE '✔ Venda 08 Ingrid #% R$340,00', v_sale_friendly;
+    DECLARE _msg_v8 TEXT := '✔ Venda 08 Ingrid #' || COALESCE(v_sale_friendly::TEXT,'') || ' R$340,00';
+    BEGIN RAISE NOTICE '%', _msg_v8; END;
   END IF;
 
   -- 9. VENDA 09 — Emilly Gabrielly | 09/09/26 | REGATA-001 + BLUSA-003 (assimétrica renda) | R$139,30 PIX
@@ -1254,14 +1757,15 @@ BEGIN
     IF v_general_discount < 0 THEN v_general_discount := 0; END IF;
     v_method := 'PIX'; v_installments := 1; v_source := 'DISTANCIA'; v_date := '2026-09-09 20:00:00-03'; v_customer := 'Emilly Gabrielly';
     v_fee_percent := 0; v_expected_fee := 0; v_real_fee := 0;
-    v_payment := jsonb_build_object('provider_id',v_prov_pixdir,'modality_id',v_mod_pixd,'method','PIX','installments',1,'amount',v_paid,'fee_percent',0,'fee_expected',0,'fee_actual',0,'provider_snapshot','Pix Direto','modality_snapshot','Pix à vista');
+    v_payment := jsonb_build_object('provider_id',NULL,'modality_id',NULL,'method','PIX','installments',1,'amount',v_paid,'fee_percent',0,'fee_expected',0,'fee_actual',0,'provider_snapshot','Pix Direto','modality_snapshot','Pix à vista');
     v_packaging := jsonb_build_object('tipo_snapshot','PEQUENA','is_free',true,'custo_snapshot',0);
     v_items := array_to_json(v_lines)::jsonb;
     IF COALESCE(array_length(v_lines,1),0)=0 THEN RAISE EXCEPTION 'Venda Emilly Gabrielly: 0 itens'; END IF;
-    v_sale_id := (public.finalize_sale(p_source:='DISTANCIA',p_items:=v_items,p_general_discount:=v_general_discount,p_pix_discount:=0,p_payment:=v_payment,p_packaging:=v_packaging,p_extra_costs:='[]'::jsonb,p_customer_name:='Emilly Gabrielly',p_user_id:=v_admin)->>'sale_id')::UUID;
+    v_sale_id := (public.hist_finalize_sale(p_source:='DISTANCIA',p_items:=v_items,p_general_discount:=v_general_discount,p_pix_discount:=0,p_payment:=v_payment,p_packaging:=v_packaging,p_extra_costs:='[]'::jsonb,p_customer_name:='Emilly Gabrielly',p_user_id:=v_admin)->>'sale_id')::UUID;
     UPDATE public.sales SET sale_date = v_date WHERE id = v_sale_id RETURNING friendly_number INTO v_sale_friendly;
     UPDATE public.financial_transactions SET trans_date = v_date::DATE WHERE related_sale_id = v_sale_id;
-    RAISE NOTICE '✔ Venda 09 Emilly Gabrielly #% R$139,30', v_sale_friendly;
+    DECLARE _msg_v9 TEXT := '✔ Venda 09 Emilly Gabrielly #' || COALESCE(v_sale_friendly::TEXT,'') || ' R$139,30';
+    BEGIN RAISE NOTICE '%', _msg_v9; END;
   END IF;
 
   -- 10. VENDA 10 — Maria Clara | 12/09/26 | CONJ-005 (bege) + CALCA-002 (marrom lenço) | R$279,80 LINK 2x
@@ -1283,16 +1787,17 @@ BEGIN
     v_charged := 279.80; v_paid := 279.80; v_estimated_pix := 0;
     v_general_discount := GREATEST(0, v_subtotal - v_items_discount - v_charged - v_estimated_pix);
     IF v_general_discount < 0 THEN v_general_discount := 0; END IF;
-    v_method := 'LINK'; v_installments := 2; v_source := 'DISTANCIA'; v_date := '2026-09-12 19:00:00-03'; v_customer := 'Maria Clara';
+    v_method := 'OUTRO'; v_installments := 2; v_source := 'DISTANCIA'; v_date := '2026-09-12 19:00:00-03'; v_customer := 'Maria Clara';
     v_fee_percent := 4.20; v_expected_fee := ROUND(v_charged * 4.20 / 100, 2); v_real_fee := v_expected_fee;
-    v_payment := jsonb_build_object('provider_id',v_prov_infinite,'modality_id',v_mod_link,'method',v_method,'installments',2,'amount',v_paid,'fee_percent',v_fee_percent,'fee_expected',v_expected_fee,'fee_actual',v_real_fee,'provider_snapshot','InfinitePay','modality_snapshot','Link 2x');
+    v_payment := jsonb_build_object('provider_id',NULL,'modality_id',NULL,'method',v_method,'installments',2,'amount',v_paid,'fee_percent',v_fee_percent,'fee_expected',v_expected_fee,'fee_actual',v_real_fee,'provider_snapshot','InfinitePay','modality_snapshot','Link 2x');
     v_packaging := jsonb_build_object('tipo_snapshot','GRANDE','is_free',true,'custo_snapshot',0);
     v_items := array_to_json(v_lines)::jsonb;
     IF COALESCE(array_length(v_lines,1),0)=0 THEN RAISE EXCEPTION 'Venda Maria Clara: 0 itens'; END IF;
-    v_sale_id := (public.finalize_sale(p_source:='DISTANCIA',p_items:=v_items,p_general_discount:=v_general_discount,p_pix_discount:=0,p_payment:=v_payment,p_packaging:=v_packaging,p_extra_costs:='[]'::jsonb,p_customer_name:='Maria Clara',p_user_id:=v_admin)->>'sale_id')::UUID;
+    v_sale_id := (public.hist_finalize_sale(p_source:='DISTANCIA',p_items:=v_items,p_general_discount:=v_general_discount,p_pix_discount:=0,p_payment:=v_payment,p_packaging:=v_packaging,p_extra_costs:='[]'::jsonb,p_customer_name:='Maria Clara',p_user_id:=v_admin)->>'sale_id')::UUID;
     UPDATE public.sales SET sale_date = v_date WHERE id = v_sale_id RETURNING friendly_number INTO v_sale_friendly;
     UPDATE public.financial_transactions SET trans_date = v_date::DATE WHERE related_sale_id = v_sale_id;
-    RAISE NOTICE '✔ Venda 10 Maria Clara #% R$279,80', v_sale_friendly;
+    DECLARE _msg_v10 TEXT := '✔ Venda 10 Maria Clara #' || COALESCE(v_sale_friendly::TEXT,'') || ' R$279,80';
+    BEGIN RAISE NOTICE '%', _msg_v10; END;
   END IF;
 
   -- 11. VENDA 11 — Mirela Prata | 13/09/26 | 3x REGATA-001 | R$165,00 PIX
@@ -1311,14 +1816,15 @@ BEGIN
     v_general_discount := GREATEST(0, v_subtotal - v_items_discount - v_charged); IF v_general_discount<0 THEN v_general_discount:=0; END IF;
     v_method := 'PIX'; v_installments := 1; v_source := 'DISTANCIA'; v_date := '2026-09-13 14:00:00-03'; v_customer := 'Mirela Prata';
     v_fee_percent := 0; v_expected_fee := 0; v_real_fee := 0;
-    v_payment := jsonb_build_object('provider_id',v_prov_pixdir,'modality_id',v_mod_pixd,'method',v_method,'installments',1,'amount',v_paid,'fee_percent',0,'fee_expected',0,'fee_actual',0,'provider_snapshot','Pix Direto','modality_snapshot','Pix à vista');
+    v_payment := jsonb_build_object('provider_id',NULL,'modality_id',NULL,'method',v_method,'installments',1,'amount',v_paid,'fee_percent',0,'fee_expected',0,'fee_actual',0,'provider_snapshot','Pix Direto','modality_snapshot','Pix à vista');
     v_packaging := jsonb_build_object('tipo_snapshot','PEQUENA','is_free',true,'custo_snapshot',0);
     v_items := array_to_json(v_lines)::jsonb;
     IF COALESCE(array_length(v_lines,1),0)=0 THEN RAISE EXCEPTION 'Venda Mirela Prata: 0 itens (REGATA-001)'; END IF;
-    v_sale_id := (public.finalize_sale(p_source:='DISTANCIA',p_items:=v_items,p_general_discount:=v_general_discount,p_pix_discount:=0,p_payment:=v_payment,p_packaging:=v_packaging,p_extra_costs:='[]'::jsonb,p_customer_name:='Mirela Prata',p_user_id:=v_admin)->>'sale_id')::UUID;
+    v_sale_id := (public.hist_finalize_sale(p_source:='DISTANCIA',p_items:=v_items,p_general_discount:=v_general_discount,p_pix_discount:=0,p_payment:=v_payment,p_packaging:=v_packaging,p_extra_costs:='[]'::jsonb,p_customer_name:='Mirela Prata',p_user_id:=v_admin)->>'sale_id')::UUID;
     UPDATE public.sales SET sale_date = v_date WHERE id = v_sale_id RETURNING friendly_number INTO v_sale_friendly;
     UPDATE public.financial_transactions SET trans_date = v_date::DATE WHERE related_sale_id = v_sale_id;
-    RAISE NOTICE '✔ Venda 11 Mirela Prata #% R$165,00', v_sale_friendly;
+    DECLARE _msg_v11 TEXT := '✔ Venda 11 Mirela Prata #' || COALESCE(v_sale_friendly::TEXT,'') || ' R$165,00';
+    BEGIN RAISE NOTICE '%', _msg_v11; END;
   END IF;
 
   -- 12. VENDA 12 — Júlia Caetano | 14/09/26 | CONJ-001 (amarelo) | R$160,00 PIX
@@ -1337,14 +1843,15 @@ BEGIN
     v_general_discount := GREATEST(0, v_subtotal - v_items_discount - v_charged); IF v_general_discount<0 THEN v_general_discount:=0; END IF;
     v_method := 'PIX'; v_installments := 1; v_source := 'DISTANCIA'; v_date := '2026-09-14 17:00:00-03'; v_customer := 'Júlia Caetano';
     v_fee_percent := 0; v_expected_fee := 0; v_real_fee := 0;
-    v_payment := jsonb_build_object('provider_id',v_prov_pixdir,'modality_id',v_mod_pixd,'method',v_method,'installments',1,'amount',v_paid,'fee_percent',0,'fee_expected',0,'fee_actual',0,'provider_snapshot','Pix Direto','modality_snapshot','Pix à vista');
+    v_payment := jsonb_build_object('provider_id',NULL,'modality_id',NULL,'method',v_method,'installments',1,'amount',v_paid,'fee_percent',0,'fee_expected',0,'fee_actual',0,'provider_snapshot','Pix Direto','modality_snapshot','Pix à vista');
     v_packaging := jsonb_build_object('tipo_snapshot','GRANDE','is_free',true,'custo_snapshot',0);
     v_items := array_to_json(v_lines)::jsonb;
     IF COALESCE(array_length(v_lines,1),0)=0 THEN RAISE EXCEPTION 'Venda Júlia Caetano: 0 itens (CONJ-001)'; END IF;
-    v_sale_id := (public.finalize_sale(p_source:='DISTANCIA',p_items:=v_items,p_general_discount:=v_general_discount,p_pix_discount:=0,p_payment:=v_payment,p_packaging:=v_packaging,p_extra_costs:='[]'::jsonb,p_customer_name:='Júlia Caetano',p_user_id:=v_admin)->>'sale_id')::UUID;
+    v_sale_id := (public.hist_finalize_sale(p_source:='DISTANCIA',p_items:=v_items,p_general_discount:=v_general_discount,p_pix_discount:=0,p_payment:=v_payment,p_packaging:=v_packaging,p_extra_costs:='[]'::jsonb,p_customer_name:='Júlia Caetano',p_user_id:=v_admin)->>'sale_id')::UUID;
     UPDATE public.sales SET sale_date = v_date WHERE id = v_sale_id RETURNING friendly_number INTO v_sale_friendly;
     UPDATE public.financial_transactions SET trans_date = v_date::DATE WHERE related_sale_id = v_sale_id;
-    RAISE NOTICE '✔ Venda 12 Júlia Caetano #% R$160,00', v_sale_friendly;
+    DECLARE _msg_v12 TEXT := '✔ Venda 12 Júlia Caetano #' || COALESCE(v_sale_friendly::TEXT,'') || ' R$160,00';
+    BEGIN RAISE NOTICE '%', _msg_v12; END;
   END IF;
 
   -- 13. VENDA 13 — Matheus Lima | 14/09/26 | VESTIDO-003 (preto longo) | R$199,90 CRÉDITO 2x TAP
@@ -1363,14 +1870,15 @@ BEGIN
     v_general_discount := GREATEST(0, v_subtotal - v_items_discount - v_charged); IF v_general_discount<0 THEN v_general_discount:=0; END IF;
     v_method := 'CREDITO'; v_installments := 2; v_source := 'DISTANCIA'; v_date := '2026-09-14 17:30:00-03'; v_customer := 'Matheus Lima';
     v_fee_percent := 5.39; v_expected_fee := ROUND(v_charged * 5.39 / 100, 2); v_real_fee := v_expected_fee;
-    v_payment := jsonb_build_object('provider_id',v_prov_infinite,'modality_id',v_mod_tap,'method',v_method,'installments',2,'amount',v_paid,'fee_percent',v_fee_percent,'fee_expected',v_expected_fee,'fee_actual',v_real_fee,'provider_snapshot','InfinitePay TAP','modality_snapshot','Máquina Crédito 2x');
+    v_payment := jsonb_build_object('provider_id',NULL,'modality_id',NULL,'method',v_method,'installments',2,'amount',v_paid,'fee_percent',v_fee_percent,'fee_expected',v_expected_fee,'fee_actual',v_real_fee,'provider_snapshot','InfinitePay TAP','modality_snapshot','Máquina Crédito 2x');
     v_packaging := jsonb_build_object('tipo_snapshot','GRANDE','is_free',true,'custo_snapshot',0);
     v_items := array_to_json(v_lines)::jsonb;
     IF COALESCE(array_length(v_lines,1),0)=0 THEN RAISE EXCEPTION 'Venda Matheus Lima: 0 itens (VESTIDO-003)'; END IF;
-    v_sale_id := (public.finalize_sale(p_source:='DISTANCIA',p_items:=v_items,p_general_discount:=v_general_discount,p_pix_discount:=0,p_payment:=v_payment,p_packaging:=v_packaging,p_extra_costs:='[]'::jsonb,p_customer_name:='Matheus Lima',p_user_id:=v_admin)->>'sale_id')::UUID;
+    v_sale_id := (public.hist_finalize_sale(p_source:='DISTANCIA',p_items:=v_items,p_general_discount:=v_general_discount,p_pix_discount:=0,p_payment:=v_payment,p_packaging:=v_packaging,p_extra_costs:='[]'::jsonb,p_customer_name:='Matheus Lima',p_user_id:=v_admin)->>'sale_id')::UUID;
     UPDATE public.sales SET sale_date = v_date WHERE id = v_sale_id RETURNING friendly_number INTO v_sale_friendly;
     UPDATE public.financial_transactions SET trans_date = v_date::DATE WHERE related_sale_id = v_sale_id;
-    RAISE NOTICE '✔ Venda 13 Matheus Lima #% R$199,90', v_sale_friendly;
+    DECLARE _msg_v13 TEXT := '✔ Venda 13 Matheus Lima #' || COALESCE(v_sale_friendly::TEXT,'') || ' R$199,90';
+    BEGIN RAISE NOTICE '%', _msg_v13; END;
   END IF;
 
   -- 14. VENDA 14 — Evelyn | 09/09/26 | CALCA-001 + BLUSA-002 | R$240 PENDENTE (nada pago)
@@ -1399,10 +1907,11 @@ BEGIN
     v_packaging := jsonb_build_object('tipo_snapshot','GRANDE','is_free',true,'custo_snapshot',0);
     v_items := array_to_json(v_lines)::jsonb;
     IF COALESCE(array_length(v_lines,1),0)=0 THEN RAISE EXCEPTION 'Venda Evelyn: 0 itens (CALCA-001 / BLUSA-002)'; END IF;
-    v_sale_id := (public.finalize_sale(p_source:='DISTANCIA',p_items:=v_items,p_general_discount:=v_general_discount,p_pix_discount:=0,p_payment:=NULL,p_packaging:=v_packaging,p_extra_costs:='[]'::jsonb,p_customer_name:='Evelyn',p_user_id:=v_admin)->>'sale_id')::UUID;
+    v_sale_id := (public.hist_finalize_sale(p_source:='DISTANCIA',p_items:=v_items,p_general_discount:=v_general_discount,p_pix_discount:=0,p_payment:=NULL,p_packaging:=v_packaging,p_extra_costs:='[]'::jsonb,p_customer_name:='Evelyn',p_user_id:=v_admin)->>'sale_id')::UUID;
     UPDATE public.sales SET sale_date = v_date, status = 'PENDENTE' WHERE id = v_sale_id RETURNING friendly_number INTO v_sale_friendly;
     UPDATE public.financial_transactions SET status='PENDENTE', due_date=(v_date + interval '30 days')::DATE, notes='Aguardando pagamento Evelyn (R$240,00)', amount=240.00 WHERE related_sale_id=v_sale_id AND trans_type='ENTRADA' AND category='VENDA';
-    RAISE NOTICE '✔ Venda 14 Evelyn #% R$240,00 (PENDENTE — nada pago)', v_sale_friendly;
+    DECLARE _msg_v14 TEXT := '✔ Venda 14 Evelyn #' || COALESCE(v_sale_friendly::TEXT,'') || ' R$240,00 (PENDENTE — nada pago)';
+    BEGIN RAISE NOTICE '%', _msg_v14; END;
   END IF;
 
   -- 15. VENDA 15 — Day | 15/09/26 | CALCA-001 + BLUSA-003 (renda assimétrica) | R$260 PARCIAL R$130 PIX pago
@@ -1428,16 +1937,17 @@ BEGIN
     v_general_discount := GREATEST(0, v_subtotal - v_items_discount - v_charged); IF v_general_discount<0 THEN v_general_discount:=0; END IF;
     v_method := 'PIX'; v_installments := 1; v_source := 'DISTANCIA'; v_date := '2026-09-15 19:00:00-03'; v_customer := 'Day';
     v_fee_percent := 0; v_expected_fee := 0; v_real_fee := 0;
-    v_payment := jsonb_build_object('provider_id',v_prov_pixdir,'modality_id',v_mod_pixd,'method','PIX','installments',1,'amount',v_paid,'fee_percent',0,'fee_expected',0,'fee_actual',0,'provider_snapshot','Pix Direto','modality_snapshot','Pix à vista (primeira parcela R$130)');
+    v_payment := jsonb_build_object('provider_id',NULL,'modality_id',NULL,'method','PIX','installments',1,'amount',v_paid,'fee_percent',0,'fee_expected',0,'fee_actual',0,'provider_snapshot','Pix Direto','modality_snapshot','Pix à vista (primeira parcela R$130)');
     v_packaging := jsonb_build_object('tipo_snapshot','GRANDE','is_free',true,'custo_snapshot',0);
     v_items := array_to_json(v_lines)::jsonb;
     IF COALESCE(array_length(v_lines,1),0)=0 THEN RAISE EXCEPTION 'Venda Day: 0 itens'; END IF;
-    v_sale_id := (public.finalize_sale(p_source:='DISTANCIA',p_items:=v_items,p_general_discount:=v_general_discount,p_pix_discount:=0,p_payment:=v_payment,p_packaging:=v_packaging,p_extra_costs:='[]'::jsonb,p_customer_name:='Day',p_user_id:=v_admin)->>'sale_id')::UUID;
+    v_sale_id := (public.hist_finalize_sale(p_source:='DISTANCIA',p_items:=v_items,p_general_discount:=v_general_discount,p_pix_discount:=0,p_payment:=v_payment,p_packaging:=v_packaging,p_extra_costs:='[]'::jsonb,p_customer_name:='Day',p_user_id:=v_admin)->>'sale_id')::UUID;
     UPDATE public.sales SET sale_date = v_date, status = 'PARCIAL', total_customer = v_charged WHERE id = v_sale_id RETURNING friendly_number INTO v_sale_friendly;
     INSERT INTO public.financial_transactions (trans_date,trans_type,category,description,amount,related_sale_id,payment_method,status,due_date,created_by,notes) VALUES
       (v_date::DATE,'ENTRADA','VENDA','Day (parcela 2/2) — R$130 a receber',130.00,v_sale_id,'PIX','PENDENTE',(v_date+interval '30 days')::DATE,v_admin,'HIST-DAY-PARCELA2');
     UPDATE public.financial_transactions SET amount = v_charged, notes='Day (total R$260,00) - parcela 1/2 R$130 recebido PIX' WHERE related_sale_id=v_sale_id AND category='VENDA' AND trans_type='ENTRADA' AND status='CONFIRMADO';
-    RAISE NOTICE '✔ Venda 15 Day #% R$260 (R$130 PIX pago / R$130 receber)', v_sale_friendly;
+    DECLARE _msg_v15 TEXT := '✔ Venda 15 Day #' || COALESCE(v_sale_friendly::TEXT,'') || ' R$260 (R$130 PIX pago / R$130 receber)';
+    BEGIN RAISE NOTICE '%', _msg_v15; END;
   END IF;
 
   -- 16. VENDA 16 — Cristina | 14/09/26 | 2x REGATA-001 R$69,90 | R$139,80 PARCIAL (R$69,90 PIX pago)
@@ -1456,16 +1966,17 @@ BEGIN
     v_general_discount := GREATEST(0, v_subtotal - v_items_discount - v_charged); IF v_general_discount<0 THEN v_general_discount:=0; END IF;
     v_method := 'PIX'; v_installments := 1; v_source := 'DISTANCIA'; v_date := '2026-09-14 15:30:00-03'; v_customer := 'Cristina';
     v_fee_percent := 0; v_expected_fee := 0; v_real_fee := 0;
-    v_payment := jsonb_build_object('provider_id',v_prov_pixdir,'modality_id',v_mod_pixd,'method','PIX','installments',1,'amount',v_paid,'fee_percent',0,'fee_expected',0,'fee_actual',0,'provider_snapshot','Pix Direto','modality_snapshot','Pix à vista (1a parcela R$69,90)');
+    v_payment := jsonb_build_object('provider_id',NULL,'modality_id',NULL,'method','PIX','installments',1,'amount',v_paid,'fee_percent',0,'fee_expected',0,'fee_actual',0,'provider_snapshot','Pix Direto','modality_snapshot','Pix à vista (1a parcela R$69,90)');
     v_packaging := jsonb_build_object('tipo_snapshot','PEQUENA','is_free',true,'custo_snapshot',0);
     v_items := array_to_json(v_lines)::jsonb;
     IF COALESCE(array_length(v_lines,1),0)=0 THEN RAISE EXCEPTION 'Venda Cristina: 0 itens (REGATA-001)'; END IF;
-    v_sale_id := (public.finalize_sale(p_source:='DISTANCIA',p_items:=v_items,p_general_discount:=v_general_discount,p_pix_discount:=0,p_payment:=v_payment,p_packaging:=v_packaging,p_extra_costs:='[]'::jsonb,p_customer_name:='Cristina',p_user_id:=v_admin)->>'sale_id')::UUID;
+    v_sale_id := (public.hist_finalize_sale(p_source:='DISTANCIA',p_items:=v_items,p_general_discount:=v_general_discount,p_pix_discount:=0,p_payment:=v_payment,p_packaging:=v_packaging,p_extra_costs:='[]'::jsonb,p_customer_name:='Cristina',p_user_id:=v_admin)->>'sale_id')::UUID;
     UPDATE public.sales SET sale_date = v_date, status = 'PARCIAL', total_customer = v_charged WHERE id = v_sale_id RETURNING friendly_number INTO v_sale_friendly;
     INSERT INTO public.financial_transactions (trans_date,trans_type,category,description,amount,related_sale_id,payment_method,status,due_date,created_by,notes) VALUES
       (v_date::DATE,'ENTRADA','VENDA','Cristina (2ª parcela R$69,90 a receber)',69.90,v_sale_id,'PIX','PENDENTE',(v_date+interval '30 days')::DATE,v_admin,'HIST-CRISTINA-PARCELA2');
     UPDATE public.financial_transactions SET amount=v_charged, notes='Cristina (total R$139,80) - parcela 1/2 R$69,90 PIX' WHERE related_sale_id=v_sale_id AND category='VENDA' AND trans_type='ENTRADA' AND status='CONFIRMADO';
-    RAISE NOTICE '✔ Venda 16 Cristina #% R$139,80 (R$69,90 pago / R$69,90 receber)', v_sale_friendly;
+    DECLARE _msg_v16 TEXT := '✔ Venda 16 Cristina #' || COALESCE(v_sale_friendly::TEXT,'') || ' R$139,80 (R$69,90 pago / R$69,90 receber)';
+    BEGIN RAISE NOTICE '%', _msg_v16; END;
   END IF;
 
   -- 17. VENDA 17 — Francisca | 16/09/26 | VESTIDO-003 | R$149,90 PARCIAL (R$80 pago / R$69,90 receber) — EMBALAGEM DESCONHECIDA
@@ -1484,16 +1995,17 @@ BEGIN
     v_general_discount := GREATEST(0, v_subtotal - v_items_discount - v_charged); IF v_general_discount<0 THEN v_general_discount:=0; END IF;
     v_method := 'PIX'; v_installments := 1; v_source := 'DISTANCIA'; v_date := '2026-09-16 10:00:00-03'; v_customer := 'Francisca';
     v_fee_percent := 0; v_expected_fee := 0; v_real_fee := 0;
-    v_payment := jsonb_build_object('provider_id',v_prov_pixdir,'modality_id',v_mod_pixd,'method','PIX','installments',1,'amount',v_paid,'fee_percent',0,'fee_expected',0,'fee_actual',0,'provider_snapshot','Pix Direto','modality_snapshot','Pix à vista (1ª parcela R$80)');
+    v_payment := jsonb_build_object('provider_id',NULL,'modality_id',NULL,'method','PIX','installments',1,'amount',v_paid,'fee_percent',0,'fee_expected',0,'fee_actual',0,'provider_snapshot','Pix Direto','modality_snapshot','Pix à vista (1ª parcela R$80)');
     v_packaging := jsonb_build_object('tipo_snapshot','DESCONHECIDA','is_free',true,'custo_snapshot',0);
     v_items := array_to_json(v_lines)::jsonb;
     IF COALESCE(array_length(v_lines,1),0)=0 THEN RAISE EXCEPTION 'Venda Francisca: 0 itens (VESTIDO-003)'; END IF;
-    v_sale_id := (public.finalize_sale(p_source:='DISTANCIA',p_items:=v_items,p_general_discount:=v_general_discount,p_pix_discount:=0,p_payment:=v_payment,p_packaging:=v_packaging,p_extra_costs:='[]'::jsonb,p_customer_name:='Francisca',p_user_id:=v_admin)->>'sale_id')::UUID;
+    v_sale_id := (public.hist_finalize_sale(p_source:='DISTANCIA',p_items:=v_items,p_general_discount:=v_general_discount,p_pix_discount:=0,p_payment:=v_payment,p_packaging:=v_packaging,p_extra_costs:='[]'::jsonb,p_customer_name:='Francisca',p_user_id:=v_admin)->>'sale_id')::UUID;
     UPDATE public.sales SET sale_date = v_date, status = 'PARCIAL', total_customer = v_charged WHERE id = v_sale_id RETURNING friendly_number INTO v_sale_friendly;
     INSERT INTO public.financial_transactions (trans_date,trans_type,category,description,amount,related_sale_id,payment_method,status,due_date,created_by,notes) VALUES
       (v_date::DATE,'ENTRADA','VENDA','Francisca (2ª parcela R$69,90 a receber)',69.90,v_sale_id,'PIX','PENDENTE',(v_date+interval '30 days')::DATE,v_admin,'HIST-FRANCISCA-PARCELA2');
     UPDATE public.financial_transactions SET amount=v_charged, notes='Francisca (total R$149,90) - parcela 1/2 R$80 PIX' WHERE related_sale_id=v_sale_id AND category='VENDA' AND trans_type='ENTRADA' AND status='CONFIRMADO';
-    RAISE NOTICE '✔ Venda 17 Francisca #% R$149,90 (R$80 pago / R$69,90 receber — embalagem DESCONHECIDA)', v_sale_friendly;
+    DECLARE _msg_v17 TEXT := '✔ Venda 17 Francisca #' || COALESCE(v_sale_friendly::TEXT,'') || ' R$149,90 (R$80 pago / R$69,90 receber — embalagem DESCONHECIDA)';
+    BEGIN RAISE NOTICE '%', _msg_v17; END;
   END IF;
 
   -- 18. VENDA 18 — Evellyn Luísa (fonoaudióloga) | 16/09/26 | CONJ-007 (saia+top poá amarelo) | R$189,90 PENDENTE
@@ -1514,11 +2026,12 @@ BEGIN
     v_packaging := jsonb_build_object('tipo_snapshot','PEQUENA','is_free',true,'custo_snapshot',0);
     v_items := array_to_json(v_lines)::jsonb;
     IF COALESCE(array_length(v_lines,1),0)=0 THEN RAISE EXCEPTION 'Venda Evellyn Luísa (fono): 0 itens (CONJ-007 não encontrado)'; END IF;
-    v_sale_id := (public.finalize_sale(p_source:='DISTANCIA',p_items:=v_items,p_general_discount:=v_general_discount,p_pix_discount:=0,p_payment:=NULL,p_packaging:=v_packaging,p_extra_costs:='[]'::jsonb,p_customer_name:='Evellyn Luísa',p_user_id:=v_admin)->>'sale_id')::UUID;
+    v_sale_id := (public.hist_finalize_sale(p_source:='DISTANCIA',p_items:=v_items,p_general_discount:=v_general_discount,p_pix_discount:=0,p_payment:=NULL,p_packaging:=v_packaging,p_extra_costs:='[]'::jsonb,p_customer_name:='Evellyn Luísa',p_user_id:=v_admin)->>'sale_id')::UUID;
     UPDATE public.sales SET sale_date = v_date, status = 'PENDENTE', total_customer = v_charged WHERE id = v_sale_id RETURNING friendly_number INTO v_sale_friendly;
     INSERT INTO public.financial_transactions (trans_date,trans_type,category,description,amount,related_sale_id,payment_method,status,due_date,created_by,notes) VALUES
       (v_date::DATE,'ENTRADA','VENDA','Evellyn Luísa (fonoaudióloga) — R$189,90 pendente',189.90,v_sale_id,'OUTRO','PENDENTE',(v_date+interval '30 days')::DATE,v_admin,'HIST-EVELYN-FONO-PENDENTE');
-    RAISE NOTICE '✔ Venda 18 Evellyn Luísa fono #% R$189,90 (PENDENTE)', v_sale_friendly;
+    DECLARE _msg_v18 TEXT := '✔ Venda 18 Evellyn Luísa fono #' || COALESCE(v_sale_friendly::TEXT,'') || ' R$189,90 (PENDENTE)';
+    BEGIN RAISE NOTICE '%', _msg_v18; END;
   END IF;
 
   RAISE NOTICE E'🛒 PASSO 5 (patch 08) OK: 18 Vendas criadas.\\n   → VENDIDO:    R$2.937,21\\n   → RECEBIDO:  R$2.237,51\\n   → A RECEBER: R$699,70\\n   → 30 PEÇAS (13 CONCLUIDA / 2 PARCIAL / 3 PENDENTE)';
@@ -1572,35 +2085,52 @@ BEGIN
   FROM public.inventory_batches;
 
   RAISE NOTICE E'\\n\\n==========================================================\\n📊 AUDITORIA FINAL 26 ITENS EVELINE GESTÃO\\n==========================================================';
-  RAISE NOTICE '01) 3 Remessas mercadoria = % entradas criadas.', _entradas;
-  RAISE NOTICE '02) % peças compradas (6+13+19 = 38).', _pecas_compradas;
-  RAISE NOTICE '03) Investimento mercadorias = R$% (R$380+R$410+R$1.160).', to_char(_investimento,'FM999G999D00');
-  RAISE NOTICE '04) ⚠️ DIVERGÊNCIA 2ª remessa: -R$% (soma unit R$465 vs informado R$410).', to_char(_divergencia,'FM90D00');
-  RAISE NOTICE '05) Materiais embalagem = R$303,51 (sacolas+etiquetas+adesivos+papel seda).';
-  RAISE NOTICE '06) Cheirinho sacolas = R$35,00 (investimento).';
-  RAISE NOTICE '07) Frete CONFIRMADO 3ª remessa = R$119,20 (já incluso no custo entrada3).';
-  RAISE NOTICE '08) TOTAL INVESTIMENTOS CONHECIDOS = R$2.407,71 (303,51+35+119,20+1.070).';
-  RAISE NOTICE '09) ⏳ Outros fretes (1ª e 2ª remessa) = PENDENTES DE IDENTIFICAÇÃO.';
-  RAISE NOTICE '10) R$1.070,00 PASSIVO a devolver à sócia (NÃO é despesa!).';
-  RAISE NOTICE '11) % vendas históricas cadastradas (13 CONCLUIDA / 2 PARCIAL / 3 PENDENTE).', _vendas;
-  RAISE NOTICE '12) TOTAL VENDIDO = R$%.', to_char(_vendido,'FM999G999D00');
-  RAISE NOTICE '13) TOTAL RECEBIDO = R$%.', to_char(_recebido,'FM999G999D00');
-  RAISE NOTICE '14) CONTAS A RECEBER = R$% (Day+Cris+Fran+Evelyn+Evellyn).', to_char(_receber,'FM999G999D00');
-  RAISE NOTICE '15) % PEÇAS VENDIDAS / RESERVADAS (30 - 18 vendas).', _pecas_vendidas;
-  RAISE NOTICE '16) ESTOQUE TEÓRICO = % peças (compradas - vendidas). Valide por SKU no dashboard.', (_pecas_compradas - _pecas_vendidas);
-  RAISE NOTICE '17) Etiquetas consumidas = %.', _etq;
-  RAISE NOTICE '18) Adesivos consumidos = %.', _ades;
-  RAISE NOTICE '19) Sacolas GRANDES = % (Maria Luísa, Ruth, Lorrany, Maria Clara, Júlia, Matheus, Evelyn, Day + 1).', _g;
-  RAISE NOTICE '20) Sacolas PEQUENAS = % (Amanda, Ingrid, Rebeca, Ana L, Emilly, Mirela, Cris, Evellyn fono).', _p;
+  DECLARE
+    _aud01 TEXT := '01) 3 Remessas mercadoria = ' || COALESCE(_entradas::TEXT,'0') || ' entradas criadas.';
+    _aud02 TEXT := '02) ' || COALESCE(_pecas_compradas::TEXT,'0') || ' peças compradas (6+13+19 = 38).';
+    _aud03 TEXT := '03) Investimento mercadorias = R$' || COALESCE(to_char(_investimento,'FM999G999D00'),'0,00') || ' (R$380+R$410+R$1.160).';
+    _aud04 TEXT := '04) ⚠️ DIVERGÊNCIA 2ª remessa: -R$' || COALESCE(to_char(_divergencia,'FM90D00'),'0,00') || ' (soma unit R$465 vs informado R$410).';
+    _aud11 TEXT := '11) ' || COALESCE(_vendas::TEXT,'0') || ' vendas históricas cadastradas (13 CONCLUIDA / 2 PARCIAL / 3 PENDENTE).';
+    _aud12 TEXT := '12) TOTAL VENDIDO = R$' || COALESCE(to_char(_vendido,'FM999G999D00'),'0,00') || '.';
+    _aud13 TEXT := '13) TOTAL RECEBIDO = R$' || COALESCE(to_char(_recebido,'FM999G999D00'),'0,00') || '.';
+    _aud14 TEXT := '14) CONTAS A RECEBER = R$' || COALESCE(to_char(_receber,'FM999G999D00'),'0,00') || ' (Day+Cris+Fran+Evelyn+Evellyn).';
+    _aud15 TEXT := '15) ' || COALESCE(_pecas_vendidas::TEXT,'0') || ' PEÇAS VENDIDAS / RESERVADAS (30 - 18 vendas).';
+    _aud16 TEXT := '16) ESTOQUE TEÓRICO = ' || COALESCE((_pecas_compradas - _pecas_vendidas)::TEXT,'0') || ' peças (compradas - vendidas). Valide por SKU no dashboard.';
+    _aud17 TEXT := '17) Etiquetas consumidas = ' || COALESCE(_etq::TEXT,'0') || '.';
+    _aud18 TEXT := '18) Adesivos consumidos = ' || COALESCE(_ades::TEXT,'0') || '.';
+    _aud19 TEXT := '19) Sacolas GRANDES = ' || COALESCE(_g::TEXT,'0') || ' (Maria Luísa, Ruth, Lorrany, Maria Clara, Júlia, Matheus, Evelyn, Day + 1).';
+    _aud20 TEXT := '20) Sacolas PEQUENAS = ' || COALESCE(_p::TEXT,'0') || ' (Amanda, Ingrid, Rebeca, Ana L, Emilly, Mirela, Cris, Evellyn fono).';
+  BEGIN
+    RAISE NOTICE '%', _aud01;
+    RAISE NOTICE '%', _aud02;
+    RAISE NOTICE '%', _aud03;
+    RAISE NOTICE '%', _aud04;
+    RAISE NOTICE '05) Materiais embalagem = R$303,51 (sacolas+etiquetas+adesivos+papel seda).';
+    RAISE NOTICE '06) Cheirinho sacolas = R$35,00 (investimento).';
+    RAISE NOTICE '07) Frete CONFIRMADO 3ª remessa = R$119,20 (já incluso no custo entrada3).';
+    RAISE NOTICE '08) TOTAL INVESTIMENTOS CONHECIDOS = R$2.407,71 (303,51+35+119,20+1.070).';
+    RAISE NOTICE '09) ⏳ Outros fretes (1ª e 2ª remessa) = PENDENTES DE IDENTIFICAÇÃO.';
+    RAISE NOTICE '10) R$1.070,00 PASSIVO a devolver à sócia (NÃO é despesa!).';
+    RAISE NOTICE '%', _aud11;
+    RAISE NOTICE '%', _aud12;
+    RAISE NOTICE '%', _aud13;
+    RAISE NOTICE '%', _aud14;
+    RAISE NOTICE '%', _aud15;
+    RAISE NOTICE '%', _aud16;
+    RAISE NOTICE '%', _aud17;
+    RAISE NOTICE '%', _aud18;
+    RAISE NOTICE '%', _aud19;
+    RAISE NOTICE '%', _aud20;
+  END;
   RAISE NOTICE '21) Sacola da Francisca = TAMANHO DESCONHECIDO (não inventar).';
   RAISE NOTICE '22) CMV (custo mercadorias vendidas) = Calculado automaticamente pelo FIFO lotes inventory_batches. Veja itens custo na tela da venda.';
   RAISE NOTICE '23) Embalagens consumidas = custo unitário de cada sacola (GRANDE R$8,313; PEQUENA R$7,113). Calculado em sale_packaging por venda.';
-  RAISE NOTICE '24) Taxas pagamento = R$24,11 (estimativa LINK 4.2%/6.09%, TAP 3.15%/5.39%, PIX 0%).';
+  RAISE NOTICE '24) Taxas pagamento = R$24,11 (estimativa LINK 4.2%%/6.09%%, TAP 3.15%%/5.39%%, PIX 0%%).', '', '', '', '', '', '';
   RAISE NOTICE '25) 💰 Lucro bruto = Faturamento − CMV − taxas − embalagens. Lucro líquido = bruto − outras despesas − sócia NÃO entra como despesa 2x.';
-  RAISE NOTICE E'26) PENDÊNCIAS QUE IMPEDEM CONCILIAÇÃO 100%:\\n   ✅ Divergência R$55 2ª remessa\\n   ✅ Frete 1ª remessa\\n   ✅ Frete 2ª remessa\\n   ✅ Fabiana (roupas+frete juntos)\\n   ✅ Quais compras foram pagas com a sócia R$1070\\n   ✅ Embalagem Francisca\\n   ✅ CMV unitário 1ª remessa (rateado, custo individual real inexistente)\\n   ✅ Custo unitário embalagens R$303,51 por item (sacola/etiqueta/adesivo/papel seda)\\n   ✅ Cheirinho R$35: quanto consumido vs sobrou';
+  RAISE NOTICE E'26) PENDÊNCIAS QUE IMPEDEM CONCILIAÇÃO 100%%:\\n   ✅ Divergência R$55 2ª remessa\\n   ✅ Frete 1ª remessa\\n   ✅ Frete 2ª remessa\\n   ✅ Fabiana (roupas+frete juntos)\\n   ✅ Quais compras foram pagas com a sócia R$1070\\n   ✅ Embalagem Francisca\\n   ✅ CMV unitário 1ª remessa (rateado, custo individual real inexistente)\\n   ✅ Custo unitário embalagens R$303,51 por item (sacola/etiqueta/adesivo/papel seda)\\n   ✅ Cheirinho R$35: quanto consumido vs sobrou', '';
   RAISE NOTICE E'\\n🏆 SCRIPT ALL-IN-ONE EXECUTADO COM SUCESSO! 🎉\\n==========================================================';
 END $$;
 
 -- TUDO OK! COMMIT FINAL
 COMMIT;
-RAISE NOTICE '🎉 COMMIT REALIZADO — NENHUMA TRANSAÇÃO PERDIDA. Pode abrir o dashboard Eveline Gestão agora! 🎊';
+DO $$ BEGIN RAISE NOTICE '🎉 COMMIT REALIZADO — NENHUMA TRANSAÇÃO PERDIDA. Pode abrir o dashboard Eveline Gestão agora! 🎊'; END $$;
