@@ -393,16 +393,42 @@ BEGIN
       v_alloc_base := v_alloc_base + v_line_total;
     END IF;
 
-    INSERT INTO public.purchase_entry_items
-      (purchase_entry_id, product_id, product_snapshot, unit_cost, quantity, line_total)
-    VALUES (
-      v_entry_id,
-      (_item->>'product_id')::UUID,
-      COALESCE(_item->>'product_name','Produto'),
-      v_cost,
-      v_qty,
-      v_line_total
-    );
+    -- ============================================================
+    -- GARANTE product_id (UUID) PREENCHIDO
+    -- 1) Usa product_id se vier no JSONB (caminho RÁPIDO)
+    -- 2) Senão, BUSCA por SKU
+    -- 3) Senão, RAISE com SKU faltante (fail-fast, mensagem clara)
+    -- ============================================================
+    DECLARE
+      v_prod_id UUID;
+      v_sku    TEXT;
+    BEGIN
+      v_prod_id := (_item->>'product_id')::UUID;
+      v_sku     := _item->>'sku';
+
+      IF v_prod_id IS NULL AND v_sku IS NOT NULL THEN
+        SELECT id INTO STRICT v_prod_id FROM public.products p WHERE p.sku = v_sku LIMIT 1;
+      END IF;
+
+      IF v_prod_id IS NULL THEN
+        IF v_sku IS NOT NULL THEN
+          RAISE EXCEPTION E'create_purchase_entry: SKU "%" informado mas NÃO EXISTE em public.products. Verifique cadastro/seed antes de criar a entrada.', v_sku;
+        ELSE
+          RAISE EXCEPTION E'create_purchase_entry: item inválido sem product_id nem sku. JSONB: %', _item::TEXT;
+        END IF;
+      END IF;
+
+      INSERT INTO public.purchase_entry_items
+        (purchase_entry_id, product_id, product_snapshot, unit_cost, quantity, line_total)
+      VALUES (
+        v_entry_id,
+        v_prod_id,
+        COALESCE(_item->>'product_name', (SELECT p.name FROM public.products p WHERE p.id = v_prod_id), 'Produto'),
+        v_cost,
+        v_qty,
+        v_line_total
+      );
+    END;
   END LOOP;
 
   v_total_cost := v_items_total + COALESCE(p_shipping_cost, 0) + v_others_total;
