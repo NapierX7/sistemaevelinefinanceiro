@@ -3,7 +3,7 @@ export type UUID = string;
 export type Money = number;
 
 export type SaleSource = 'SITE' | 'PRESENCIAL' | 'DISTANCIA' | 'OUTRO';
-export type SaleStatus = 'PENDENTE' | 'CONCLUIDA' | 'CANCELADA' | 'ESTORNADA';
+export type SaleStatus = 'PENDENTE' | 'CONCLUIDA' | 'CANCELADA' | 'REEMBOLSADA' | 'PARCIAL';
 export type PaymentMethod = 'PIX' | 'CREDITO' | 'DEBITO' | 'BOLETO' | 'DINHEIRO' | 'OUTRO';
 export type MovementType = 'ENTRADA' | 'SAIDA' | 'AJUSTE_POS' | 'AJUSTE_NEG' | 'PERDA' | 'DEVOLUCAO';
 export type TransType = 'ENTRADA' | 'SAIDA';

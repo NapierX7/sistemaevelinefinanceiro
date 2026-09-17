@@ -21,7 +21,37 @@ DO $$ BEGIN
   CREATE TYPE __import_line AS (sku_s TEXT, qty INTEGER, actual NUMERIC(12,2));
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
-CREATE TEMP TABLE IF NOT EXISTS tmp_import_sale_done (external_id TEXT PRIMARY KEY) ON COMMIT DROP;
+
+-- ============================================================
+-- VALIDAÇÃO FAIL-FAST: TODOS OS SKUs USADOS NAS 18 VENDAS
+--   Devem existir em public.products. Se faltar um, ABORTA AQUI
+--   (não deixa passar pra depois dar erro genérico "Nenhum item")
+-- ============================================================
+DO $$
+DECLARE
+  _need TEXT[] := ARRAY[
+    'BLUSA-001','BLUSA-002','BLUSA-003','BLUSA-004',
+    'CALCA-001','CALCA-002','CALCA-003',
+    'CONJ-001','CONJ-002','CONJ-003','CONJ-004','CONJ-005','CONJ-006','CONJ-007',
+    'REGATA-001','VESTIDO-001','VESTIDO-002','VESTIDO-003'
+  ];
+  _miss TEXT[] := ARRAY[]::TEXT[];
+  _s TEXT;
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM public.products LIMIT 1) THEN
+    RAISE EXCEPTION 'public.products está VAZIO. RODE PRIMEIRO patch_historico_01_estoque.sql!';
+  END IF;
+  FOREACH _s IN ARRAY _need LOOP
+    IF NOT EXISTS (SELECT 1 FROM public.products p WHERE p.sku = _s) THEN
+      _miss := array_append(_miss, _s);
+    END IF;
+  END LOOP;
+  IF array_length(_miss, 1) > 0 THEN
+    RAISE EXCEPTION E'ATENÇÃO: SKUs obrigatórios NÃO EXISTEM no banco: %\nRODE PRIMEIRO patch_historico_01_estoque.sql (ele cria BLUSA-004, CONJ-006, CONJ-007 e garante os 15 antigos).', array_to_string(_miss, ', ');
+  END IF;
+  RAISE NOTICE '✔ VALIDAÇÃO OK: 18 SKUs obrigatórios existem no banco public.products';
+END $$;
+
 
 DO $$
 DECLARE
@@ -37,6 +67,9 @@ DECLARE
   v_mod_mpco UUID := (SELECT id FROM public.payment_modalities m WHERE m.provider_id = v_prov_mp       AND code = 'CHECKOUT' ORDER BY created_at LIMIT 1);
   -- SKUs
   sku RECORD; -- cache produto por sku
+  i RECORD;    -- iterador jsonb (usado nos FOR IN SELECT jsonb_array_elements
+  r RECORD;    -- iterador para queries VALUES
+  oc RECORD;     -- (mantém back-compat nome antigo
   v_ext TEXT;
   v_customer TEXT;
   v_date TIMESTAMPTZ;
@@ -59,6 +92,7 @@ DECLARE
   v_tmp2 NUMERIC;
   v_line JSONB;
   v_lines JSONB[];
+  _line JSONB;
   v_sale_id UUID;
   v_sale_friendly INTEGER;
   v_real_fee NUMERIC(12,4);
@@ -80,12 +114,12 @@ BEGIN
   -- ================================================================================
   v_ext := 'HIST-VENDA-001-MARIA-LUISA-220826';
   IF NOT EXISTS (SELECT 1 FROM public.sales s WHERE s.customer_name = 'Maria Luísa' AND s.source = 'DISTANCIA' AND s.sale_date::DATE = '2026-08-22'::DATE)
-    AND NOT EXISTS (SELECT 1 FROM tmp_import_sale_done WHERE external_id = v_ext) THEN
+ THEN
 
     v_lines := ARRAY[]::JSONB[];
     -- linha: 2x BLUSA-002 (cat 69,90). Quanto cobrou? Total cobrado 218,21. BLUSA-001 cat 99,90.
     -- Vamos distribuir: 2x BLUSA-002 cobrado (218,21-99,90)/2 = 59,155 -> 59,16 + 59,15 (arredonda pra bater).
-    FOR sku IN SELECT id, sku, sale_price FROM public.products WHERE sku='BLUSA-002' LOOP
+    FOR sku IN SELECT p.id, p.sku, p.sale_price FROM public.products p WHERE p.sku='BLUSA-002' LOOP
       v_line := JSONB_BUILD_OBJECT(
         'product_id', sku.id, 'variant_id', NULL, 'product_name', 'Blusa assimétrica (histórico Maria Luísa #1/2)',
         'variant', NULL, 'sku', sku.sku, 'quantity', 1,
@@ -99,7 +133,7 @@ BEGIN
       );
       v_lines := array_append(v_lines, v_line);
     END LOOP;
-    FOR sku IN SELECT id, sku, sale_price FROM public.products WHERE sku='BLUSA-001' LOOP
+    FOR sku IN SELECT p.id, p.sku, p.sale_price FROM public.products p WHERE p.sku='BLUSA-001' LOOP
       v_line := JSONB_BUILD_OBJECT(
         'product_id', sku.id, 'variant_id', NULL, 'product_name', 'Blusa de renda',
         'variant', NULL, 'sku', sku.sku, 'quantity', 1,
@@ -110,9 +144,9 @@ BEGIN
 
     -- Calcula totais
     v_subtotal := 0; v_items_discount := 0;
-    FOR i IN SELECT * FROM jsonb_array_elements(to_jsonb(v_lines)) LOOP
-      v_subtotal := v_subtotal + ((i->>'quantity')::INTEGER  * (i->>'unit_sale_price')::NUMERIC);
-      v_items_discount := v_items_discount + ((i->>'quantity')::INTEGER * COALESCE((i->>'discount')::NUMERIC,0));
+    FOREACH _line IN ARRAY v_lines LOOP
+      v_subtotal := v_subtotal + ((_line->>'quantity')::INTEGER  * (_line->>'unit_sale_price')::NUMERIC);
+      v_items_discount := v_items_discount + ((_line->>'quantity')::INTEGER * COALESCE((_line->>'discount')::NUMERIC,0));
     END LOOP;
     v_charged := 218.21;
     -- desconto PIX? não (pagamento é credito 2x LINK)
@@ -129,8 +163,11 @@ BEGIN
       'fee_percent', v_fee_percent, 'fee_expected', v_expected_fee, 'fee_actual', v_real_fee,
       'provider_snapshot', 'InfinitePay', 'modality_snapshot', 'Link de Pagamento'
     );
-    v_items := to_jsonb(v_lines);
+    v_items := array_to_json(v_lines)::jsonb;
     v_customer := 'Maria Luísa';
+    IF COALESCE(array_length(v_lines, 1), 0) = 0 THEN
+      RAISE EXCEPTION 'VENDA Maria Luísa: 0 itens criados. SKUs procurados: BLUSA-002 (2x), BLUSA-001 (1x). Verifique se existem em public.products';
+    END IF;
     v_sale_id := (public.finalize_sale(
       p_source := v_source, p_items := v_items, p_general_discount := v_general_discount,
       p_coupon_id := NULL, p_coupon_code := NULL, p_pix_discount := v_estimated_pix_discount,
@@ -139,7 +176,7 @@ BEGIN
     )->>'sale_id')::UUID;
     UPDATE public.sales SET sale_date = v_date WHERE id = v_sale_id RETURNING friendly_number INTO v_sale_friendly;
     UPDATE public.financial_transactions SET trans_date = v_date::DATE WHERE related_sale_id = v_sale_id;
-    INSERT INTO tmp_import_sale_done VALUES (v_ext);
+
     RAISE NOTICE 'OK Venda 1 % #%', v_customer, v_sale_friendly;
   END IF;
 
@@ -148,17 +185,17 @@ BEGIN
   -- ================================================================================
   v_ext := 'HIST-VENDA-002-AMANDA-220826';
   IF NOT EXISTS (SELECT 1 FROM public.sales s WHERE s.customer_name='Amanda' AND s.sale_date::DATE='2026-08-22')
-    AND NOT EXISTS (SELECT 1 FROM tmp_import_sale_done WHERE external_id=v_ext) THEN
+     THEN
     v_lines := ARRAY[]::JSONB[];
-    FOR sku IN SELECT id,sku,sale_price FROM public.products WHERE sku='BLUSA-002' LOOP
+    FOR sku IN SELECT p.id,p.sku,p.sale_price FROM public.products p WHERE p.sku='BLUSA-002' LOOP
       v_line := JSONB_BUILD_OBJECT('product_id',sku.id,'variant_id',NULL,'product_name','Blusa assimétrica','variant',NULL,'sku',sku.sku,'quantity',1,
         'unit_sale_price',sku.sale_price,'unit_actual_price',60.00,'discount',ROUND(sku.sale_price-60.00,2));
       v_lines := array_append(v_lines,v_line);
     END LOOP;
     v_subtotal:=0; v_items_discount:=0;
-    FOR i IN SELECT * FROM jsonb_array_elements(to_jsonb(v_lines)) LOOP
-      v_subtotal := v_subtotal + ((i->>'quantity')::INTEGER*(i->>'unit_sale_price')::NUMERIC);
-      v_items_discount := v_items_discount + ((i->>'quantity')::INTEGER*COALESCE((i->>'discount')::NUMERIC,0));
+    FOREACH _line IN ARRAY v_lines LOOP
+      v_subtotal := v_subtotal + ((_line->>'quantity')::INTEGER*(_line->>'unit_sale_price')::NUMERIC);
+      v_items_discount := v_items_discount + ((_line->>'quantity')::INTEGER*COALESCE((_line->>'discount')::NUMERIC,0));
     END LOOP;
     v_charged := 60.00;
     -- desconto Pix: 10% sobre subtotal - descontos itens => (69.90 - 9.90) * 10% = 6? espera, total cobrado 60.00.
@@ -172,12 +209,15 @@ BEGIN
     v_fee_percent := 0; v_expected_fee := 0; v_real_fee := 0;
     v_payment := JSONB_BUILD_OBJECT('provider_id',v_prov_pixdir,'modality_id',v_mod_pixd,'method',v_method,'installments',1,'amount',v_paid,
       'fee_percent',0,'fee_expected',0,'fee_actual',0,'provider_snapshot','Pix Direto','modality_snapshot','Pix à vista');
-    v_items := to_jsonb(v_lines);
+    v_items := array_to_json(v_lines)::jsonb;
+    IF COALESCE(array_length(v_lines, 1), 0) = 0 THEN
+      RAISE EXCEPTION 'VENDA Amanda: 0 itens criados. SKUs procurados: CALCA-001 (1x) R$60. Verifique public.products';
+    END IF;
     v_sale_id := (public.finalize_sale(p_source:='DISTANCIA',p_items:=v_items,p_general_discount:=v_general_discount,p_pix_discount:=v_estimated_pix_discount,
       p_payment:=v_payment,p_customer_name:='Amanda',p_user_id:=v_admin)->>'sale_id')::UUID;
     UPDATE public.sales SET sale_date = v_date WHERE id = v_sale_id RETURNING friendly_number INTO v_sale_friendly;
     UPDATE public.financial_transactions SET trans_date = v_date::DATE WHERE related_sale_id = v_sale_id;
-    INSERT INTO tmp_import_sale_done VALUES (v_ext);
+
     RAISE NOTICE 'OK Venda 2 Amanda #%', v_sale_friendly;
   END IF;
 
@@ -188,11 +228,11 @@ BEGIN
   -- ================================================================================
   v_ext := 'HIST-VENDA-003-LORRANY-230826';
   IF NOT EXISTS (SELECT 1 FROM public.sales s WHERE customer_name='Lorrany' AND sale_date::DATE='2026-08-23')
-    AND NOT EXISTS (SELECT 1 FROM tmp_import_sale_done WHERE external_id=v_ext) THEN
+     THEN
     v_lines := ARRAY[]::JSONB[];
     -- Rateio do desconto de 29,70 proporcional ao valor cobrado
     -- Valores cobrados (estimados): CONJ004 180 + BLUSA001 95 + REGATA 60 + BLUSA002 64,90 = 399,90
-    FOR sku IN SELECT id,sku,sale_price FROM public.products WHERE sku IN ('CONJ-004','BLUSA-001','REGATA-001','BLUSA-002') ORDER BY sku LOOP
+    FOR sku IN SELECT p.id,p.sku,p.sale_price FROM public.products p WHERE p.sku IN ('CONJ-004','BLUSA-001','REGATA-001','BLUSA-002') ORDER BY p.sku LOOP
       v_tmp := CASE sku.sku
         WHEN 'CONJ-004' THEN 180.00
         WHEN 'BLUSA-001' THEN 95.00
@@ -205,9 +245,9 @@ BEGIN
       v_lines := array_append(v_lines, v_line);
     END LOOP;
     v_subtotal:=0; v_items_discount:=0;
-    FOR i IN SELECT * FROM jsonb_array_elements(to_jsonb(v_lines)) LOOP
-      v_subtotal := v_subtotal + ((i->>'quantity')::INTEGER*(i->>'unit_sale_price')::NUMERIC);
-      v_items_discount := v_items_discount + ((i->>'quantity')::INTEGER*COALESCE((i->>'discount')::NUMERIC,0));
+    FOREACH _line IN ARRAY v_lines LOOP
+      v_subtotal := v_subtotal + ((_line->>'quantity')::INTEGER*(_line->>'unit_sale_price')::NUMERIC);
+      v_items_discount := v_items_discount + ((_line->>'quantity')::INTEGER*COALESCE((_line->>'discount')::NUMERIC,0));
     END LOOP;
     v_charged := 399.90; v_estimated_pix_discount := 0;
     v_general_discount := GREATEST(0, v_subtotal - v_items_discount - v_charged);
@@ -218,12 +258,15 @@ BEGIN
     v_payment := JSONB_BUILD_OBJECT('provider_id',v_prov_infinite,'modality_id',v_mod_link,'method','CREDITO','installments',3,'amount',v_paid,
       'fee_percent',7.19,'fee_expected',v_expected_fee,'fee_actual',v_real_fee,
       'provider_snapshot','InfinitePay','modality_snapshot','Link de Pagamento');
-    v_items := to_jsonb(v_lines);
+    v_items := array_to_json(v_lines)::jsonb;
+    IF COALESCE(array_length(v_lines, 1), 0) = 0 THEN
+      RAISE EXCEPTION 'VENDA Lorrany: 0 itens criados. SKUs procurados: CONJ-002, CONJ-003, CONJ-004 (3 conj R$120).';
+    END IF;
     v_sale_id := (public.finalize_sale(p_source:='DISTANCIA',p_items:=v_items,p_general_discount:=v_general_discount,p_payment:=v_payment,
       p_customer_name:='Lorrany',p_user_id:=v_admin)->>'sale_id')::UUID;
     UPDATE public.sales SET sale_date=v_date WHERE id=v_sale_id RETURNING friendly_number INTO v_sale_friendly;
     UPDATE public.financial_transactions SET trans_date=v_date::DATE WHERE related_sale_id=v_sale_id;
-    INSERT INTO tmp_import_sale_done VALUES (v_ext);
+
     RAISE NOTICE 'OK Venda 3 Lorrany #%', v_sale_friendly;
   END IF;
 
@@ -249,10 +292,9 @@ BEGIN
       ('HIST-VENDA-008-INGRID-090926','Ingrid','BLUSA-002',1,59.90,'2026-09-09 14:00:00-03'::TIMESTAMPTZ)
     ) t(ext, cust, sku_s, qtd, charged, dt)
     LOOP
-      IF EXISTS (SELECT 1 FROM tmp_import_sale_done WHERE external_id=r.ext) THEN CONTINUE; END IF;
       IF EXISTS (SELECT 1 FROM public.sales s WHERE s.customer_name = r.cust AND s.sale_date::DATE = r.dt::DATE) THEN CONTINUE; END IF;
       v_lines := ARRAY[]::JSONB[];
-      FOR sku IN SELECT id,sku,sale_price FROM public.products WHERE sku = r.sku_s LOOP
+      FOR sku IN SELECT p.id,p.sku,p.sale_price FROM public.products p WHERE p.sku = r.sku_s LOOP
         v_actual := ROUND(r.charged / r.qtd, 2);
         v_discount := ROUND(sku.sale_price - v_actual, 2);
         v_line := JSONB_BUILD_OBJECT('product_id',sku.id,'variant_id',NULL,'product_name',(SELECT name FROM public.products WHERE id=sku.id),
@@ -261,9 +303,9 @@ BEGIN
         v_lines := array_append(v_lines, v_line);
       END LOOP;
       v_subtotal:=0; v_items_discount:=0;
-      FOR i IN SELECT * FROM jsonb_array_elements(to_jsonb(v_lines)) LOOP
-        v_subtotal := v_subtotal + ((i->>'quantity')::INTEGER*(i->>'unit_sale_price')::NUMERIC);
-        v_items_discount := v_items_discount + ((i->>'quantity')::INTEGER*COALESCE((i->>'discount')::NUMERIC,0));
+      FOREACH _line IN ARRAY v_lines LOOP
+        v_subtotal := v_subtotal + ((_line->>'quantity')::INTEGER*(_line->>'unit_sale_price')::NUMERIC);
+        v_items_discount := v_items_discount + ((_line->>'quantity')::INTEGER*COALESCE((_line->>'discount')::NUMERIC,0));
       END LOOP;
       v_charged := r.charged;
       -- cobrado bate com items - descontos items?
@@ -271,12 +313,14 @@ BEGIN
       IF v_general_discount < 0 THEN v_general_discount := 0; END IF;
       v_payment := JSONB_BUILD_OBJECT('provider_id',v_prov_pixdir,'modality_id',v_mod_pixd,'method','PIX','installments',1,'amount',v_charged,
         'fee_percent',0,'fee_expected',0,'fee_actual',0,'provider_snapshot','Pix Direto','modality_snapshot','Pix à vista');
-      v_items := to_jsonb(v_lines);
+      v_items := array_to_json(v_lines)::jsonb;
+      IF COALESCE(array_length(v_lines, 1), 0) = 0 THEN
+        RAISE EXCEPTION 'VENDA % (SKU % qtd %): 0 itens criados. Verifique se esse SKU existe em public.products.', r.cust, r.sku_s, r.qtd;
+      END IF;
       v_sale_id := (public.finalize_sale(p_source:='DISTANCIA',p_items:=v_items,p_general_discount:=v_general_discount,p_payment:=v_payment,
         p_customer_name:=r.cust,p_user_id:=v_admin)->>'sale_id')::UUID;
       UPDATE public.sales SET sale_date=r.dt WHERE id=v_sale_id RETURNING friendly_number INTO v_sale_friendly;
       UPDATE public.financial_transactions SET trans_date=r.dt::DATE WHERE related_sale_id=v_sale_id;
-      INSERT INTO tmp_import_sale_done VALUES (r.ext);
       RAISE NOTICE 'OK Venda %', r.cust;
     END LOOP;
   END vendaspixsimples;
@@ -286,34 +330,37 @@ BEGIN
   --    cat: 69,90 + 99,90 = 169,80. Desconto total = 30,50. Cobrado 139,30.
   -- ================================================================================
   v_ext := 'HIST-VENDA-009-EMILLY-090926';
-  IF NOT EXISTS (SELECT 1 FROM public.sales WHERE customer_name='Emilly Gabrielly') AND NOT EXISTS (SELECT 1 FROM tmp_import_sale_done WHERE external_id=v_ext) THEN
+  IF NOT EXISTS (SELECT 1 FROM public.sales WHERE customer_name='Emilly Gabrielly')  THEN
     v_lines := ARRAY[]::JSONB[];
-    FOR sku IN SELECT id,sku,sale_price FROM public.products WHERE sku='REGATA-001' LOOP
+    FOR sku IN SELECT p.id,p.sku,p.sale_price FROM public.products p WHERE p.sku='REGATA-001' LOOP
       v_line := JSONB_BUILD_OBJECT('product_id',sku.id,'variant_id',NULL,'product_name','Regata alça fina','variant',NULL,'sku',sku.sku,'quantity',1,
         'unit_sale_price',sku.sale_price,'unit_actual_price',60.00,'discount',ROUND(sku.sale_price-60.00,2));
       v_lines := array_append(v_lines,v_line);
     END LOOP;
-    FOR sku IN SELECT id,sku,sale_price FROM public.products WHERE sku='BLUSA-001' LOOP
+    FOR sku IN SELECT p.id,p.sku,p.sale_price FROM public.products p WHERE p.sku='BLUSA-001' LOOP
       v_line := JSONB_BUILD_OBJECT('product_id',sku.id,'variant_id',NULL,'product_name','Blusa de renda','variant',NULL,'sku',sku.sku,'quantity',1,
         'unit_sale_price',sku.sale_price,'unit_actual_price',79.30,'discount',ROUND(sku.sale_price-79.30,2));
       v_lines := array_append(v_lines,v_line);
     END LOOP;
     v_subtotal:=0; v_items_discount:=0;
-    FOR i IN SELECT * FROM jsonb_array_elements(to_jsonb(v_lines)) LOOP
-      v_subtotal := v_subtotal + ((i->>'quantity')::INTEGER*(i->>'unit_sale_price')::NUMERIC);
-      v_items_discount := v_items_discount + ((i->>'quantity')::INTEGER*COALESCE((i->>'discount')::NUMERIC,0));
+    FOREACH _line IN ARRAY v_lines LOOP
+      v_subtotal := v_subtotal + ((_line->>'quantity')::INTEGER*(_line->>'unit_sale_price')::NUMERIC);
+      v_items_discount := v_items_discount + ((_line->>'quantity')::INTEGER*COALESCE((_line->>'discount')::NUMERIC,0));
     END LOOP;
     v_charged := 139.30;
     v_general_discount := GREATEST(0, v_subtotal - v_items_discount - v_charged);
     IF v_general_discount<0 THEN v_general_discount := 0; END IF;
     v_payment := JSONB_BUILD_OBJECT('provider_id',v_prov_pixdir,'modality_id',v_mod_pixd,'method','PIX','installments',1,'amount',v_charged,
       'fee_percent',0,'fee_expected',0,'fee_actual',0,'provider_snapshot','Pix Direto','modality_snapshot','Pix à vista');
-    v_items := to_jsonb(v_lines);
+    v_items := array_to_json(v_lines)::jsonb;
+    IF COALESCE(array_length(v_lines, 1), 0) = 0 THEN
+      RAISE EXCEPTION 'VENDA Emilly Gabrielly: 0 itens criados. SKUs: REGATA-001, BLUSA-001.';
+    END IF;
     v_sale_id := (public.finalize_sale(p_source:='DISTANCIA',p_items:=v_items,p_general_discount:=v_general_discount,p_payment:=v_payment,
       p_customer_name:='Emilly Gabrielly',p_user_id:=v_admin)->>'sale_id')::UUID;
     UPDATE public.sales SET sale_date='2026-09-09 15:00:00-03' WHERE id=v_sale_id RETURNING friendly_number INTO v_sale_friendly;
     UPDATE public.financial_transactions SET trans_date='2026-09-09'::DATE WHERE related_sale_id=v_sale_id;
-    INSERT INTO tmp_import_sale_done VALUES (v_ext);
+
     RAISE NOTICE 'OK Venda 9 Emilly Gabrielly #%', v_sale_friendly;
   END IF;
 
@@ -322,33 +369,36 @@ BEGIN
   --                     PIX R$229,80. Cat: 189,90 + 69,90 = 259,80. Desconto 30,00.
   -- ================================================================================
   v_ext := 'HIST-VENDA-010-MARIA-CLARA-110926';
-  IF NOT EXISTS (SELECT 1 FROM public.sales WHERE customer_name='Maria Clara') AND NOT EXISTS (SELECT 1 FROM tmp_import_sale_done WHERE external_id=v_ext) THEN
+  IF NOT EXISTS (SELECT 1 FROM public.sales WHERE customer_name='Maria Clara')  THEN
     v_lines := ARRAY[]::JSONB[];
-    FOR sku IN SELECT id,sku,sale_price FROM public.products WHERE sku='CALCA-003' LOOP
+    FOR sku IN SELECT p.id,p.sku,p.sale_price FROM public.products p WHERE p.sku='CALCA-003' LOOP
       v_line := JSONB_BUILD_OBJECT('product_id',sku.id,'variant_id',NULL,'product_name','Calça animal print (histórico: calça jeans)','variant',NULL,'sku',sku.sku,'quantity',1,
         'unit_sale_price',sku.sale_price,'unit_actual_price',169.90,'discount',ROUND(sku.sale_price-169.90,2));
       v_lines := array_append(v_lines,v_line);
     END LOOP;
-    FOR sku IN SELECT id,sku,sale_price FROM public.products WHERE sku='REGATA-001' LOOP
+    FOR sku IN SELECT p.id,p.sku,p.sale_price FROM public.products p WHERE p.sku='REGATA-001' LOOP
       v_line := JSONB_BUILD_OBJECT('product_id',sku.id,'variant_id',NULL,'product_name','Regata alça fina','variant',NULL,'sku',sku.sku,'quantity',1,
         'unit_sale_price',sku.sale_price,'unit_actual_price',59.90,'discount',ROUND(sku.sale_price-59.90,2));
       v_lines := array_append(v_lines,v_line);
     END LOOP;
     v_subtotal:=0; v_items_discount:=0;
-    FOR i IN SELECT * FROM jsonb_array_elements(to_jsonb(v_lines)) LOOP
-      v_subtotal := v_subtotal + ((i->>'quantity')::INTEGER*(i->>'unit_sale_price')::NUMERIC);
-      v_items_discount := v_items_discount + ((i->>'quantity')::INTEGER*COALESCE((i->>'discount')::NUMERIC,0));
+    FOREACH _line IN ARRAY v_lines LOOP
+      v_subtotal := v_subtotal + ((_line->>'quantity')::INTEGER*(_line->>'unit_sale_price')::NUMERIC);
+      v_items_discount := v_items_discount + ((_line->>'quantity')::INTEGER*COALESCE((_line->>'discount')::NUMERIC,0));
     END LOOP;
     v_charged:=229.80; v_general_discount:=GREATEST(0,v_subtotal-v_items_discount-v_charged);
     IF v_general_discount<0 THEN v_general_discount:=0; END IF;
     v_payment := JSONB_BUILD_OBJECT('provider_id',v_prov_pixdir,'modality_id',v_mod_pixd,'method','PIX','installments',1,'amount',v_charged,
       'fee_percent',0,'fee_expected',0,'fee_actual',0,'provider_snapshot','Pix Direto','modality_snapshot','Pix à vista');
-    v_items := to_jsonb(v_lines);
+    v_items := array_to_json(v_lines)::jsonb;
+    IF COALESCE(array_length(v_lines, 1), 0) = 0 THEN
+      RAISE EXCEPTION 'VENDA Maria Clara: 0 itens criados. SKUs: CONJ-005, CALCA-002.';
+    END IF;
     v_sale_id := (public.finalize_sale(p_source:='DISTANCIA',p_items:=v_items,p_general_discount:=v_general_discount,p_payment:=v_payment,
       p_customer_name:='Maria Clara',p_user_id:=v_admin)->>'sale_id')::UUID;
     UPDATE public.sales SET sale_date='2026-09-11 14:00:00-03' WHERE id=v_sale_id RETURNING friendly_number INTO v_sale_friendly;
     UPDATE public.financial_transactions SET trans_date='2026-09-11'::DATE WHERE related_sale_id=v_sale_id;
-    INSERT INTO tmp_import_sale_done VALUES (v_ext);
+
     RAISE NOTICE 'OK Venda 10 Maria Clara #%', v_sale_friendly;
   END IF;
 
@@ -366,10 +416,9 @@ BEGIN
     ('HIST-VENDA-013-LETICIA-CLINICA-160926','Leticia (clínica)','CALCA-003',1,189.90,'2026-09-16 10:00:00-03'::TIMESTAMPTZ,'CREDITO',v_prov_infinite,v_mod_link,4.20,1,true)
   ) t(ext, cust, sku_s, qtd, charged, dt, meth, prov, modl, fee_pct, ins, pay)
   LOOP
-    IF EXISTS (SELECT 1 FROM tmp_import_sale_done WHERE external_id=r.ext) THEN CONTINUE; END IF;
     IF EXISTS (SELECT 1 FROM public.sales s WHERE s.customer_name=r.cust AND s.sale_date::DATE=r.dt::DATE) THEN CONTINUE; END IF;
     v_lines := ARRAY[]::JSONB[];
-    FOR sku IN SELECT id,sku,sale_price FROM public.products WHERE sku=r.sku_s LOOP
+    FOR sku IN SELECT p.id,p.sku,p.sale_price FROM public.products p WHERE p.sku=r.sku_s LOOP
       v_tmp := ROUND(r.charged / r.qtd, 2);
       v_line := JSONB_BUILD_OBJECT('product_id',sku.id,'variant_id',NULL,'product_name',(SELECT name FROM public.products WHERE id=sku.id),
         'variant',NULL,'sku',sku.sku,'quantity',r.qtd,
@@ -377,9 +426,9 @@ BEGIN
       v_lines := array_append(v_lines,v_line);
     END LOOP;
     v_subtotal:=0; v_items_discount:=0;
-    FOR i IN SELECT * FROM jsonb_array_elements(to_jsonb(v_lines)) LOOP
-      v_subtotal := v_subtotal + ((i->>'quantity')::INTEGER*(i->>'unit_sale_price')::NUMERIC);
-      v_items_discount := v_items_discount + ((i->>'quantity')::INTEGER*COALESCE((i->>'discount')::NUMERIC,0));
+    FOREACH _line IN ARRAY v_lines LOOP
+      v_subtotal := v_subtotal + ((_line->>'quantity')::INTEGER*(_line->>'unit_sale_price')::NUMERIC);
+      v_items_discount := v_items_discount + ((_line->>'quantity')::INTEGER*COALESCE((_line->>'discount')::NUMERIC,0));
     END LOOP;
     v_charged := r.charged;
     v_general_discount := GREATEST(0, v_subtotal - v_items_discount - v_charged);
@@ -389,12 +438,14 @@ BEGIN
       'fee_percent',r.fee_pct,'fee_expected',v_expected_fee,'fee_actual',v_real_fee,
       'provider_snapshot',CASE WHEN r.prov = v_prov_infinite THEN 'InfinitePay' WHEN r.prov=v_prov_pixdir THEN 'Pix Direto' ELSE 'Outro' END,
       'modality_snapshot',CASE WHEN r.modl = v_mod_link THEN 'Link de Pagamento' ELSE 'Pix à vista' END);
-    v_items := to_jsonb(v_lines);
+    v_items := array_to_json(v_lines)::jsonb;
+    IF COALESCE(array_length(v_lines, 1), 0) = 0 THEN
+      RAISE EXCEPTION 'VENDA % (SKU único % qtd %): 0 itens criados. Verifique public.products.', r.cust, r.sku_s, r.qtd;
+    END IF;
     v_sale_id := (public.finalize_sale(p_source:='DISTANCIA',p_items:=v_items,p_general_discount:=v_general_discount,p_payment:=v_payment,
       p_customer_name:=r.cust,p_user_id:=v_admin)->>'sale_id')::UUID;
     UPDATE public.sales SET sale_date=r.dt WHERE id=v_sale_id RETURNING friendly_number INTO v_sale_friendly;
     UPDATE public.financial_transactions SET trans_date=r.dt::DATE WHERE related_sale_id=v_sale_id;
-    INSERT INTO tmp_import_sale_done VALUES (r.ext);
     RAISE NOTICE 'OK Venda % #%', r.cust, v_sale_friendly;
   END LOOP;
   END vendas11a13;
@@ -423,14 +474,13 @@ BEGIN
       149.90, 80.00, '2026-09-16 14:00:00-03'::TIMESTAMPTZ, 'PARCIAL','OUTRO',NULL,NULL,0.00,1)
   ) t(ext, cust, lines, charged, paid, dt, status_, method_, prov, modl, fee_pct, ins)
   LOOP
-    IF EXISTS (SELECT 1 FROM tmp_import_sale_done WHERE external_id=r.ext) THEN CONTINUE; END IF;
     IF r.dt IS NOT NULL AND EXISTS (SELECT 1 FROM public.sales s WHERE s.customer_name=r.cust AND s.sale_date::DATE=r.dt::DATE) THEN CONTINUE; END IF;
     -- Monta linhas
     v_lines := ARRAY[]::JSONB[];
     v_tmp := 0; -- soma dos cobrados unitários, para distribuir o que não é preenchido
     v_tmp2 := 0;
     FOR i IN SELECT 1 AS idx, (a).sku_s, (a).qty, (a).actual FROM (SELECT UNNEST(r.lines) a) x LOOP
-      FOR sku IN SELECT id,sku,sale_price FROM public.products WHERE sku = i.sku_s LOOP
+      FOR sku IN SELECT p.id,p.sku,p.sale_price FROM public.products p WHERE p.sku = i.sku_s LOOP
         IF i.actual IS NOT NULL THEN
           v_tmp := v_tmp + (i.qty * i.actual);
           v_line := JSONB_BUILD_OBJECT('product_id',sku.id,'variant_id',NULL,'product_name',(SELECT name FROM public.products WHERE id=sku.id),
@@ -454,15 +504,15 @@ BEGIN
         idx INTEGER := 0;
         place_actual NUMERIC := v_tmp2;
       BEGIN
-        FOR i IN SELECT * FROM jsonb_array_elements(to_jsonb(v_lines)) LOOP
+        FOREACH _line IN ARRAY v_lines LOOP
           idx := idx + 1;
-          IF (i->>'unit_actual_price')::NUMERIC = 0 AND (i->>'discount')::NUMERIC = 0 THEN
-            v_tmp := COALESCE((SELECT sale_price FROM public.products WHERE id=(i->>'product_id')::UUID),0);
-            new_lines := array_append(new_lines, i || JSONB_BUILD_OBJECT(
+          IF (_line->>'unit_actual_price')::NUMERIC = 0 AND (_line->>'discount')::NUMERIC = 0 THEN
+            v_tmp := COALESCE((SELECT sale_price FROM public.products WHERE id=(_line->>'product_id')::UUID),0);
+            new_lines := array_append(new_lines, _line || JSONB_BUILD_OBJECT(
               'unit_actual_price', place_actual, 'discount', ROUND(v_tmp - place_actual,2)
             ));
           ELSE
-            new_lines := array_append(new_lines, i);
+            new_lines := array_append(new_lines, _line);
           END IF;
         END LOOP;
         v_lines := new_lines;
@@ -470,9 +520,9 @@ BEGIN
     END IF;
     -- Totais
     v_subtotal:=0; v_items_discount:=0;
-    FOR i IN SELECT * FROM jsonb_array_elements(to_jsonb(v_lines)) LOOP
-      v_subtotal := v_subtotal + ((i->>'quantity')::INTEGER*(i->>'unit_sale_price')::NUMERIC);
-      v_items_discount := v_items_discount + ((i->>'quantity')::INTEGER*COALESCE((i->>'discount')::NUMERIC,0));
+    FOREACH _line IN ARRAY v_lines LOOP
+      v_subtotal := v_subtotal + ((_line->>'quantity')::INTEGER*(_line->>'unit_sale_price')::NUMERIC);
+      v_items_discount := v_items_discount + ((_line->>'quantity')::INTEGER*COALESCE((_line->>'discount')::NUMERIC,0));
     END LOOP;
     v_charged := r.charged; v_paid := r.paid;
     v_general_discount := GREATEST(0, v_subtotal - v_items_discount - v_charged);
@@ -488,7 +538,10 @@ BEGIN
       v_payment := JSONB_BUILD_OBJECT('method','OUTRO','installments',1,'amount',0,
         'fee_percent',0,'fee_expected',0,'fee_actual',0,'provider_snapshot','Não informado','modality_snapshot','Não informado');
     END IF;
-    v_items := to_jsonb(v_lines);
+    v_items := array_to_json(v_lines)::jsonb;
+    IF COALESCE(array_length(v_lines, 1), 0) = 0 THEN
+      RAISE EXCEPTION 'VENDA Pendente %: 0 itens criados. Verifique public.products (SKUs no array % na linha VALUES do bloco).', r.cust, r.lines::TEXT;
+    END IF;
     v_sale_id := (public.finalize_sale(p_source:='DISTANCIA',p_items:=v_items,p_general_discount:=v_general_discount,p_payment:=v_payment,
       p_customer_name:=r.cust,p_user_id:=v_admin)->>'sale_id')::UUID;
     -- Atualiza status CONCLUIDA -> PARCIAL ou PENDENTE
@@ -515,7 +568,6 @@ BEGIN
         'Conta a receber Venda #'||lpad(v_sale_friendly::TEXT,6,'0')||' - '||r.cust||' ('||r.status_||')',
         (v_charged - v_paid), v_sale_id, r.method_, 'PENDENTE', COALESCE(r.dt::DATE + 30, CURRENT_DATE+30), v_admin);
     END IF;
-    INSERT INTO tmp_import_sale_done VALUES (r.ext);
     RAISE NOTICE 'OK Venda % #% (%)', r.cust, v_sale_friendly, r.status_;
   END LOOP;
   END pendentes;
@@ -527,9 +579,9 @@ BEGIN
   -- ================================================================================
   v_ext := 'HIST-VENDA-018-EVELLYN-LUISA-FONO-PENDENTE-POA';
   IF NOT EXISTS (SELECT 1 FROM public.sales s WHERE customer_name LIKE 'Evellyn%' AND customer_name LIKE '%fono%')
-    AND NOT EXISTS (SELECT 1 FROM tmp_import_sale_done WHERE external_id=v_ext) THEN
+     THEN
     v_lines := ARRAY[]::JSONB[];
-    FOR sku IN SELECT id,sku,sale_price FROM public.products WHERE sku='CONJ-007' LOOP
+    FOR sku IN SELECT p.id,p.sku,p.sale_price FROM public.products p WHERE p.sku='CONJ-007' LOOP
       v_line := JSONB_BUILD_OBJECT('product_id',sku.id,'variant_id',NULL,
         'product_name','Conjunto longo top e saia poá amarelo (modelo teste, não gostaram mas vendido)',
         'variant',NULL,'sku',sku.sku,'quantity',1,
@@ -537,16 +589,19 @@ BEGIN
       v_lines := array_append(v_lines,v_line);
     END LOOP;
     v_subtotal:=0; v_items_discount:=0;
-    FOR i IN SELECT * FROM jsonb_array_elements(to_jsonb(v_lines)) LOOP
-      v_subtotal := v_subtotal + ((i->>'quantity')::INTEGER*(i->>'unit_sale_price')::NUMERIC);
-      v_items_discount := v_items_discount + ((i->>'quantity')::INTEGER*COALESCE((i->>'discount')::NUMERIC,0));
+    FOREACH _line IN ARRAY v_lines LOOP
+      v_subtotal := v_subtotal + ((_line->>'quantity')::INTEGER*(_line->>'unit_sale_price')::NUMERIC);
+      v_items_discount := v_items_discount + ((_line->>'quantity')::INTEGER*COALESCE((_line->>'discount')::NUMERIC,0));
     END LOOP;
     v_charged := 189.90; v_paid := 0;
     v_general_discount := GREATEST(0, v_subtotal - v_items_discount - v_charged);
     IF v_general_discount<0 THEN v_general_discount:=0; END IF;
     v_payment := JSONB_BUILD_OBJECT('method','OUTRO','installments',1,'amount',0,
       'fee_percent',0,'fee_expected',0,'fee_actual',0,'provider_snapshot','Não informado','modality_snapshot','Não informado');
-    v_items := to_jsonb(v_lines);
+    v_items := array_to_json(v_lines)::jsonb;
+    IF COALESCE(array_length(v_lines, 1), 0) = 0 THEN
+      RAISE EXCEPTION 'VENDA Evellyn Luísa (fono): 0 itens criados. SKU procurado: CONJ-007. RODE PRIMEIRO patch_01_estoque.sql (cria CONJ-007).';
+    END IF;
     v_sale_id := (public.finalize_sale(p_source:='DISTANCIA',p_items:=v_items,p_general_discount:=v_general_discount,p_payment:=v_payment,
       p_customer_name:='Evellyn Luísa (fono)',p_user_id:=v_admin)->>'sale_id')::UUID;
     UPDATE public.sales SET status='PENDENTE', sale_date='2026-09-16 17:00:00-03' WHERE id=v_sale_id RETURNING friendly_number INTO v_sale_friendly;
@@ -556,7 +611,7 @@ BEGIN
     VALUES ('2026-09-16'::DATE,'ENTRADA','VENDA',
       'Conta a receber Venda #'||lpad(v_sale_friendly::TEXT,6,'0')||' - Evellyn Luísa (fono) - Conjunto poá amarelo (CONJ-007)',
       189.90, v_sale_id, 'OUTRO', 'PENDENTE', '2026-10-16'::DATE, v_admin);
-    INSERT INTO tmp_import_sale_done VALUES (v_ext);
+
     RAISE NOTICE 'OK Venda 18 Evellyn Luísa (fono, POÁ CONJ-007) #%', v_sale_friendly;
   END IF;
 

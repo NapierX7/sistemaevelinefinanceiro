@@ -40,12 +40,24 @@ SELECT
   (SELECT id FROM public.packaging_types WHERE code = 'PEQUENA')
 WHERE NOT EXISTS (SELECT 1 FROM public.products WHERE sku = 'BLUSA-004');
 
+-- Garante CONJ-006 (camisa+short) e CONJ-007 (poá amarelo) existam
+INSERT INTO public.products (sku, name, slug, category_id, current_cost, sale_price, default_packaging_type_id)
+SELECT
+  'CONJ-006', 'Conjunto camisa e short', 'conjunto-camisa-short',
+  (SELECT id FROM public.categories WHERE slug = 'conjuntos'),
+  75.00, 159.90, (SELECT id FROM public.packaging_types WHERE code = 'GRANDE')
+WHERE NOT EXISTS (SELECT 1 FROM public.products WHERE sku = 'CONJ-006');
+
+INSERT INTO public.products (sku, name, slug, category_id, current_cost, sale_price, default_packaging_type_id)
+SELECT
+  'CONJ-007', 'Conjunto saia e top poá amarelo', 'conjunto-saia-top-poa-amarelo',
+  (SELECT id FROM public.categories WHERE slug = 'conjuntos'),
+  75.00, 189.90, (SELECT id FROM public.packaging_types WHERE code = 'GRANDE')
+WHERE NOT EXISTS (SELECT 1 FROM public.products WHERE sku = 'CONJ-007');
+
 -- ============================================================
 -- PASSO 2: 3 ENTRADAS HISTÓRICAS (38 peças, R$ 1.950,00 total)
 -- ============================================================
-
--- Tabela temporária (sessão) para não recriar caso já rodou
-CREATE TEMP TABLE IF NOT EXISTS tmp_import_purchase_done (external_id TEXT PRIMARY KEY) ON COMMIT DROP;
 
 -- Helper: roda create_purchase_entry somente se external_id NÃO existir em purchase_entries.notes
 DO $$
@@ -62,7 +74,7 @@ BEGIN
   IF NOT EXISTS (
     SELECT 1 FROM public.purchase_entries pe
     WHERE pe.notes = v_ext OR pe.notes LIKE '%' || v_ext || '%'
-  ) AND NOT EXISTS (SELECT 1 FROM tmp_import_purchase_done WHERE external_id = v_ext) THEN
+  ) THEN
     v_items := JSONB_BUILD_ARRAY(
       JSONB_BUILD_OBJECT(
         'product_id', (SELECT id FROM public.products WHERE sku='CALCA-001'),
@@ -95,7 +107,6 @@ BEGIN
       p_notes := v_ext || ' — 6 peças (2x CALCA-001 R$189,90 cat / 4x BLUSA-001 R$99,90 cat). Total R$380,00.',
       p_user_id := v_admin
     );
-    INSERT INTO tmp_import_purchase_done (external_id) VALUES (v_ext);
     RAISE NOTICE 'OK: Entrada 1 criada (R$380,00, 6 peças)';
   ELSE
     RAISE NOTICE 'SKIP: Entrada 1 já existe (chave %)', v_ext;
@@ -105,7 +116,7 @@ BEGIN
   v_ext := 'HIST-ENTRADA-002-R410-Q13-D2108';
   IF NOT EXISTS (
     SELECT 1 FROM public.purchase_entries pe WHERE pe.notes = v_ext
-  ) AND NOT EXISTS (SELECT 1 FROM tmp_import_purchase_done WHERE external_id = v_ext) THEN
+  ) THEN
     v_items := JSONB_BUILD_ARRAY(
       JSONB_BUILD_OBJECT('product_id',(SELECT id FROM public.products WHERE sku='REGATA-001'),'product_name','Regata alça fina — Off, Preta, Marrom (1 cada)','unit_cost',25.00,'quantity',3),
       JSONB_BUILD_OBJECT('product_id',(SELECT id FROM public.products WHERE sku='BLUSA-002'),'product_name','Blusa assimétrica — Amarela, Preta, Marrom (1 cada)','unit_cost',20.00,'quantity',3),
@@ -133,7 +144,6 @@ BEGIN
       p_notes := v_ext || ' — 13 peças. TOTAL R$410,00 (ajuste fornecedor -R$55,00 para bater valor informado).',
       p_user_id := v_admin
     );
-    INSERT INTO tmp_import_purchase_done (external_id) VALUES (v_ext);
     RAISE NOTICE 'OK: Entrada 2 criada (R$410,00, 13 peças)';
   ELSE
     RAISE NOTICE 'SKIP: Entrada 2 já existe';
@@ -141,8 +151,7 @@ BEGIN
 
   -- ======================== 3ª ENTRADA ========================
   v_ext := 'HIST-ENTRADA-003-R1160-Q19';
-  IF NOT EXISTS (SELECT 1 FROM public.purchase_entries pe WHERE pe.notes = v_ext)
-    AND NOT EXISTS (SELECT 1 FROM tmp_import_purchase_done WHERE external_id = v_ext) THEN
+  IF NOT EXISTS (SELECT 1 FROM public.purchase_entries pe WHERE pe.notes = v_ext) THEN
     v_items := JSONB_BUILD_ARRAY(
       -- 3 conj calça/blusa R$75 c/u (associados CONJ-002 branco / 003 preto / 004 rosa — 1 cada)
       JSONB_BUILD_OBJECT('product_id',(SELECT id FROM public.products WHERE sku='CONJ-002'),'product_name','Conjunto branco (3 conjuntos calça+blusa R$75 cada)','unit_cost',75.00,'quantity',1),
@@ -173,7 +182,6 @@ BEGIN
       p_notes := v_ext || ' — 19 peças. TOTAL R$1.160,00.',
       p_user_id := v_admin
     );
-    INSERT INTO tmp_import_purchase_done (external_id) VALUES (v_ext);
     RAISE NOTICE 'OK: Entrada 3 criada (R$1.160,00, 19 peças)';
   ELSE
     RAISE NOTICE 'SKIP: Entrada 3 já existe';
