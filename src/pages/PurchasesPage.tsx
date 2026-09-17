@@ -216,7 +216,9 @@ function NewPurchaseModal({
     }
   }
 
-  const addCusto = () => setOtherCosts(arr => [...arr, { description: '', category: 'Outra despesa', amount: '0,00' }])
+  const addCusto = () => setOtherCosts(arr => [...arr, { description: 'Sacolas plásticas', category: 'Embalagem', amount: '0,00' }])
+  const addCustoRapido = (preset: { description: string; category: string }) =>
+    setOtherCosts(arr => [...arr, { ...preset, amount: '0,00' }])
   const removeCusto = (i: number) => setOtherCosts(arr => arr.filter((_, idx) => idx !== i))
   const updateCusto = (i: number, patch: Partial<OtherCost>) =>
     setOtherCosts(arr => arr.map((c, idx) => idx === i ? { ...c, ...patch } : c))
@@ -437,35 +439,65 @@ function NewPurchaseModal({
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
                 <div className="card p-4 space-y-4">
                   <h3 className="font-bold text-ink-800 flex items-center gap-2">
-                    <Truck className="w-4 h-4" /> Custos adicionais
+                    <Truck className="w-4 h-4" /> Custos adicionais da entrada
                   </h3>
+                  <p className="text-xs text-ink-500">
+                    Sacolas, cheirinho, frete, taxas — tudo é rateado no custo efetivo de cada peça.
+                  </p>
                   <div>
-                    <label className="label text-sm">Frete (R$)</label>
+                    <label className="label text-sm">Frete / Transporte (R$)</label>
                     <input className="input num" value={shippingCost} onChange={e => setShippingCost(e.target.value)}
-                      inputMode="decimal" />
+                      inputMode="decimal" placeholder="0,00" />
                   </div>
+
                   <div>
                     <div className="flex items-center justify-between mb-2">
-                      <label className="label mb-0 text-sm">Outros custos</label>
+                      <label className="label mb-0 text-sm">Custos extras (sacolas, cheirinho etc.)</label>
                       <button onClick={addCusto} className="btn-ghost !py-1.5 text-xs">
-                        <Plus className="w-3 h-3" /> Adicionar
+                        <Plus className="w-3 h-3" /> Personalizado
                       </button>
                     </div>
+
+                    <div className="flex flex-wrap gap-1.5 mb-3">
+                      {([
+                        { k: 'bag', description: 'Sacolas plásticas', category: 'Embalagem', icon: '🛍️' },
+                        { k: 'scent', description: 'Cheirinho / Perfumaria', category: 'Embalagem', icon: '🌸' },
+                        { k: 'tissue', description: 'Papel seda / tissue', category: 'Embalagem', icon: '📜' },
+                        { k: 'sticker', description: 'Etiquetas / Adesivos', category: 'Embalagem', icon: '🏷️' },
+                        { k: 'box', description: 'Caixas de presente', category: 'Embalagem', icon: '🎁' },
+                        { k: 'ribbon', description: 'Fitas / Laços', category: 'Embalagem', icon: '🎀' },
+                        { k: 'cardfee', description: 'Taxa maquininha (entrada)', category: 'Taxa', icon: '💳' },
+                        { k: 'handling', description: 'Manuseio / Serviço', category: 'Manuseio', icon: '🧰' },
+                        { k: 'insurance', description: 'Seguro / Rastreio', category: 'Seguro', icon: '🛡️' },
+                        { k: 'tax', description: 'Imposto / ICMS', category: 'Imposto', icon: '🧾' },
+                      ]).map(p => (
+                        <button key={p.k} onClick={() => addCustoRapido({ description: p.description, category: p.category })}
+                          className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold
+                                     bg-white border border-ink-200 text-ink-700
+                                     hover:bg-brand-50 hover:border-brand-300 hover:text-brand-800
+                                     active:scale-[0.98] transition min-h-[36px]">
+                          <span className="text-sm leading-none">{p.icon}</span>
+                          <span>{p.description}</span>
+                        </button>
+                      ))}
+                    </div>
+
                     {otherCosts.length === 0 ? (
                       <div className="p-3 rounded-lg bg-ink-50 border border-ink-100 border-dashed text-center text-xs text-ink-500">
-                        Nenhum custo adicional.
+                        Nenhum custo extra adicionado. Clique nos botões acima para lançar rápido.
                       </div>
                     ) : (
                       <div className="space-y-2">
                         {otherCosts.map((c, i) => (
                           <div key={i} className="grid grid-cols-12 gap-2 items-start">
                             <div className="col-span-5">
-                              <input className="input text-xs" placeholder="Descrição"
+                              <input className="input text-xs" placeholder="Descrição (ex: Sacolas P)"
                                 value={c.description} onChange={e => updateCusto(i, { description: e.target.value })} />
                             </div>
                             <div className="col-span-3">
                               <select className="select pr-8 text-xs" value={c.category}
                                 onChange={e => updateCusto(i, { category: e.target.value })}>
+                                <option>Embalagem</option>
                                 <option>Outra despesa</option>
                                 <option>Imposto</option>
                                 <option>Seguro</option>
@@ -475,10 +507,11 @@ function NewPurchaseModal({
                             </div>
                             <div className="col-span-3">
                               <input className="input num text-xs" value={c.amount}
-                                onChange={e => updateCusto(i, { amount: e.target.value })} inputMode="decimal" />
+                                onChange={e => updateCusto(i, { amount: e.target.value })} inputMode="decimal"
+                                placeholder="0,00" />
                             </div>
                             <div className="col-span-1">
-                              <button onClick={() => removeCusto(i)} className="btn-ghost !p-2 text-rose-600 hover:bg-rose-50 w-full">
+                              <button onClick={() => removeCusto(i)} className="btn-ghost !p-2 text-rose-600 hover:bg-rose-50 w-full" aria-label="Remover custo">
                                 <Trash2 className="w-3.5 h-3.5" />
                               </button>
                             </div>
