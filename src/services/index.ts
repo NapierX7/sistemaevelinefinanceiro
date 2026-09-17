@@ -13,46 +13,54 @@ export const usingSupabase = isSupabaseConfigured && supabase !== null
 
 export async function listProducts(): Promise<Product[]> {
   if (!usingSupabase) return Demo.demoListProducts()
-  const { data } = await (supabase!)
-    .from('products_with_stock')
-    .select('*')
+  const { data, error } = await (supabase!)
+    .from('products')
+    .select('id, sku, name, slug, category_id, default_packaging_type_id, current_cost, sale_price, min_stock, active, created_at, updated_at')
     .eq('active', true)
     .order('name')
+  if (error) { console.error('[services] listProducts error:', error); throw error }
   return (data as Product[]) ?? []
 }
 
 export async function listAllProducts(includeInactive = false): Promise<Product[]> {
   if (!usingSupabase) return Demo.demoListProducts()
-  let q = (supabase!).from('products_with_stock').select('*')
+  let q = (supabase!).from('products').select('id, sku, name, slug, category_id, default_packaging_type_id, current_cost, sale_price, min_stock, active, created_at, updated_at')
   if (!includeInactive) q = q.eq('active', true)
-  const { data } = await q.order('name')
+  const { data, error } = await q.order('name')
+  if (error) { console.error('[services] listAllProducts error:', error); throw error }
   return (data as Product[]) ?? []
 }
 
 export async function getProduct(id: UUID): Promise<Product | null> {
   if (!usingSupabase) return Demo.demoListProducts().find(p => p.id === id) ?? null
-  const { data } = await (supabase as any).from('products_with_stock').select('*').eq('id', id).maybeSingle()
+  const { data, error } = await (supabase as any).from('products').select('*').eq('id', id).maybeSingle()
+  if (error) { console.error('[services] getProduct error:', error); throw error }
   return (data as Product | null) ?? null
 }
 
 export async function createProduct(p: Partial<Product>): Promise<Product> {
-  if (!usingSupabase) return Demo.demoCreateProduct(p)
-  const sup: any = supabase
-  const { data, error } = await sup.from('products').insert({
-    sku: p.sku ?? null,
-    name: p.name ?? 'Novo produto',
-    slug: p.slug ?? null,
-    category_id: p.category_id ?? null,
-    default_packaging_type_id: p.default_packaging_type_id ?? null,
-    current_cost: Number(p.current_cost ?? 0),
-    sale_price: Number(p.sale_price ?? 0),
-    min_stock: Number(p.min_stock ?? 0),
-    image_url: p.image_url ?? null,
-    notes: p.notes ?? null,
-    active: p.active ?? true,
-  }).select().single()
-  if (error) throw error
-  return data as Product
+  let ret: any
+  if (!usingSupabase) ret = Demo.demoCreateProduct(p)
+  else {
+    const sup: any = supabase
+    const { data, error } = await sup.from('products').insert({
+      sku: p.sku ?? null,
+      name: p.name ?? 'Novo produto',
+      slug: p.slug ?? null,
+      category_id: p.category_id ?? null,
+      default_packaging_type_id: p.default_packaging_type_id ?? null,
+      current_cost: Number(p.current_cost ?? 0),
+      sale_price: Number(p.sale_price ?? 0),
+      min_stock: Number(p.min_stock ?? 0),
+      image_url: p.image_url ?? null,
+      notes: p.notes ?? null,
+      active: p.active ?? true,
+    }).select().single()
+    if (error) throw error
+    ret = data as Product
+  }
+  setTimeout(__reloadDashboard, 50)
+  return ret
 }
 
 export async function updateProduct(id: UUID, patch: Partial<Product>): Promise<Product | null> {
@@ -229,48 +237,63 @@ export interface FinalizeSaleParams {
 
 export async function finalizeSale(p: FinalizeSaleParams) {
   const userId = getCurrentUserId()
+  let ret: any
   if (!usingSupabase) {
-    return Demo.demoFinalizeSale({ ...p, user_id: userId ?? undefined } as any)
+    ret = Demo.demoFinalizeSale({ ...p, user_id: userId ?? undefined } as any)
+  } else {
+    const { data, error } = await (supabase as any).rpc('finalize_sale', {
+      p_source: p.source,
+      p_items: p.items as any,
+      p_general_discount: p.general_discount ?? 0,
+      p_coupon_id: p.coupon_id ?? null,
+      p_coupon_code: p.coupon_code ?? null,
+      p_pix_discount: p.pix_discount ?? 0,
+      p_payment: p.payment ? ({
+        provider_id: p.payment.provider_id ?? null,
+        modality_id: p.payment.modality_id ?? null,
+        method: p.payment.method,
+        installments: p.payment.installments ?? 1,
+        amount: p.payment.amount ?? null,
+        fee_percent: p.payment.fee_percent ?? 0,
+        fee_expected: p.payment.fee_expected ?? 0,
+        fee_actual: p.payment.fee_actual ?? (p.payment.fee_expected ?? 0),
+        provider_snapshot: p.payment.provider_snapshot ?? null,
+        modality_snapshot: p.payment.modality_snapshot ?? null,
+        fee_rule_id: p.payment.fee_rule_id ?? null,
+      } as any) : null,
+      p_packaging: p.packaging as any ?? null,
+      p_extra_costs: (p.extra_costs ?? []) as any,
+      p_customer_name: p.customer_name ?? null,
+      p_customer_phone: p.customer_phone ?? null,
+      p_user_id: userId ?? null,
+    })
+    if (error) throw error
+    ret = data
   }
-  const { data, error } = await (supabase as any).rpc('finalize_sale', {
-    p_source: p.source,
-    p_items: p.items as any,
-    p_general_discount: p.general_discount ?? 0,
-    p_coupon_id: p.coupon_id ?? null,
-    p_coupon_code: p.coupon_code ?? null,
-    p_pix_discount: p.pix_discount ?? 0,
-    p_payment: p.payment ? ({
-      provider_id: p.payment.provider_id ?? null,
-      modality_id: p.payment.modality_id ?? null,
-      method: p.payment.method,
-      installments: p.payment.installments ?? 1,
-      amount: p.payment.amount ?? null,
-      fee_percent: p.payment.fee_percent ?? 0,
-      fee_expected: p.payment.fee_expected ?? 0,
-      fee_actual: p.payment.fee_actual ?? (p.payment.fee_expected ?? 0),
-      provider_snapshot: p.payment.provider_snapshot ?? null,
-      modality_snapshot: p.payment.modality_snapshot ?? null,
-      fee_rule_id: p.payment.fee_rule_id ?? null,
-    } as any) : null,
-    p_packaging: p.packaging as any ?? null,
-    p_extra_costs: (p.extra_costs ?? []) as any,
-    p_customer_name: p.customer_name ?? null,
-    p_customer_phone: p.customer_phone ?? null,
-    p_user_id: userId ?? null,
-  })
-  if (error) throw error
-  return data
+  setTimeout(__reloadDashboard, 50)
+  return ret
+}
+
+const __reloadDashboard = () => {
+  try {
+    const fn = (window as any).__reloadDashboard
+    if (typeof fn === 'function') fn()
+  } catch {}
 }
 
 export async function cancelSale(sale_id: UUID, reason: string) {
   const userId = getCurrentUserId()
-  if (!usingSupabase) return Demo.demoCancelSale(sale_id, reason, userId ?? undefined)
+  if (!usingSupabase) {
+    const r = Demo.demoCancelSale(sale_id, reason, userId ?? undefined)
+    setTimeout(__reloadDashboard, 50); return r
+  }
   const { data, error } = await (supabase as any).rpc('cancel_sale', {
     p_sale_id: sale_id,
     p_reason: reason,
     p_user_id: userId ?? null,
   })
   if (error) throw error
+  setTimeout(__reloadDashboard, 50)
   return data
 }
 
@@ -298,31 +321,35 @@ export async function recordRemainingPayment(
   p: RecordRemainingPaymentParams
 ) {
   const userId = getCurrentUserId()
+  let ret: any
   if (!usingSupabase) {
-    return Demo.demoRecordRemainingPayment(sale_id, { ...p, user_id: userId ?? undefined } as any)
+    ret = Demo.demoRecordRemainingPayment(sale_id, { ...p, user_id: userId ?? undefined } as any)
+  } else {
+    const { data, error } = await (supabase as any).rpc('record_remaining_payment', {
+      p_sale_id: sale_id,
+      p_payment: {
+        provider_id: p.payment.provider_id ?? null,
+        modality_id: p.payment.modality_id ?? null,
+        method: p.payment.method,
+        installments: p.payment.installments ?? 1,
+        amount: p.payment.amount ?? null,
+        fee_percent: p.payment.fee_percent ?? 0,
+        fee_expected: p.payment.fee_expected ?? 0,
+        fee_actual: p.payment.fee_actual ?? null,
+        provider_snapshot: p.payment.provider_snapshot ?? null,
+        modality_snapshot: p.payment.modality_snapshot ?? null,
+        fee_rule_id: p.payment.fee_rule_id ?? null,
+      } as any,
+      p_amount: p.amount ?? null,
+      p_trans_date: p.trans_date ?? null,
+      p_user_id: userId ?? null,
+      p_notes: p.notes ?? null,
+    })
+    if (error) throw error
+    ret = data
   }
-  const { data, error } = await (supabase as any).rpc('record_remaining_payment', {
-    p_sale_id: sale_id,
-    p_payment: {
-      provider_id: p.payment.provider_id ?? null,
-      modality_id: p.payment.modality_id ?? null,
-      method: p.payment.method,
-      installments: p.payment.installments ?? 1,
-      amount: p.payment.amount ?? null,
-      fee_percent: p.payment.fee_percent ?? 0,
-      fee_expected: p.payment.fee_expected ?? 0,
-      fee_actual: p.payment.fee_actual ?? null,
-      provider_snapshot: p.payment.provider_snapshot ?? null,
-      modality_snapshot: p.payment.modality_snapshot ?? null,
-      fee_rule_id: p.payment.fee_rule_id ?? null,
-    } as any,
-    p_amount: p.amount ?? null,
-    p_trans_date: p.trans_date ?? null,
-    p_user_id: userId ?? null,
-    p_notes: p.notes ?? null,
-  })
-  if (error) throw error
-  return data
+  setTimeout(__reloadDashboard, 50)
+  return ret
 }
 
 // =====================================================
@@ -362,20 +389,26 @@ export interface CreatePurchaseParams {
 
 export async function createPurchase(p: CreatePurchaseParams) {
   const userId = getCurrentUserId()
-  if (!usingSupabase) return Demo.demoCreatePurchaseEntry({ ...p, user_id: userId ?? undefined })
-  const { data, error } = await (supabase as any).rpc('create_purchase_entry', {
-    p_entry_date: p.entry_date ?? null,
-    p_supplier: p.supplier ?? null,
-    p_origin: p.origin ?? null,
-    p_cost_allocation_method: p.cost_allocation_method ?? 'quantity',
-    p_items: p.items as any,
-    p_shipping_cost: p.shipping_cost ?? 0,
-    p_other_costs: (p.other_costs ?? []) as any,
-    p_notes: p.notes ?? null,
-    p_user_id: userId ?? null,
-  })
-  if (error) throw error
-  return data
+  let ret: any
+  if (!usingSupabase) {
+    ret = Demo.demoCreatePurchaseEntry({ ...p, user_id: userId ?? undefined })
+  } else {
+    const { data, error } = await (supabase as any).rpc('create_purchase_entry', {
+      p_entry_date: p.entry_date ?? null,
+      p_supplier: p.supplier ?? null,
+      p_origin: p.origin ?? null,
+      p_cost_allocation_method: p.cost_allocation_method ?? 'quantity',
+      p_items: p.items as any,
+      p_shipping_cost: p.shipping_cost ?? 0,
+      p_other_costs: (p.other_costs ?? []) as any,
+      p_notes: p.notes ?? null,
+      p_user_id: userId ?? null,
+    })
+    if (error) throw error
+    ret = data
+  }
+  setTimeout(__reloadDashboard, 50)
+  return ret
 }
 
 // =====================================================
@@ -395,67 +428,81 @@ export async function listInventoryMovements(): Promise<InventoryMovement[]> {
 
 export async function listInventoryBatches(product_id?: UUID): Promise<InventoryBatch[]> {
   if (!usingSupabase) return Demo.demoListBatches(product_id)
-  let q = (supabase!).from('inventory_batches').select('*')
+  let q = (supabase!).from('inventory_batches')
+    .select('id, product_id, received_at, original_quantity, quantity_available, unit_cost, supplier_id, purchase_entry_id, notes, created_at, updated_at')
   if (product_id) q = q.eq('product_id', product_id)
-  const { data } = await q.order('received_at', { ascending: false })
+  const { data, error } = await q.order('received_at', { ascending: false })
+  if (error) { console.error('[services] listInventoryBatches error:', error); throw error }
   return (data as InventoryBatch[]) ?? []
 }
 
 export async function updateSale(sale_id: UUID, patch: Partial<Sale>): Promise<Sale | null> {
+  let ret: any = null
   if (!usingSupabase) {
-    const s = Demo.demoUpdateSale(sale_id, patch)
-    return s
+    ret = Demo.demoUpdateSale(sale_id, patch)
+  } else {
+    const sup: any = supabase
+    const patchSafe: any = {}
+    if (patch.customer_name !== undefined) patchSafe.customer_name = patch.customer_name
+    if (patch.customer_phone !== undefined) patchSafe.customer_phone = patch.customer_phone
+    if (patch.sale_date !== undefined) patchSafe.sale_date = patch.sale_date
+    if (patch.source !== undefined) patchSafe.source = patch.source
+    if (patch.status !== undefined) patchSafe.status = patch.status
+    if ((patch as any).notes !== undefined) patchSafe.notes = (patch as any).notes
+    if (patch.total_customer !== undefined) patchSafe.total_customer = Number(patch.total_customer)
+    if (patch.updated_at === undefined || !patch.updated_at) patchSafe.updated_at = new Date().toISOString()
+    const { data, error } = await sup
+      .from('sales')
+      .update(patchSafe)
+      .eq('id', sale_id)
+      .select()
+      .maybeSingle()
+    if (error) throw error
+    ret = (data as Sale) ?? null
   }
-  const sup: any = supabase
-  const patchSafe: any = {}
-  if (patch.customer_name !== undefined) patchSafe.customer_name = patch.customer_name
-  if (patch.customer_phone !== undefined) patchSafe.customer_phone = patch.customer_phone
-  if (patch.sale_date !== undefined) patchSafe.sale_date = patch.sale_date
-  if (patch.source !== undefined) patchSafe.source = patch.source
-  if (patch.status !== undefined) patchSafe.status = patch.status
-  if ((patch as any).notes !== undefined) patchSafe.notes = (patch as any).notes
-  if (patch.total_customer !== undefined) patchSafe.total_customer = Number(patch.total_customer)
-  if (patch.updated_at === undefined || !patch.updated_at) patchSafe.updated_at = new Date().toISOString()
-  const { data, error } = await sup
-    .from('sales')
-    .update(patchSafe)
-    .eq('id', sale_id)
-    .select()
-    .maybeSingle()
-  if (error) throw error
-  return (data as Sale) ?? null
+  setTimeout(__reloadDashboard, 50)
+  return ret
 }
 
 export async function updateSalePayment(payment_id: UUID, patch: Partial<SalePayment>): Promise<SalePayment | null> {
-  if (!usingSupabase) { return (Demo.demoUpdateSalePayment(payment_id, patch) ?? null) }
-  const sup: any = supabase
-  const patchSafe: any = {}
-  if (patch.method !== undefined) patchSafe.method = patch.method
-  if (patch.amount !== undefined) patchSafe.amount = Number(patch.amount)
-  if ((patch as any).trans_date !== undefined) patchSafe.trans_date = (patch as any).trans_date
-  if ((patch as any).provider_snapshot !== undefined) patchSafe.provider_snapshot = (patch as any).provider_snapshot
-  if ((patch as any).modality_snapshot !== undefined) patchSafe.modality_snapshot = (patch as any).modality_snapshot
-  if ((patch as any).fee_expected_snapshot !== undefined) patchSafe.fee_expected_snapshot = Number((patch as any).fee_expected_snapshot ?? 0)
-  if ((patch as any).fee_real_snapshot !== undefined) patchSafe.fee_real_snapshot = Number((patch as any).fee_real_snapshot ?? 0)
-  if ((patch as any).installments_snapshot !== undefined) patchSafe.installments_snapshot = Number((patch as any).installments_snapshot ?? 1)
-  if ((patch as any).notes !== undefined) patchSafe.notes = (patch as any).notes
-  const { data, error } = await sup
-    .from('sale_payments')
-    .update(patchSafe)
-    .eq('id', payment_id)
-    .select()
-    .maybeSingle()
-  if (error) throw error
-  return (data as SalePayment) ?? null
+  let ret: any = null
+  if (!usingSupabase) {
+    ret = (Demo.demoUpdateSalePayment(payment_id, patch) ?? null)
+  } else {
+    const sup: any = supabase
+    const patchSafe: any = {}
+    if (patch.method !== undefined) patchSafe.method = patch.method
+    if (patch.amount !== undefined) patchSafe.amount = Number(patch.amount)
+    if ((patch as any).trans_date !== undefined) patchSafe.trans_date = (patch as any).trans_date
+    if ((patch as any).provider_snapshot !== undefined) patchSafe.provider_snapshot = (patch as any).provider_snapshot
+    if ((patch as any).modality_snapshot !== undefined) patchSafe.modality_snapshot = (patch as any).modality_snapshot
+    if ((patch as any).fee_expected_snapshot !== undefined) patchSafe.fee_expected_snapshot = Number((patch as any).fee_expected_snapshot ?? 0)
+    if ((patch as any).fee_real_snapshot !== undefined) patchSafe.fee_real_snapshot = Number((patch as any).fee_real_snapshot ?? 0)
+    if ((patch as any).installments_snapshot !== undefined) patchSafe.installments_snapshot = Number((patch as any).installments_snapshot ?? 1)
+    if ((patch as any).notes !== undefined) patchSafe.notes = (patch as any).notes
+    const { data, error } = await sup
+      .from('sale_payments')
+      .update(patchSafe)
+      .eq('id', payment_id)
+      .select()
+      .maybeSingle()
+    if (error) throw error
+    ret = (data as SalePayment) ?? null
+  }
+  setTimeout(__reloadDashboard, 50)
+  return ret
 }
 
 export async function deleteSalePayment(payment_id: UUID): Promise<void> {
-  if (!usingSupabase) { Demo.demoDeleteSalePayment(payment_id); return }
-  const { error } = await (supabase as any)
-    .from('sale_payments')
-    .delete()
-    .eq('id', payment_id)
-  if (error) throw error
+  if (!usingSupabase) { Demo.demoDeleteSalePayment(payment_id) }
+  else {
+    const { error } = await (supabase as any)
+      .from('sale_payments')
+      .delete()
+      .eq('id', payment_id)
+    if (error) throw error
+  }
+  setTimeout(__reloadDashboard, 50)
 }
 
 export interface RegistrarDespesaParams {

@@ -5,7 +5,7 @@ import {
 } from 'lucide-react'
 import {
   formatCurrency, formatPercent, formatDate, rangePresets, inRange,
-  statusLabel, sourceLabel, paymentMethodLabel, pluralize, cn, formatFriendlyNumber
+  statusLabel, sourceLabel, paymentMethodLabel, pluralize, cn
 } from '@/lib/format'
 import {
   listSales, listProducts, listInventoryBatches, listFinancialTransactions,
@@ -28,6 +28,11 @@ export default function DashboardPage() {
   const [transactions, setTransactions] = useState<FinancialTransaction[]>([])
   const [movements, setMovements] = useState<InventoryMovement[]>([])
   const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState<string | null>(null)
+  const [loadTick, setLoadTick] = useState(0)
+
+  const reloadDashboard = () => setLoadTick(t => t + 1)
+  ;(window as any).__reloadDashboard = reloadDashboard
 
   useEffect(() => {
     if (preset !== 'PERSONALIZADO') {
@@ -39,13 +44,17 @@ export default function DashboardPage() {
 
   useEffect(() => {
     setLoading(true)
+    setLoadError(null)
     Promise.all([
       listSales(), listProducts(), listInventoryBatches(),
       listFinancialTransactions(), listInventoryMovements()
     ]).then(([s, p, b, t, m]) => {
       setSales(s); setProducts(p); setBatches(b); setTransactions(t); setMovements(m)
+    }).catch(err => {
+      console.error('[Dashboard] Falha ao carregar dados:', err)
+      setLoadError(err?.message ?? 'Erro desconhecido')
     }).finally(() => setLoading(false))
-  }, [])
+  }, [loadTick])
 
   const { fromDate, toDate } = useMemo(() => ({
     fromDate: new Date(from + 'T00:00:00'),
@@ -79,23 +88,36 @@ export default function DashboardPage() {
   }, [periodSales])
 
   const estoque = useMemo(() => {
-    const prodMap = new Map(products.map(p => [p.id, p]))
+    type ProdStock = { quantity: number; cost: number }
+    const stockByProduct = new Map<string, ProdStock>()
+
+    for (const batch of batches ?? []) {
+      const current = stockByProduct.get(batch.product_id) ?? { quantity: 0, cost: 0 }
+      const qty = Number(batch.quantity_available ?? 0)
+      const uc = Number(batch.unit_cost ?? 0)
+      current.quantity += qty
+      current.cost += qty * uc
+      stockByProduct.set(batch.product_id, current)
+    }
+
     let pecasDisp = 0
     let valorInvestido = 0
     let potencialVenda = 0
     const baixo: Product[] = []
     const semEstoque: Product[] = []
-    products.forEach(p => {
-      const qty = Number(p.stock_quantity ?? 0)
-      const custo = Number(p.current_cost ?? 0)
+
+    for (const p of products) {
+      const qty = stockByProduct.get(p.id)?.quantity ?? 0
+      const custoLote = stockByProduct.get(p.id)?.cost ?? 0
       const venda = Number(p.sale_price ?? 0)
       pecasDisp += qty
-      valorInvestido += qty * custo
+      valorInvestido += custoLote
       potencialVenda += qty * venda
-      if (qty === 0) semEstoque.push(p)
+      if (qty <= 0) semEstoque.push(p)
       else if (qty <= Number(p.min_stock ?? 0)) baixo.push(p)
-    })
-    return { pecasDisp, valorInvestido, potencialVenda, baixo, semEstoque, prodMap }
+    }
+
+    return { pecasDisp, valorInvestido, potencialVenda, baixo, semEstoque, stockByProduct }
   }, [products, batches])
 
   const pagamentos = useMemo(() => {
@@ -175,8 +197,8 @@ export default function DashboardPage() {
           sub={kpis.faturamento ? `sobre ${formatCurrency(kpis.faturamento)}` : 'sem vendas'} />
         <KpiCard label="Pedidos" value={String(kpis.pedidos)}
           icon={<ShoppingCart className="w-5 h-5" />} tone="ink"
-          sub={formatFriendlyNumber(kpis.pecas) + ' peças'} />
-        <KpiCard label="Peças vendidas" value={formatFriendlyNumber(kpis.pecas)}
+          sub={`${kpis.pecas} ${pluralize(kpis.pecas, 'peça', 'peças')}`} />
+        <KpiCard label="Peças vendidas" value={String(kpis.pecas)}
           icon={<Package className="w-5 h-5" />} tone="blue"
           sub={kpis.pedidos ? `média ${(kpis.pecas / kpis.pedidos).toFixed(1)}/pedido` : '-'} />
         <KpiCard label="Ticket médio" value={formatCurrency(kpis.ticketMedio)}
@@ -305,38 +327,61 @@ export default function DashboardPage() {
 
         <div className="card p-5">
           <div className="flex items-center justify-between mb-3">
-            <h3 className="font-bold text-ink-800">Resumo de estoque</h3>
-            <Link to="/estoque" className="text-xs font-semibold text-brand-700 hover:underline">Ver tudo →</Link>
-          </div>
-          <div className="grid grid-cols-2 gap-2.5 mb-4">
-            <MiniKpi label="Peças disponíveis" value={formatFriendlyNumber(estoque.pecasDisp)} />
-            <MiniKpi label="Valor investido" value={formatCurrency(estoque.valorInvestido)} />
-            <MiniKpi label="Potencial de venda" value={formatCurrency(estoque.potencialVenda)} />
-            <MiniKpi label="SKUs cadastrados" value={formatFriendlyNumber(products.length)} />
-          </div>
-          {(estoque.baixo.length || estoque.semEstoque.length) ? (
-            <div className="space-y-2.5">
-              {estoque.semEstoque.length > 0 && (
-                <AlertBlock
-                  icon={<AlertTriangle className="w-4 h-4" />}
-                  tone="rose"
-                  title={`${estoque.semEstoque.length} ${pluralize(estoque.semEstoque.length, 'produto', 'produtos')} sem estoque`}
-                  items={estoque.semEstoque.slice(0, 3).map(p => ({ t: p.name, s: 'Estoque: 0' }))}
-                />
-              )}
-              {estoque.baixo.length > 0 && (
-                <AlertBlock
-                  icon={<AlertTriangle className="w-4 h-4" />}
-                  tone="amber"
-                  title={`${estoque.baixo.length} ${pluralize(estoque.baixo.length, 'produto', 'produtos')} com estoque baixo`}
-                  items={estoque.baixo.slice(0, 3).map(p => ({
-                    t: p.name,
-                    s: `${Number(p.stock_quantity ?? 0)} un. · min ${Number(p.min_stock ?? 0)}`
-                  }))}
-                />
+            <div className="flex items-center gap-2">
+              <h3 className="font-bold text-ink-800">Resumo de estoque</h3>
+              {loading && (
+                <span className="chip bg-ink-100 text-ink-500 animate-pulse">Atualizando…</span>
               )}
             </div>
-          ) : <EmptyStateSmall text="Estoque saudável, sem alertas." />}
+            <Link to="/estoque" className="text-xs font-semibold text-brand-700 hover:underline">Ver tudo →</Link>
+          </div>
+
+          {loadError && !loading && (
+            <div className="mb-4 p-3 rounded-xl border border-rose-200 bg-rose-50 text-rose-800 text-xs">
+              <div className="font-bold">Erro ao carregar estoque</div>
+              <div className="mt-0.5 opacity-90 break-words">{loadError}</div>
+            </div>
+          )}
+
+          <div className="grid grid-cols-2 gap-2.5 mb-4">
+            <MiniKpi label="Peças disponíveis" value={String(estoque.pecasDisp)} />
+            <MiniKpi label="Custo do estoque" value={formatCurrency(estoque.valorInvestido)} />
+            <MiniKpi label="Potencial de venda" value={formatCurrency(estoque.potencialVenda)} />
+            <MiniKpi label="SKUs cadastrados" value={String(products.length)} />
+          </div>
+
+          {!loading && !loadError ? (
+            <>
+              {(estoque.baixo.length || estoque.semEstoque.length) ? (
+                <div className="space-y-2.5">
+                  {estoque.semEstoque.length > 0 && (
+                    <AlertBlock
+                      icon={<AlertTriangle className="w-4 h-4" />}
+                      tone="rose"
+                      title={`${estoque.semEstoque.length} ${pluralize(estoque.semEstoque.length, 'produto', 'produtos')} sem estoque`}
+                      items={estoque.semEstoque.slice(0, 3).map(p => ({ t: p.name, s: 'Estoque: 0' }))}
+                    />
+                  )}
+                  {estoque.baixo.length > 0 && (
+                    <AlertBlock
+                      icon={<AlertTriangle className="w-4 h-4" />}
+                      tone="amber"
+                      title={`${estoque.baixo.length} ${pluralize(estoque.baixo.length, 'produto', 'produtos')} com estoque baixo`}
+                      items={estoque.baixo.slice(0, 3).map(p => {
+                        const qty = estoque.stockByProduct.get(p.id)?.quantity ?? 0
+                        return { t: p.name, s: `${qty} un. · min ${Number(p.min_stock ?? 0)}` }
+                      })}
+                    />
+                  )}
+                </div>
+              ) : <EmptyStateSmall text="Estoque saudável, sem alertas." />}
+            </>
+          ) : loading && (
+            <div className="space-y-2">
+              <div className="h-10 rounded-lg bg-ink-100 animate-pulse" />
+              <div className="h-8 rounded-lg bg-ink-100 animate-pulse w-3/4" />
+            </div>
+          )}
         </div>
       </div>
 
@@ -375,7 +420,7 @@ export default function DashboardPage() {
                     <tr key={s.id} className="hover:bg-ink-50/50 transition">
                       <td className="font-bold num">
                         <Link to={`/vendas/${s.id}`} className="text-brand-800 hover:underline">
-                          #{formatFriendlyNumber(s.friendly_number)}
+                          #{String(s.friendly_number ?? '')}
                         </Link>
                       </td>
                       <td className="text-ink-700 num">{formatDate(s.sale_date ?? s.created_at, true)}</td>
@@ -387,7 +432,7 @@ export default function DashboardPage() {
                           (s.installments_snapshot ?? 1) > 1 ? `${s.installments_snapshot}x` : null]
                           .filter(Boolean).join(' · ') || '-'}
                       </td>
-                      <td className="text-right num font-semibold">{formatFriendlyNumber(Number(s.total_items ?? 0))}</td>
+                      <td className="text-right num font-semibold">{String(Number(s.total_items ?? 0))}</td>
                       <td className="text-right num font-bold text-ink-900">{formatCurrency(s.total_customer)}</td>
                       <td className={cn('text-right num font-bold', Number(s.real_profit ?? 0) >= 0 ? 'text-emerald-700' : 'text-rose-700')}>
                         {formatCurrency(s.real_profit)}
