@@ -182,6 +182,22 @@ export default function DashboardPage() {
     return Object.values(groups).sort((a, b) => b.total - a.total)
   }, [salesRows, salePayments])
 
+  // ============================================================================
+  // IMPORTANTE — RECEBIDO  vs  CAIXA (não são a mesma coisa)
+  // ============================================================================
+  // RECEBIDO (kpis.recebido) = dashboardSales.amount_received
+  //   → Pagamentos RECEBIDOS associados a VENDAS dentro do período filtrado.
+  //
+  // CAIXA (receitas - despesas) = dashboardFinancial trans_type CONFIRMADO
+  //   → TODOS os movimentos de caixa confirmados:
+  //     - entradas (inclui recebimentos de venda, mas também estornos, ajustes,
+  //       recebimentos financeiros não-venda, etc.)
+  //     - saídas (compras, despesas, fornecedores, taxas, saques, etc.)
+  //
+  // Como compras de mercadoria são saída hoje mas CMV só na venda futura,
+  // caixa != lucro e caixa != recebido.
+  // NÃO FORÇAR IGUALDADE. As duas métricas são legítimas e independentes.
+  // ============================================================================
   const { receitas, despesas, saldoCaixa } = useMemo(() => {
     let r = 0, d = 0
     for (const t of finRows) {
@@ -232,8 +248,8 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      {/* KPIs primários */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 xl:grid-cols-8 gap-3">
+      {/* KPIs primários — max 4 cols no desktop pra não vazar conteúdo */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
         <KpiCard label="Faturamento" value={salesError ? 'Erro' : formatCurrency(kpis.faturamento)}
           icon={<DollarSign className="w-5 h-5" />} tone={salesError ? 'rose' : 'brand'}
           sub={salesError ? salesError.slice(0, 30) : pluralize(kpis.pedidos, 'pedido')} />
@@ -251,7 +267,7 @@ export default function DashboardPage() {
           sub={salesError ? '-' : (kpis.faturamento ? `sobre ${formatCurrency(kpis.faturamento)}` : 'sem vendas')} />
         <KpiCard label="Pedidos" value={salesError ? 'Erro' : String(kpis.pedidos)}
           icon={<ShoppingCart className="w-5 h-5" />} tone={salesError ? 'rose' : 'ink'}
-          sub={salesError ? '-' : `${kpis.pecas} ${pluralize(kpis.pecas, 'peça', 'peças')}`} />
+          sub={salesError ? '-' : pluralize(kpis.pedidos, 'pedido efetuado')} />
         <KpiCard label="Peças vendidas" value={salesError ? 'Erro' : String(kpis.pecas)}
           icon={<Package className="w-5 h-5" />} tone={salesError ? 'rose' : 'blue'}
           sub={salesError ? '-' : (kpis.pedidos ? `média ${(kpis.pecas / kpis.pedidos).toFixed(1)}/pedido` : '-')} />
@@ -622,13 +638,13 @@ function KpiCard({ label, value, sub, icon, tone }:
     amber: 'bg-amber-50 text-amber-700 ring-amber-100',
   }
   return (
-    <div className="kpi-card">
-      <div className="flex items-start justify-between gap-2">
-        <span className="kpi-label">{label}</span>
-        <div className={cn('w-9 h-9 rounded-lg flex items-center justify-center ring-1', tones[tone])}>{icon}</div>
+    <div className="kpi-card min-w-0">
+      <div className="flex items-start justify-between gap-2 min-w-0">
+        <span className="kpi-label min-w-0">{label}</span>
+        <div className={cn('w-9 h-9 rounded-lg flex items-center justify-center ring-1 flex-shrink-0', tones[tone])}>{icon}</div>
       </div>
-      <div className="kpi-value num">{value}</div>
-      {sub && <div className="kpi-sub">{sub}</div>}
+      <div className="kpi-value num whitespace-nowrap overflow-hidden text-ellipsis">{value}</div>
+      {sub && <div className="kpi-sub min-w-0">{sub}</div>}
     </div>
   )
 }

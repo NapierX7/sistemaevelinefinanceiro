@@ -437,6 +437,19 @@ export interface DashboardStockSummary {
   in_stock_skus?: number
 }
 
+export interface DashboardStockRow {
+  product_id: UUID | string
+  sku?: string | null
+  product_name?: string | null
+  category_name?: string | null
+  image_url?: string | null
+  units_available: number
+  stock_cost: number
+  sales_potential: number
+  min_stock?: number | null
+  active?: boolean | null
+}
+
 export interface DashboardSaleRow {
   sale_id?: UUID | string
   sale_date: string

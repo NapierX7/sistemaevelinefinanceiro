@@ -6,8 +6,8 @@ import {
 import {
   formatCurrency, formatPercent, formatDate, formatDateTime, formatFriendlyNumber, parseBrl, sourceLabel, statusLabel, paymentMethodLabel, pluralize, rangePresets, inRange, cn
 } from '@/lib/format'
-import type { Sale, UUID, SaleSource, PaymentMethod, SaleStatus } from '@/types/supabase'
-import { listSales, cancelSale, listPaymentProviders, listAllProducts, onInvalidate, dispatchInvalidateAll } from '@/services'
+import type { Sale, SaleItem, SalePayment, UUID, SaleSource, PaymentMethod, SaleStatus } from '@/types/supabase'
+import { listSales, cancelSale, listPaymentProviders, listAllProducts, onInvalidate, dispatchInvalidateAll, listSaleItemsBySaleIds, listSalePaymentsBySaleIds } from '@/services'
 import type { ProviderWithModalities } from '@/services'
 
 type PresetKey = keyof ReturnType<typeof rangePresets> | 'PERSONALIZADO'
@@ -21,7 +21,10 @@ export default function SalesHistoryPage() {
   const [sales, setSales] = useState<Sale[]>([])
   const [products, setProducts] = useState<any[]>([])
   const [providers, setProviders] = useState<ProviderWithModalities[]>([])
+  const [saleItems, setSaleItems] = useState<SaleItem[]>([])
+  const [salePayments, setSalePayments] = useState<SalePayment[]>([])
   const [loading, setLoading] = useState(true)
+  const [loadingJoins, setLoadingJoins] = useState(false)
 
   const [preset, setPreset] = useState<PresetKey>('ESTE_MES')
   const [from, setFrom] = useState<string>(presets.ESTE_MES.from.toISOString().slice(0, 10))
@@ -41,24 +44,36 @@ export default function SalesHistoryPage() {
   const [cancelReason, setCancelReason] = useState('')
   const [canceling, setCanceling] = useState(false)
 
-  useEffect(() => {
+  const loadAll = async () => {
     setLoading(true)
-    Promise.all([listSales(), listAllProducts(), listPaymentProviders()])
-      .then(([s, p, pv]) => {
-        setSales(s); setProducts(p); setProviders(pv)
-      }).finally(() => setLoading(false))
-  }, [])
+    try {
+      const [s, p, pv] = await Promise.all([listSales(), listAllProducts(), listPaymentProviders()])
+      setSales(s); setProducts(p); setProviders(pv)
+      const ids = s.map(x => x.id) as UUID[]
+      if (ids.length) {
+        setLoadingJoins(true)
+        try {
+          const [items, payments] = await Promise.allSettled([
+            listSaleItemsBySaleIds(ids),
+            listSalePaymentsBySaleIds(ids),
+          ])
+          if (items.status === 'fulfilled') setSaleItems(items.value)
+          else { console.error('[SalesHist] itens falhou:', items.reason) }
+          if (payments.status === 'fulfilled') setSalePayments(payments.value)
+          else { console.error('[SalesHist] pagamentos falhou:', payments.reason) }
+        } finally { setLoadingJoins(false) }
+      } else {
+        setSaleItems([]); setSalePayments([])
+      }
+    } finally { setLoading(false) }
+  }
+
+  useEffect(() => { loadAll() }, [])
 
   useEffect(() => {
     const cleanup = onInvalidate((scope) => {
       if (scope === 'all' || scope === 'sales' || scope === 'dashboard') {
-        setLoading(true)
-        Promise.allSettled([listSales(), listAllProducts(), listPaymentProviders()])
-          .then(([s, p, pv]) => {
-            if (s.status === 'fulfilled') setSales(s.value)
-            if (p.status === 'fulfilled') setProducts(p.value)
-            if (pv.status === 'fulfilled') setProviders(pv.value)
-          }).finally(() => setLoading(false))
+        loadAll()
       }
     })
     return cleanup
@@ -94,6 +109,56 @@ export default function SalesHistoryPage() {
     return c
   }, [fCustomer, fProduct, fSource, fProvider, fModality, fMethod, fInstallments, fStatus, preset])
 
+  const joins = useMemo(() => {
+    const itemsMap = new Map<string, SaleItem[]>()
+    for (const it of saleItems) {
+      if (!itemsMap.has(it.sale_id)) itemsMap.set(it.sale_id, [])
+      itemsMap.get(it.sale_id)!.push(it)
+    }
+    const pagsMap = new Map<string, SalePayment[]>()
+    for (const p of salePayments) {
+      if (!pagsMap.has(p.sale_id)) pagsMap.set(p.sale_id, [])
+      pagsMap.get(p.sale_id)!.push(p)
+    }
+    return { itemsMap, pagsMap }
+  }, [saleItems, salePayments])
+
+  function pecasBySale(id: UUID): number {
+    const list = joins.itemsMap.get(String(id)) ?? []
+    if (!list.length) {
+      const fallback = Number((sales.find(x => String(x.id) === String(id)) as any)?.total_items ?? 0)
+      return isFinite(fallback) ? fallback : 0
+    }
+    const sum = list.reduce((s, v) => s + Number(v.quantity ?? 0), 0)
+    return isFinite(sum) ? sum : 0
+  }
+
+  function pagamentoLabel(sale: Sale): string {
+    const list = joins.pagsMap.get(String(sale.id)) ?? []
+    if (list.length > 0) {
+      const labels: string[] = []
+      for (const sp of list) {
+        const parts: string[] = []
+        const prov = sp.provider_snapshot ?? (sp as any).provider ?? null
+        const met = sp.method ?? (sp as any).payment_method_snapshot ?? null
+        const mod = (sp as any).modality_snapshot ?? (sp as any).modality ?? null
+        if (prov) parts.push(String(prov))
+        if (met) parts.push(paymentMethodLabel(String(met)))
+        if (mod && String(mod) !== String(met)) parts.push(String(mod))
+        const parc = Number((sp as any).installments ?? 1)
+        if (parc > 1) parts.push(`${parc}x`)
+        labels.push(parts.filter(Boolean).join(' · ') || 'Recebido')
+      }
+      return labels.filter(Boolean).join(', ')
+    }
+    const received = Number((sale as any).amount_received ?? (sale as any).valor_recebido ?? 0)
+    if (received > 0 || (sale.status === 'CONCLUIDA' && Number(sale.total_customer ?? 0) > 0)) {
+      return 'Sem registro de pagamento'
+    }
+    if (sale.status === 'CANCELADA') return 'Cancelada'
+    return 'Pendente'
+  }
+
   const filtered = useMemo(() => {
     return sales.filter(s => {
       if (!inRange(s.sale_date ?? s.created_at, fromDate, toDate)) return false
@@ -104,29 +169,50 @@ export default function SalesHistoryPage() {
         const q = fCustomer.trim().toLowerCase()
         if (!cname.includes(q)) return false
       }
+      if (fProduct) {
+        const its = joins.itemsMap.get(String(s.id)) ?? []
+        if (its.length > 0) {
+          if (!its.some(i => String(i.product_id ?? '') === String(fProduct))) return false
+        }
+      }
       const snapMethod = (s as any).payment_method_snapshot
-      if (fMethod !== 'TODOS' && snapMethod !== fMethod) return false
+      const listPg = joins.pagsMap.get(String(s.id)) ?? []
+      const metodos: string[] = listPg.length
+        ? listPg.map(p => String(p.method ?? (p as any).payment_method_snapshot ?? ''))
+        : [String(snapMethod ?? '')].filter(Boolean)
+      if (fMethod !== 'TODOS') {
+        if (!metodos.some(m => m === String(fMethod))) return false
+      }
       const snapProvider = (s as any).payment_provider_snapshot
+      const nomesProviders: string[] = listPg.length
+        ? listPg.map(p => String(p.provider_snapshot ?? (p as any).provider ?? ''))
+        : [String(snapProvider ?? '')].filter(Boolean)
       if (fProvider) {
         const p = providers.find(pp => pp.provider.id === fProvider)
-        if (p && snapProvider !== p.provider.name) return false
+        if (p && !nomesProviders.some(nome => nome === p.provider.name)) return false
       }
       const snapModality = (s as any).payment_modality_snapshot
+      const nomesMods: string[] = listPg.length
+        ? listPg.map(p => String((p as any).modality_snapshot ?? (p as any).modality ?? ''))
+        : [String(snapModality ?? '')].filter(Boolean)
       if (fModality) {
         const m = modalities.find(mm => mm.id === fModality)
-        if (m && snapModality !== m.name) return false
+        if (m && !nomesMods.some(nome => nome === m.name)) return false
       }
-      const inst = Number((s as any).installments_snapshot ?? 1)
-      if (fInstallments === '1' && inst !== 1) return false
-      if (fInstallments === '2' && inst !== 2) return false
-      if (fInstallments === '3+' && inst < 3) return false
+      const insts: number[] = listPg.length
+        ? listPg.map(p => Number((p as any).installments ?? 1))
+        : [Number((s as any).installments_snapshot ?? 1)]
+      const hasAny = insts.length ? Math.max(...insts.map(n => isFinite(n) ? n : 1)) : 1
+      if (fInstallments === '1' && hasAny !== 1) return false
+      if (fInstallments === '2' && hasAny !== 2) return false
+      if (fInstallments === '3+' && hasAny < 3) return false
       return true
     })
-  }, [sales, fromDate, toDate, fCustomer, fSource, fStatus, fMethod, fProvider, fModality, fInstallments, providers, modalities])
+  }, [sales, fromDate, toDate, fCustomer, fProduct, fSource, fStatus, fMethod, fProvider, fModality, fInstallments, providers, modalities, joins])
 
   const totalCliente = filtered.reduce((s, v) => s + (v.status !== 'CANCELADA' ? Number(v.total_customer ?? 0) : 0), 0)
   const totalLucro = filtered.reduce((s, v) => s + (v.status !== 'CANCELADA' ? Number(v.real_profit ?? 0) : 0), 0)
-  const totalPecas = filtered.reduce((s, v) => s + Number((v as any).total_items ?? 0), 0)
+  const totalPecas = filtered.reduce((s, v) => s + pecasBySale(v.id), 0)
 
   const openCancel = (sale: Sale) => {
     if (sale.status === 'CANCELADA') { alert('Esta venda já está cancelada.'); return }
@@ -411,9 +497,6 @@ export default function SalesHistoryPage() {
                   <tbody>
                     {filtered.map(s => {
                       const st = statusLabel(s.status)
-                      const snapProvider = (s as any).payment_provider_snapshot
-                      const snapMethod = (s as any).payment_method_snapshot
-                      const snapInstallments = Number((s as any).installments_snapshot ?? 1)
                       return (
                         <tr key={s.id} className="hover:bg-ink-50/50 transition">
                           <td className="font-bold num">
@@ -421,7 +504,7 @@ export default function SalesHistoryPage() {
                               onClick={() => navigate(`/vendas/${s.id}`)}
                               className="text-brand-800 hover:underline text-left"
                             >
-                              #{formatFriendlyNumber(s.friendly_number)}
+                              #{String(s.friendly_number ?? '')}
                             </button>
                           </td>
                           <td className="text-ink-700 num whitespace-nowrap">{formatDateTime(s.sale_date ?? s.created_at)}</td>
@@ -444,10 +527,9 @@ export default function SalesHistoryPage() {
                             )}
                           </td>
                           <td className="text-ink-700 text-sm whitespace-nowrap">
-                            {[snapProvider, paymentMethodLabel(snapMethod), snapInstallments > 1 ? `${snapInstallments}x` : null]
-                              .filter(Boolean).join(' · ') || '-'}
+                            {pagamentoLabel(s) || '-'}
                           </td>
-                          <td className="text-right num font-semibold">{String(Number((s as any).total_items ?? 0))}</td>
+                          <td className="text-right num font-semibold">{String(pecasBySale(s.id))}</td>
                           <td className="text-right num font-bold text-ink-900">{formatCurrency(s.total_customer)}</td>
                           <td className={cn('text-right num font-bold',
                             s.status === 'CANCELADA' ? 'text-ink-400 line-through' :
@@ -510,7 +592,7 @@ export default function SalesHistoryPage() {
                               onClick={() => navigate(`/vendas/${s.id}`)}
                               className="text-brand-800 hover:underline font-black num text-base"
                             >
-                              #{formatFriendlyNumber(s.friendly_number)}
+                              #{String(s.friendly_number ?? '')}
                             </button>
                             <span className={st.class + ' !py-0.5'}>{st.label}</span>
                           </div>
@@ -555,12 +637,11 @@ export default function SalesHistoryPage() {
                         <div className="flex items-center justify-between gap-2 pt-1 text-xs text-ink-600 border-t border-ink-200/70 mt-1.5">
                           <span className="flex items-center gap-1.5 flex-wrap">
                             <span className="chip bg-white text-ink-600 !py-0 border border-ink-200">
-                              {[snapProvider, paymentMethodLabel(snapMethod), snapInstallments > 1 ? `${snapInstallments}x` : null]
-                                .filter(Boolean).join(' · ') || 'Sem pagamento'}
+                              {pagamentoLabel(s) || 'Sem pagamento'}
                             </span>
                           </span>
                           <span className="font-bold num text-ink-700 flex-shrink-0">
-                            {pluralize(Number((s as any).total_items ?? 0), 'peça')}
+                            {pluralize(pecasBySale(s.id), 'peça')}
                           </span>
                         </div>
                       </div>

@@ -22,6 +22,7 @@ import type {
   Coupon,
   Setting,
   DashboardStockSummary,
+  DashboardStockRow,
   DashboardSaleRow,
   DashboardFinancialRow,
 } from '@/types/supabase'
@@ -1049,4 +1050,42 @@ export function demoListSalePaymentsBySaleIds(saleIds: string[]): SalePayment[] 
   const setIds = new Set(saleIds)
   const s = loadStore()
   return s.sale_payments.filter(p => setIds.has(p.sale_id)) ?? []
+}
+
+export function demoDashboardStock(): DashboardStockRow[] {
+  const s = loadStore()
+  const byProduct = new Map<string, { qty: number; cost: number }>()
+  for (const b of s.inventory_batches) {
+    const cur = byProduct.get(b.product_id) ?? { qty: 0, cost: 0 }
+    const q = Number(b.quantity_available ?? 0)
+    cur.qty += q
+    cur.cost += q * (Number(b.unit_cost ?? 0) + Number((b as any).allocated_purchase_cost ?? 0))
+    byProduct.set(b.product_id, cur)
+  }
+  const rows: DashboardStockRow[] = []
+  for (const p of s.products) {
+    const qty = byProduct.get(p.id)?.qty ?? 0
+    const cost = byProduct.get(p.id)?.cost ?? 0
+    const cat = s.categories.find(c => c.id === p.category_id)
+    rows.push({
+      product_id: p.id,
+      sku: p.sku ?? null,
+      product_name: p.name,
+      category_name: cat?.name ?? null,
+      image_url: (p as any).image_url ?? null,
+      units_available: qty,
+      stock_cost: cost,
+      sales_potential: qty * Number((p as any).sale_price ?? 0),
+      min_stock: Number(p.min_stock ?? 0),
+      active: p.active,
+    })
+  }
+  return rows.sort((a, b) => String(a.product_name ?? '').localeCompare(String(b.product_name ?? '')))
+}
+
+export function demoListSaleItemsBySaleIds(saleIds: string[]): SaleItem[] {
+  if (!saleIds?.length) return []
+  const setIds = new Set(saleIds)
+  const s = loadStore()
+  return s.sale_items.filter(i => setIds.has(i.sale_id)) ?? []
 }

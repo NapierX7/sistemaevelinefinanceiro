@@ -397,7 +397,7 @@ export default function SaleDetailPage() {
           </Link>
           <div className="flex flex-wrap items-center gap-2">
             <h1 className="text-xl sm:text-2xl font-black tracking-tight text-ink-900">
-              Venda #{formatFriendlyNumber(s.friendly_number)}
+              Venda #{String(s.friendly_number ?? '')}
             </h1>
             {editMode ? (
               <div className="flex items-center gap-1.5 pr-1 min-h-[34px]">
@@ -986,7 +986,7 @@ export default function SaleDetailPage() {
               <div className="flex-1 min-w-0">
                 <h3 className="text-lg font-black text-ink-900">Registrar pagamento restante</h3>
                 <p className="text-sm text-ink-600 mt-0.5">
-                  Venda #{formatFriendlyNumber(s.friendly_number)} · cliente {s.customer_name}
+                  Venda #{String(s.friendly_number ?? '')} · cliente {s.customer_name}
                 </p>
               </div>
               <button onClick={() => { setQuitOpen(false) }} className="btn-ghost !p-2" disabled={quiting}>

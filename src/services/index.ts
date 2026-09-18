@@ -2,7 +2,7 @@ import {
   isSupabaseConfigured, supabase, getCurrentUserId,
 } from '@/lib/supabase'
 import * as Demo from './demo-storage'
-import type { UUID, Product, Category, Sale, SaleItem, SalePayment, SalePackaging, SaleCost, PurchaseEntry, FinancialTransaction, InventoryMovement, InventoryBatch, PaymentFeeRule, PackagingType, Coupon, Setting, PaymentProvider, PaymentModality, DashboardStockSummary, DashboardSaleRow, DashboardFinancialRow } from '@/types/supabase'
+import type { UUID, Product, Category, Sale, SaleItem, SalePayment, SalePackaging, SaleCost, PurchaseEntry, FinancialTransaction, InventoryMovement, InventoryBatch, PaymentFeeRule, PackagingType, Coupon, Setting, PaymentProvider, PaymentModality, DashboardStockSummary, DashboardStockRow, DashboardSaleRow, DashboardFinancialRow } from '@/types/supabase'
 
 // ================================================================
 // CAMADA UNIFICADA DE DADOS
@@ -653,4 +653,45 @@ export async function listSalePaymentsBySaleIds(saleIds: UUID[]): Promise<SalePa
     throw new Error(`Vendas por pagamento (query sale_payments): ${error.message || String(error)}`)
   }
   return (data ?? []) as SalePayment[]
+}
+
+export async function listSaleItemsBySaleIds(saleIds: UUID[]): Promise<SaleItem[]> {
+  if (!saleIds?.length) return []
+  if (!usingSupabase) return Demo.demoListSaleItemsBySaleIds(saleIds)
+  const sup: any = supabase
+  const { data, error } = await sup
+    .from('sale_items')
+    .select('*')
+    .in('sale_id', saleIds)
+  if (error) {
+    console.error('[services.listSaleItemsBySaleIds] erro:', error)
+    throw new Error(`Itens de venda (query sale_items): ${error.message || String(error)}`)
+  }
+  return (data ?? []) as SaleItem[]
+}
+
+export async function dashboardStock(): Promise<DashboardStockRow[]> {
+  if (!usingSupabase) return Demo.demoDashboardStock()
+  const sup: any = supabase
+  const { data, error } = await sup
+    .from('v_dashboard_stock')
+    .select('*')
+    .order('product_name')
+  if (error) {
+    console.error('[services.dashboardStock] erro:', error)
+    throw new Error(`Dashboard Estoque (lista): ${error.message || String(error)}`)
+  }
+  const rows: DashboardStockRow[] = ((data ?? []) as any[]).map(d => ({
+    product_id: d.product_id ?? d.id,
+    sku: d.sku ?? null,
+    product_name: d.product_name ?? d.name ?? null,
+    category_name: d.category_name ?? d.category ?? null,
+    image_url: d.image_url ?? null,
+    units_available: Number(d.units_available ?? d.total_units ?? d.quantity_available ?? 0),
+    stock_cost: Number(d.stock_cost ?? d.total_stock_cost ?? d.cost ?? 0),
+    sales_potential: Number(d.sales_potential ?? d.total_sales_potential ?? 0),
+    min_stock: d.min_stock !== undefined && d.min_stock !== null ? Number(d.min_stock) : null,
+    active: d.active ?? true,
+  }))
+  return rows
 }
