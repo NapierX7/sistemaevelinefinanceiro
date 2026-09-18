@@ -2,7 +2,7 @@ import {
   isSupabaseConfigured, supabase, getCurrentUserId,
 } from '@/lib/supabase'
 import * as Demo from './demo-storage'
-import type { UUID, Product, Category, Sale, SaleItem, SalePayment, SalePackaging, SaleCost, PurchaseEntry, FinancialTransaction, InventoryMovement, InventoryBatch, PaymentFeeRule, PackagingType, Coupon, Setting, PaymentProvider, PaymentModality } from '@/types/supabase'
+import type { UUID, Product, Category, Sale, SaleItem, SalePayment, SalePackaging, SaleCost, PurchaseEntry, FinancialTransaction, InventoryMovement, InventoryBatch, PaymentFeeRule, PackagingType, Coupon, Setting, PaymentProvider, PaymentModality, DashboardStockSummary, DashboardSaleRow, DashboardFinancialRow } from '@/types/supabase'
 
 // ================================================================
 // CAMADA UNIFICADA DE DADOS
@@ -429,7 +429,7 @@ export async function listInventoryMovements(): Promise<InventoryMovement[]> {
 export async function listInventoryBatches(product_id?: UUID): Promise<InventoryBatch[]> {
   if (!usingSupabase) return Demo.demoListBatches(product_id)
   let q = (supabase!).from('inventory_batches')
-    .select('id, product_id, received_at, original_quantity, quantity_available, unit_cost, supplier_id, purchase_entry_id, notes, created_at, updated_at')
+    .select('id, product_id, variant_id, purchase_entry_id, purchase_item_id, received_at, quantity_received, quantity_available, unit_cost, allocated_purchase_cost, supplier_id, notes, created_at, updated_at')
   if (product_id) q = q.eq('product_id', product_id)
   const { data, error } = await q.order('received_at', { ascending: false })
   if (error) { console.error('[services] listInventoryBatches error:', error); throw error }
@@ -531,4 +531,63 @@ export async function registrarDespesa(p: RegistrarDespesaParams): Promise<{ id:
   })
   if (error) throw error
   return { id: data as UUID }
+}
+
+// =====================================================
+// DASHBOARD — VIEWS OFICIAIS (SÓ LEITURA)
+// v_dashboard_stock_summary / v_dashboard_sales / v_dashboard_financial
+// Não há fallback para erros: erro real → throw.
+// =====================================================
+export async function dashboardStockSummary(): Promise<DashboardStockSummary> {
+  if (!usingSupabase) return Demo.demoDashboardStockSummary()
+  const sup: any = supabase
+  const { data, error } = await sup.from('v_dashboard_stock_summary').select('*').single()
+  if (error) {
+    console.error('[services.dashboardStockSummary] erro:', error)
+    throw new Error(`Dashboard Estoque: ${error.message || String(error)}`)
+  }
+  return {
+    total_units: Number((data as any).total_units ?? 0),
+    total_stock_cost: Number((data as any).total_stock_cost ?? 0),
+    total_sales_potential: Number((data as any).total_sales_potential ?? 0),
+    total_skus: Number((data as any).total_skus ?? 0),
+    out_of_stock_skus: Number((data as any).out_of_stock_skus ?? 0),
+  }
+}
+
+export interface DashboardDateRange {
+  startInclusive: string // YYYY-MM-DD
+  endInclusive: string   // YYYY-MM-DD
+}
+
+export async function dashboardSales(range: DashboardDateRange): Promise<DashboardSaleRow[]> {
+  if (!usingSupabase) return Demo.demoDashboardSales(range)
+  const sup: any = supabase
+  const { data, error } = await sup
+    .from('v_dashboard_sales')
+    .select('*')
+    .gte('sale_date', range.startInclusive + 'T00:00:00')
+    .lte('sale_date', range.endInclusive + 'T23:59:59')
+    .order('sale_date', { ascending: false })
+  if (error) {
+    console.error('[services.dashboardSales] erro:', error)
+    throw new Error(`Dashboard Vendas: ${error.message || String(error)}`)
+  }
+  return (data ?? []) as DashboardSaleRow[]
+}
+
+export async function dashboardFinancial(range: DashboardDateRange): Promise<DashboardFinancialRow[]> {
+  if (!usingSupabase) return Demo.demoDashboardFinancial(range)
+  const sup: any = supabase
+  const { data, error } = await sup
+    .from('v_dashboard_financial')
+    .select('*')
+    .gte('trans_date', range.startInclusive + 'T00:00:00')
+    .lte('trans_date', range.endInclusive + 'T23:59:59')
+    .order('trans_date', { ascending: false })
+  if (error) {
+    console.error('[services.dashboardFinancial] erro:', error)
+    throw new Error(`Dashboard Financeiro: ${error.message || String(error)}`)
+  }
+  return (data ?? []) as DashboardFinancialRow[]
 }

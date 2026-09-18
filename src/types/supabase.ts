@@ -427,3 +427,47 @@ export interface Database {
     };
   };
 }
+
+export interface DashboardStockSummary {
+  total_units: number
+  total_stock_cost: number
+  total_sales_potential: number
+  total_skus: number
+  out_of_stock_skus: number
+}
+
+export interface DashboardSaleRow {
+  sale_id?: UUID | string
+  sale_date: string
+  revenue: number
+  pieces_sold: number
+  amount_received: number
+  amount_receivable: number
+  payment_fees: number
+  items_cost: number
+  allocated_purchase_cost?: number
+  packaging_cost: number
+  extra_costs: number
+  total_discounts: number
+  friendly_number?: number | null
+  customer_name?: string | null
+  source_snapshot?: string | null
+  status?: string | null
+  payment_method_snapshot?: string | null
+  payment_provider_snapshot?: string | null
+  installments_snapshot?: number | null
+  real_profit?: number
+  total_customer?: number
+  total_items?: number
+}
+
+export interface DashboardFinancialRow {
+  financial_transaction_id?: UUID | string
+  trans_date: string
+  trans_type: 'ENTRADA' | 'SAIDA' | string
+  status: 'PENDENTE' | 'CONFIRMADO' | 'CANCELADO' | string
+  amount: number
+  category?: string | null
+  description?: string | null
+  payment_method?: string | null
+}

@@ -21,6 +21,9 @@ import type {
   InventoryBatch,
   Coupon,
   Setting,
+  DashboardStockSummary,
+  DashboardSaleRow,
+  DashboardFinancialRow,
 } from '@/types/supabase'
 
 const STORE_KEY = 'eveline-gestao-demo-store-v1'
@@ -916,4 +919,120 @@ export function demoRegistrarDespesa(args: {
   } as any)
   saveStore(s)
   return { id }
+}
+
+// ================================================================
+// DASHBOARD — implementações das views oficiais (MODO DEMO)
+// v_dashboard_stock_summary / v_dashboard_sales / v_dashboard_financial
+// Resultados idênticos às definições SQL (exceto filtros de período)
+// ================================================================
+export function demoDashboardStockSummary(): DashboardStockSummary {
+  const s = loadStore()
+  const stockByProduct = new Map<string, { qty: number; cost: number }>()
+  for (const b of s.inventory_batches) {
+    const cur = stockByProduct.get(b.product_id) ?? { qty: 0, cost: 0 }
+    const q = Number(b.quantity_available ?? 0)
+    cur.qty += q
+    cur.cost += q * Number(b.unit_cost ?? 0)
+    stockByProduct.set(b.product_id, cur)
+  }
+  let total_units = 0, total_stock_cost = 0, total_sales_potential = 0, out_of_stock_skus = 0
+  const total_skus = s.products.length
+  for (const p of s.products) {
+    const q = stockByProduct.get(p.id)?.qty ?? 0
+    if (q <= 0) out_of_stock_skus += 1
+    total_units += q
+    total_stock_cost += stockByProduct.get(p.id)?.cost ?? 0
+    total_sales_potential += q * Number((p as any).sale_price ?? 0)
+  }
+  return {
+    total_units: Number(total_units.toFixed(0)),
+    total_stock_cost: Number(total_stock_cost.toFixed(2)),
+    total_sales_potential: Number(total_sales_potential.toFixed(2)),
+    total_skus,
+    out_of_stock_skus,
+  }
+}
+
+function demoDashboardSaleRows(): DashboardSaleRow[] {
+  const s = loadStore()
+  const out: DashboardSaleRow[] = []
+  for (const sale of s.sales) {
+    if (sale.status === 'CANCELADA') continue
+    const items = s.sale_items.filter(i => i.sale_id === sale.id)
+    const payments = s.sale_payments.filter(p => p.sale_id === sale.id)
+    const pieces = items.reduce((sum, i) => sum + Number(i.quantity ?? 0), 0)
+    const received = payments.reduce((sum, p) => sum + Number(p.amount ?? 0), 0)
+    const totalCust = Number(sale.total_customer ?? 0)
+    const receivable = Math.max(0, totalCust - received)
+    const fees = Number(sale.fee_actual ?? 0)
+    const itemsCost = Number(sale.items_cost ?? 0)
+    const allocCost = Number(sale.allocated_purchase_cost ?? 0)
+    const packaging = Number(sale.packaging_cost ?? 0)
+    const extra = Number(sale.extra_costs ?? 0)
+    const disc = Number(sale.total_discounts ?? 0)
+    const firstPay = payments[0]
+    out.push({
+      sale_id: sale.id,
+      sale_date: sale.sale_date,
+      revenue: totalCust,
+      pieces_sold: pieces,
+      amount_received: received,
+      amount_receivable: receivable,
+      payment_fees: fees,
+      items_cost: itemsCost,
+      allocated_purchase_cost: allocCost,
+      packaging_cost: packaging,
+      extra_costs: extra,
+      total_discounts: disc,
+      friendly_number: sale.friendly_number,
+      customer_name: sale.customer_name ?? null,
+      source_snapshot: sale.source,
+      status: sale.status,
+      payment_method_snapshot: firstPay?.method ?? (firstPay as any)?.payment_method_snapshot ?? null,
+      payment_provider_snapshot: firstPay?.provider_snapshot ?? (firstPay as any)?.payment_provider_snapshot ?? null,
+      installments_snapshot: firstPay?.installments ?? (firstPay as any)?.installments_snapshot ?? null,
+      real_profit: Number(sale.real_profit ?? 0),
+      total_customer: totalCust,
+      total_items: pieces,
+    })
+  }
+  return out
+}
+
+export function demoDashboardSales(range: { startInclusive: string; endInclusive: string }): DashboardSaleRow[] {
+  const [sy, sm, sd] = range.startInclusive.split('-').map(Number)
+  const [ey, em, ed] = range.endInclusive.split('-').map(Number)
+  const d0 = new Date(sy, (sm ?? 1) - 1, sd ?? 1).getTime()
+  const d1 = new Date(ey, (em ?? 1) - 1, ed ?? 28, 23, 59, 59, 999).getTime()
+  return demoDashboardSaleRows()
+    .filter(r => {
+      const t = new Date(r.sale_date).getTime()
+      return t >= d0 && t <= d1
+    })
+    .sort((a, b) => new Date(b.sale_date).getTime() - new Date(a.sale_date).getTime())
+}
+
+export function demoDashboardFinancial(range: { startInclusive: string; endInclusive: string }): DashboardFinancialRow[] {
+  const s = loadStore()
+  const [sy, sm, sd] = range.startInclusive.split('-').map(Number)
+  const [ey, em, ed] = range.endInclusive.split('-').map(Number)
+  const d0 = new Date(sy, (sm ?? 1) - 1, sd ?? 1).getTime()
+  const d1 = new Date(ey, (em ?? 1) - 1, ed ?? 28, 23, 59, 59, 999).getTime()
+  const out: DashboardFinancialRow[] = []
+  for (const t of s.financial_transactions) {
+    const tm = new Date(t.trans_date ?? t.created_at).getTime()
+    if (tm < d0 || tm > d1) continue
+    out.push({
+      financial_transaction_id: t.id,
+      trans_date: (t.trans_date ?? t.created_at).slice(0, 10),
+      trans_type: t.trans_type,
+      status: t.status,
+      amount: Number(t.amount ?? 0),
+      category: t.category ?? null,
+      description: t.description ?? null,
+      payment_method: t.payment_method ?? null,
+    })
+  }
+  return out.sort((a, b) => new Date(b.trans_date).getTime() - new Date(a.trans_date).getTime())
 }

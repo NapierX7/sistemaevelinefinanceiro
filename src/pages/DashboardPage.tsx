@@ -1,17 +1,16 @@
 import { useEffect, useMemo, useState } from 'react'
 import {
   Calendar, DollarSign, TrendingUp, Package, ShoppingCart, Receipt,
-  ArrowUpRight, ArrowDownRight, Filter, AlertTriangle, ChevronDown
+  ArrowUpRight, ArrowDownRight, Filter, AlertTriangle, ChevronDown, AlertCircle
 } from 'lucide-react'
 import {
-  formatCurrency, formatPercent, formatDate, rangePresets, inRange,
+  formatCurrency, formatPercent, formatDate, rangePresets,
   statusLabel, sourceLabel, paymentMethodLabel, pluralize, cn
 } from '@/lib/format'
 import {
-  listSales, listProducts, listInventoryBatches, listFinancialTransactions,
-  listInventoryMovements
+  dashboardStockSummary, dashboardSales, dashboardFinancial
 } from '@/services'
-import type { Sale, Product, InventoryBatch, FinancialTransaction, InventoryMovement } from '@/types/supabase'
+import type { DashboardStockSummary, DashboardSaleRow, DashboardFinancialRow } from '@/types/supabase'
 import { Link } from 'react-router-dom'
 
 type PresetKey = keyof ReturnType<typeof rangePresets> | 'PERSONALIZADO'
@@ -22,13 +21,18 @@ export default function DashboardPage() {
   const [from, setFrom] = useState<string>(presets.ESTE_MES.from.toISOString().slice(0, 10))
   const [to, setTo] = useState<string>(presets.ESTE_MES.to.toISOString().slice(0, 10))
 
-  const [sales, setSales] = useState<Sale[]>([])
-  const [products, setProducts] = useState<Product[]>([])
-  const [batches, setBatches] = useState<InventoryBatch[]>([])
-  const [transactions, setTransactions] = useState<FinancialTransaction[]>([])
-  const [movements, setMovements] = useState<InventoryMovement[]>([])
-  const [loading, setLoading] = useState(true)
-  const [loadError, setLoadError] = useState<string | null>(null)
+  const [stock, setStock] = useState<DashboardStockSummary | null>(null)
+  const [salesRows, setSalesRows] = useState<DashboardSaleRow[]>([])
+  const [finRows, setFinRows] = useState<DashboardFinancialRow[]>([])
+
+  const [loadingStock, setLoadingStock] = useState(true)
+  const [loadingSales, setLoadingSales] = useState(true)
+  const [loadingFin, setLoadingFin] = useState(true)
+
+  const [stockError, setStockError] = useState<string | null>(null)
+  const [salesError, setSalesError] = useState<string | null>(null)
+  const [finError, setFinError] = useState<string | null>(null)
+
   const [loadTick, setLoadTick] = useState(0)
 
   const reloadDashboard = () => setLoadTick(t => t + 1)
@@ -43,110 +47,98 @@ export default function DashboardPage() {
   }, [preset])
 
   useEffect(() => {
-    setLoading(true)
-    setLoadError(null)
-    Promise.all([
-      listSales(), listProducts(), listInventoryBatches(),
-      listFinancialTransactions(), listInventoryMovements()
-    ]).then(([s, p, b, t, m]) => {
-      setSales(s); setProducts(p); setBatches(b); setTransactions(t); setMovements(m)
-    }).catch(err => {
-      console.error('[Dashboard] Falha ao carregar dados:', err)
-      setLoadError(err?.message ?? 'Erro desconhecido')
-    }).finally(() => setLoading(false))
+    let cancelled = false
+    setLoadingStock(true); setStockError(null)
+    dashboardStockSummary()
+      .then(d => { if (!cancelled) setStock(d) })
+      .catch(err => {
+        console.error('[Dashboard] estoque view falhou:', err)
+        if (!cancelled) setStockError(err?.message ?? String(err))
+      })
+      .finally(() => { if (!cancelled) setLoadingStock(false) })
+    return () => { cancelled = true }
   }, [loadTick])
 
-  const { fromDate, toDate } = useMemo(() => ({
-    fromDate: new Date(from + 'T00:00:00'),
-    toDate: new Date(to + 'T23:59:59'),
-  }), [from, to])
+  useEffect(() => {
+    let cancelled = false
+    setLoadingSales(true); setSalesError(null)
+    dashboardSales({ startInclusive: from, endInclusive: to })
+      .then(d => { if (!cancelled) setSalesRows(d) })
+      .catch(err => {
+        console.error('[Dashboard] vendas view falhou:', err)
+        if (!cancelled) setSalesError(err?.message ?? String(err))
+      })
+      .finally(() => { if (!cancelled) setLoadingSales(false) })
+    return () => { cancelled = true }
+  }, [from, to, loadTick])
 
-  const periodSales = useMemo(
-    () => sales.filter(s => inRange(s.sale_date ?? s.created_at, fromDate, toDate) && s.status !== 'CANCELADA'),
-    [sales, fromDate, toDate]
-  )
-  const periodTrans = useMemo(
-    () => transactions.filter(t => inRange(t.trans_date, fromDate, toDate)),
-    [transactions, fromDate, toDate]
-  )
+  useEffect(() => {
+    let cancelled = false
+    setLoadingFin(true); setFinError(null)
+    dashboardFinancial({ startInclusive: from, endInclusive: to })
+      .then(d => { if (!cancelled) setFinRows(d) })
+      .catch(err => {
+        console.error('[Dashboard] financeiro view falhou:', err)
+        if (!cancelled) setFinError(err?.message ?? String(err))
+      })
+      .finally(() => { if (!cancelled) setLoadingFin(false) })
+    return () => { cancelled = true }
+  }, [from, to, loadTick])
 
   const kpis = useMemo(() => {
-    const faturamento = periodSales.reduce((s, v) => s + Number(v.total_customer ?? 0), 0)
-    const lucro = periodSales.reduce((s, v) => s + Number(v.real_profit ?? 0), 0)
-    const pedidos = periodSales.length
-    const pecas = periodSales.reduce((s, v) => s + Number(v.total_items ?? 0), 0)
+    const rows = salesRows
+    const faturamento = rows.reduce((s, v) => s + Number(v.revenue ?? 0), 0)
+    const lucro = rows.reduce((s, v) => {
+      const totalSaida =
+        Number(v.items_cost ?? 0) +
+        Number(v.allocated_purchase_cost ?? 0) +
+        Number(v.payment_fees ?? 0) +
+        Number(v.packaging_cost ?? 0) +
+        Number(v.extra_costs ?? 0)
+      return s + (Number(v.revenue ?? 0) - totalSaida)
+    }, 0)
+    const pedidos = rows.length
+    const pecas = rows.reduce((s, v) => s + Number(v.pieces_sold ?? 0), 0)
     const ticketMedio = pedidos ? faturamento / pedidos : 0
     const margem = faturamento ? (lucro / faturamento) * 100 : 0
 
-    const custoMerc = periodSales.reduce((s, v) => s + Number(v.cogs_total ?? 0), 0)
-    const custoFrete = periodSales.reduce((s, v) => s + (Number(v.shipping_cost_snapshot ?? 0) + Number(v.extra_costs_total ?? 0)), 0)
-    const custoTaxas = periodSales.reduce((s, v) => s + Number(v.fee_actual_total ?? 0), 0)
-    const custoEmbalagens = periodSales.reduce((s, v) => s + Number(v.packaging_cost_actual ?? 0), 0)
-    const descontos = periodSales.reduce((s, v) => s + Number(v.total_discounts ?? 0), 0)
+    const custoMerc = rows.reduce((s, v) => s + Number(v.items_cost ?? 0), 0)
+    const custoAlloc = rows.reduce((s, v) => s + Number(v.allocated_purchase_cost ?? 0), 0)
+    const custoFrete = rows.reduce((s, v) => s + Number(v.extra_costs ?? 0), 0)
+    const custoTaxas = rows.reduce((s, v) => s + Number(v.payment_fees ?? 0), 0)
+    const custoEmbalagens = rows.reduce((s, v) => s + Number(v.packaging_cost ?? 0), 0)
+    const descontos = rows.reduce((s, v) => s + Number(v.total_discounts ?? 0), 0)
 
-    return { faturamento, lucro, margem, pedidos, pecas, ticketMedio, custoMerc, custoFrete, custoTaxas, custoEmbalagens, descontos }
-  }, [periodSales])
-
-  const estoque = useMemo(() => {
-    type ProdStock = { quantity: number; cost: number }
-    const stockByProduct = new Map<string, ProdStock>()
-
-    for (const batch of batches ?? []) {
-      const current = stockByProduct.get(batch.product_id) ?? { quantity: 0, cost: 0 }
-      const qty = Number(batch.quantity_available ?? 0)
-      const uc = Number(batch.unit_cost ?? 0)
-      current.quantity += qty
-      current.cost += qty * uc
-      stockByProduct.set(batch.product_id, current)
+    return {
+      faturamento, lucro, margem, pedidos, pecas, ticketMedio,
+      custoMerc, custoAlloc, custoFrete, custoTaxas, custoEmbalagens, descontos
     }
-
-    let pecasDisp = 0
-    let valorInvestido = 0
-    let potencialVenda = 0
-    const baixo: Product[] = []
-    const semEstoque: Product[] = []
-
-    for (const p of products) {
-      const qty = stockByProduct.get(p.id)?.quantity ?? 0
-      const custoLote = stockByProduct.get(p.id)?.cost ?? 0
-      const venda = Number(p.sale_price ?? 0)
-      pecasDisp += qty
-      valorInvestido += custoLote
-      potencialVenda += qty * venda
-      if (qty <= 0) semEstoque.push(p)
-      else if (qty <= Number(p.min_stock ?? 0)) baixo.push(p)
-    }
-
-    return { pecasDisp, valorInvestido, potencialVenda, baixo, semEstoque, stockByProduct }
-  }, [products, batches])
+  }, [salesRows])
 
   const pagamentos = useMemo(() => {
     const groups: Record<string, { label: string; count: number; total: number }> = {}
-    periodSales.forEach(s => {
-      const key = [s.payment_provider_snapshot, s.payment_method_snapshot].filter(Boolean).join(' · ') || 'Sem pagamento'
+    salesRows.forEach(r => {
+      const key = [r.payment_provider_snapshot, r.payment_method_snapshot].filter(Boolean).join(' · ') || 'Sem pagamento'
       if (!groups[key]) groups[key] = { label: key, count: 0, total: 0 }
       groups[key].count += 1
-      groups[key].total += Number(s.total_customer ?? 0)
+      groups[key].total += Number(r.revenue ?? 0)
     })
     return Object.values(groups).sort((a, b) => b.total - a.total)
-  }, [periodSales])
+  }, [salesRows])
 
-  const descontosAna = useMemo(() => {
-    const cupom = periodSales.reduce((s, v) => s + Number(v.coupon_discount_snapshot ?? 0), 0)
-    const pix = periodSales.reduce((s, v) => s + Number(v.pix_discount_total ?? 0), 0)
-    const geral = periodSales.reduce((s, v) => s + Number(v.general_discount ?? 0), 0)
-    const prod = Math.max(0, kpis.descontos - cupom - pix - geral)
-    const total = cupom + pix + geral + prod
-    return { cupom, pix, geral, prod, total }
-  }, [periodSales, kpis])
+  const { receitas, despesas, saldoCaixa } = useMemo(() => {
+    let r = 0, d = 0
+    for (const t of finRows) {
+      if (t.status !== 'CONFIRMADO') continue
+      const amt = Number(t.amount ?? 0)
+      if (t.trans_type === 'ENTRADA' && amt > 0) r += amt
+      if (t.trans_type === 'SAIDA') d += Math.max(0, Math.abs(amt))
+    }
+    return { receitas: r, despesas: d, saldoCaixa: r - d }
+  }, [finRows])
 
-  const receitas = periodTrans.filter(t => Number(t.amount ?? 0) > 0).reduce((s, v) => s + Number(v.amount ?? 0), 0)
-  const despesas = periodTrans.filter(t => Number(t.amount ?? 0) < 0).reduce((s, v) => s + Math.abs(Number(v.amount ?? 0)), 0)
-  const saldoCaixa = receitas - despesas
-
-  const recentSales = [...periodSales].sort((a, b) =>
-    new Date(b.sale_date ?? b.created_at).getTime() - new Date(a.sale_date ?? a.created_at).getTime()
-  ).slice(0, 8)
+  const recentSales = [...salesRows].slice(0, 8)
+  const loadingAny = loadingStock || loadingSales || loadingFin
 
   return (
     <div className="space-y-5 pb-4 sm:pb-6">
@@ -186,24 +178,24 @@ export default function DashboardPage() {
 
       {/* KPIs primários */}
       <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3">
-        <KpiCard label="Faturamento" value={formatCurrency(kpis.faturamento)}
-          icon={<DollarSign className="w-5 h-5" />} tone="brand"
-          sub={pluralize(kpis.pedidos, 'pedido')} />
-        <KpiCard label="Lucro real" value={formatCurrency(kpis.lucro)}
-          icon={<TrendingUp className="w-5 h-5" />} tone={kpis.lucro >= 0 ? 'emerald' : 'rose'}
-          sub={formatPercent(kpis.margem) + ' margem'} />
-        <KpiCard label="Margem %" value={formatPercent(kpis.margem, 1)}
-          icon={<Receipt className="w-5 h-5" />} tone="violet"
-          sub={kpis.faturamento ? `sobre ${formatCurrency(kpis.faturamento)}` : 'sem vendas'} />
-        <KpiCard label="Pedidos" value={String(kpis.pedidos)}
-          icon={<ShoppingCart className="w-5 h-5" />} tone="ink"
-          sub={`${kpis.pecas} ${pluralize(kpis.pecas, 'peça', 'peças')}`} />
-        <KpiCard label="Peças vendidas" value={String(kpis.pecas)}
-          icon={<Package className="w-5 h-5" />} tone="blue"
-          sub={kpis.pedidos ? `média ${(kpis.pecas / kpis.pedidos).toFixed(1)}/pedido` : '-'} />
-        <KpiCard label="Ticket médio" value={formatCurrency(kpis.ticketMedio)}
-          icon={<ArrowUpRight className="w-5 h-5" />} tone="amber"
-          sub={pluralize(kpis.pedidos, 'pedido considerados')} />
+        <KpiCard label="Faturamento" value={salesError ? 'Erro' : formatCurrency(kpis.faturamento)}
+          icon={<DollarSign className="w-5 h-5" />} tone={salesError ? 'rose' : 'brand'}
+          sub={salesError ? salesError.slice(0, 30) : pluralize(kpis.pedidos, 'pedido')} />
+        <KpiCard label="Lucro real" value={salesError ? 'Erro' : formatCurrency(kpis.lucro)}
+          icon={<TrendingUp className="w-5 h-5" />} tone={salesError ? 'rose' : (kpis.lucro >= 0 ? 'emerald' : 'rose')}
+          sub={salesError ? 'Consulte o log' : formatPercent(kpis.margem) + ' margem'} />
+        <KpiCard label="Margem %" value={salesError ? 'Erro' : formatPercent(kpis.margem, 1)}
+          icon={<Receipt className="w-5 h-5" />} tone={salesError ? 'rose' : 'violet'}
+          sub={salesError ? '-' : (kpis.faturamento ? `sobre ${formatCurrency(kpis.faturamento)}` : 'sem vendas')} />
+        <KpiCard label="Pedidos" value={salesError ? 'Erro' : String(kpis.pedidos)}
+          icon={<ShoppingCart className="w-5 h-5" />} tone={salesError ? 'rose' : 'ink'}
+          sub={salesError ? '-' : `${kpis.pecas} ${pluralize(kpis.pecas, 'peça', 'peças')}`} />
+        <KpiCard label="Peças vendidas" value={salesError ? 'Erro' : String(kpis.pecas)}
+          icon={<Package className="w-5 h-5" />} tone={salesError ? 'rose' : 'blue'}
+          sub={salesError ? '-' : (kpis.pedidos ? `média ${(kpis.pecas / kpis.pedidos).toFixed(1)}/pedido` : '-')} />
+        <KpiCard label="Ticket médio" value={salesError ? 'Erro' : formatCurrency(kpis.ticketMedio)}
+          icon={<ArrowUpRight className="w-5 h-5" />} tone={salesError ? 'rose' : 'amber'}
+          sub={salesError ? '-' : pluralize(kpis.pedidos, 'pedido considerados')} />
       </div>
 
       {/* Custos detalhados + Caixa */}
@@ -212,28 +204,57 @@ export default function DashboardPage() {
           <div className="flex items-center justify-between mb-4">
             <h3 className="font-bold text-ink-800">Composição dos custos no período</h3>
             <span className="chip bg-ink-100 text-ink-600">
-              {loading ? 'Carregando…' : pluralize(periodSales.length, 'venda')}
+              {loadingSales ? 'Carregando…' : pluralize(salesRows.length, 'venda')}
             </span>
           </div>
-          {kpis.faturamento === 0 ? (
+
+          {salesError && (
+            <div className="mb-3 p-3 rounded-xl border border-rose-200 bg-rose-50 text-rose-800 text-xs">
+              <div className="font-bold flex items-center gap-1.5"><AlertCircle className="w-3.5 h-3.5" /> Erro ao carregar vendas</div>
+              <div className="mt-0.5 opacity-90 break-words">{salesError}</div>
+            </div>
+          )}
+
+          {loadingSales ? (
+            <div className="space-y-3 pt-1">
+              {Array.from({ length: 7 }).map((_, i) => (
+                <div key={i}>
+                  <div className="flex justify-between mb-1">
+                    <div className="h-3.5 w-40 bg-ink-100 rounded animate-pulse" />
+                    <div className="h-3.5 w-20 bg-ink-100 rounded animate-pulse" />
+                  </div>
+                  <div className="h-2 rounded-full bg-ink-100 animate-pulse" />
+                </div>
+              ))}
+            </div>
+          ) : kpis.faturamento === 0 ? (
             <EmptyStateSmall />
           ) : (
             <div className="space-y-3">
               <CostBar rows={[
                 { label: 'Receita (total cliente)', value: kpis.faturamento, tone: 'bg-brand-600', showPercent: true, total: kpis.faturamento },
                 { label: 'Custo das mercadorias (FIFO)', value: kpis.custoMerc, tone: 'bg-rose-500', total: kpis.faturamento },
+                kpis.custoAlloc > 0
+                  ? { label: 'Rateio compras (impostos/frete)', value: kpis.custoAlloc, tone: 'bg-rose-400', total: kpis.faturamento }
+                  : null,
                 { label: 'Taxas de pagamento (real)', value: kpis.custoTaxas, tone: 'bg-orange-500', total: kpis.faturamento },
                 { label: 'Embalagens (real)', value: kpis.custoEmbalagens, tone: 'bg-violet-500', total: kpis.faturamento },
                 { label: 'Frete / custos extras', value: kpis.custoFrete, tone: 'bg-sky-500', total: kpis.faturamento },
                 { label: 'Descontos concedidos', value: kpis.descontos, tone: 'bg-amber-500', total: kpis.faturamento },
                 { label: 'Lucro real', value: kpis.lucro, tone: kpis.lucro >= 0 ? 'bg-emerald-500' : 'bg-rose-700', total: kpis.faturamento, strong: true },
-              ]} />
+              ].filter(Boolean) as any} />
             </div>
           )}
         </div>
 
         <div className="card p-5 space-y-4">
           <h3 className="font-bold text-ink-800">Caixa no período</h3>
+          {finError && (
+            <div className="p-3 rounded-xl border border-rose-200 bg-rose-50 text-rose-800 text-xs">
+              <div className="font-bold flex items-center gap-1.5"><AlertCircle className="w-3.5 h-3.5" /> Erro ao carregar caixa</div>
+              <div className="mt-0.5 opacity-90 break-words">{finError}</div>
+            </div>
+          )}
           <div className="space-y-3">
             <div className="flex items-center justify-between p-3 rounded-lg bg-emerald-50 border border-emerald-100">
               <div className="flex items-center gap-2.5">
@@ -242,10 +263,12 @@ export default function DashboardPage() {
                 </div>
                 <div>
                   <div className="text-xs text-emerald-700 font-semibold">Entradas</div>
-                  <div className="text-xs text-emerald-600/80">recebimentos</div>
+                  <div className="text-xs text-emerald-600/80">recebimentos confirmados</div>
                 </div>
               </div>
-              <div className="text-lg font-black text-emerald-800 num">{formatCurrency(receitas)}</div>
+              <div className="text-lg font-black text-emerald-800 num">
+                {finError ? '—' : formatCurrency(receitas)}
+              </div>
             </div>
             <div className="flex items-center justify-between p-3 rounded-lg bg-rose-50 border border-rose-100">
               <div className="flex items-center gap-2.5">
@@ -254,20 +277,23 @@ export default function DashboardPage() {
                 </div>
                 <div>
                   <div className="text-xs text-rose-700 font-semibold">Saídas</div>
-                  <div className="text-xs text-rose-600/80">pagamentos, compras</div>
+                  <div className="text-xs text-rose-600/80">pagamentos, compras, despesas</div>
                 </div>
               </div>
-              <div className="text-lg font-black text-rose-800 num">{formatCurrency(despesas)}</div>
+              <div className="text-lg font-black text-rose-800 num">
+                {finError ? '—' : formatCurrency(despesas)}
+              </div>
             </div>
             <div className="flex items-center justify-between p-4 rounded-xl bg-gradient-to-r from-ink-900 to-brand-900 text-white">
               <div>
                 <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-white/70">Saldo do período</div>
-                <div className="text-[11px] text-white/50 mt-0.5">movimento de caixa</div>
+                <div className="text-[11px] text-white/50 mt-0.5">apenas confirmados</div>
               </div>
-              <div className="text-2xl font-black num">{formatCurrency(saldoCaixa)}</div>
+              <div className="text-2xl font-black num">{finError ? '—' : formatCurrency(saldoCaixa)}</div>
             </div>
             <p className="text-[11px] text-ink-500 leading-relaxed">
               Obs: saldo de caixa ≠ lucro. Compras de mercadoria são saída hoje, mas só viram custo na venda.
+              Movimentações PENDENTES não entram no caixa.
             </p>
           </div>
         </div>
@@ -305,11 +331,7 @@ export default function DashboardPage() {
           {kpis.descontos === 0 ? <EmptyStateSmall /> : (
             <div className="space-y-3">
               {[
-                { k: 'Produto (individual)', v: descontosAna.prod, c: 'bg-amber-500' },
-                { k: 'Desconto geral', v: descontosAna.geral, c: 'bg-orange-500' },
-                { k: 'Cupom', v: descontosAna.cupom, c: 'bg-violet-500' },
-                { k: 'Desconto Pix', v: descontosAna.pix, c: 'bg-sky-500' },
-                { k: 'Total descontos', v: descontosAna.total, c: 'bg-rose-600', strong: true },
+                { k: 'Total descontos', v: kpis.descontos, c: 'bg-rose-600', strong: true },
               ].map(r => (
                 <div key={r.k} className="flex items-center justify-between">
                   <div className="flex items-center gap-2.5">
@@ -329,58 +351,53 @@ export default function DashboardPage() {
           <div className="flex items-center justify-between mb-3">
             <div className="flex items-center gap-2">
               <h3 className="font-bold text-ink-800">Resumo de estoque</h3>
-              {loading && (
+              {loadingStock && (
                 <span className="chip bg-ink-100 text-ink-500 animate-pulse">Atualizando…</span>
               )}
             </div>
             <Link to="/estoque" className="text-xs font-semibold text-brand-700 hover:underline">Ver tudo →</Link>
           </div>
 
-          {loadError && !loading && (
+          {stockError && (
             <div className="mb-4 p-3 rounded-xl border border-rose-200 bg-rose-50 text-rose-800 text-xs">
-              <div className="font-bold">Erro ao carregar estoque</div>
-              <div className="mt-0.5 opacity-90 break-words">{loadError}</div>
+              <div className="font-bold flex items-center gap-1.5"><AlertCircle className="w-3.5 h-3.5" /> Erro ao carregar estoque</div>
+              <div className="mt-0.5 opacity-90 break-words">{stockError}</div>
             </div>
           )}
 
-          <div className="grid grid-cols-2 gap-2.5 mb-4">
-            <MiniKpi label="Peças disponíveis" value={String(estoque.pecasDisp)} />
-            <MiniKpi label="Custo do estoque" value={formatCurrency(estoque.valorInvestido)} />
-            <MiniKpi label="Potencial de venda" value={formatCurrency(estoque.potencialVenda)} />
-            <MiniKpi label="SKUs cadastrados" value={String(products.length)} />
-          </div>
+          {loadingStock ? (
+            <div className="space-y-2.5 mb-4">
+              <div className="grid grid-cols-2 gap-2.5">
+                {Array.from({ length: 4 }).map((_, i) => (
+                  <div key={i} className="p-3 rounded-lg bg-ink-50 border border-ink-100">
+                    <div className="h-2.5 w-24 bg-ink-200 rounded animate-pulse" />
+                    <div className="h-5 w-16 bg-ink-200 rounded mt-1 animate-pulse" />
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : stockError ? null : (
+            <div className="grid grid-cols-2 gap-2.5 mb-4">
+              <MiniKpi label="Peças disponíveis" value={String(stock?.total_units ?? 0)} />
+              <MiniKpi label="Custo do estoque" value={formatCurrency(stock?.total_stock_cost ?? 0)} />
+              <MiniKpi label="Potencial de venda" value={formatCurrency(stock?.total_sales_potential ?? 0)} />
+              <MiniKpi label="SKUs cadastrados" value={String(stock?.total_skus ?? 0)} />
+            </div>
+          )}
 
-          {!loading && !loadError ? (
+          {!loadingStock && !stockError && stock && (
             <>
-              {(estoque.baixo.length || estoque.semEstoque.length) ? (
+              {stock.out_of_stock_skus > 0 ? (
                 <div className="space-y-2.5">
-                  {estoque.semEstoque.length > 0 && (
-                    <AlertBlock
-                      icon={<AlertTriangle className="w-4 h-4" />}
-                      tone="rose"
-                      title={`${estoque.semEstoque.length} ${pluralize(estoque.semEstoque.length, 'produto', 'produtos')} sem estoque`}
-                      items={estoque.semEstoque.slice(0, 3).map(p => ({ t: p.name, s: 'Estoque: 0' }))}
-                    />
-                  )}
-                  {estoque.baixo.length > 0 && (
-                    <AlertBlock
-                      icon={<AlertTriangle className="w-4 h-4" />}
-                      tone="amber"
-                      title={`${estoque.baixo.length} ${pluralize(estoque.baixo.length, 'produto', 'produtos')} com estoque baixo`}
-                      items={estoque.baixo.slice(0, 3).map(p => {
-                        const qty = estoque.stockByProduct.get(p.id)?.quantity ?? 0
-                        return { t: p.name, s: `${qty} un. · min ${Number(p.min_stock ?? 0)}` }
-                      })}
-                    />
-                  )}
+                  <AlertBlock
+                    icon={<AlertTriangle className="w-4 h-4" />}
+                    tone="rose"
+                    title={`${stock.out_of_stock_skus} ${pluralize(stock.out_of_stock_skus, 'produto', 'produtos')} sem estoque`}
+                    items={[]}
+                  />
                 </div>
               ) : <EmptyStateSmall text="Estoque saudável, sem alertas." />}
             </>
-          ) : loading && (
-            <div className="space-y-2">
-              <div className="h-10 rounded-lg bg-ink-100 animate-pulse" />
-              <div className="h-8 rounded-lg bg-ink-100 animate-pulse w-3/4" />
-            </div>
           )}
         </div>
       </div>
@@ -390,13 +407,44 @@ export default function DashboardPage() {
         <div className="flex items-center justify-between mb-4">
           <div>
             <h3 className="font-bold text-ink-800">Vendas recentes</h3>
-            <p className="text-xs text-ink-500 mt-0.5">Últimas vendas concluídas no período selecionado.</p>
+            <p className="text-xs text-ink-500 mt-0.5">Últimas vendas no período selecionado.</p>
           </div>
           <Link to="/vendas" className="btn-secondary !py-2 text-xs">
             Histórico completo
           </Link>
         </div>
-        {recentSales.length === 0 ? (
+
+        {salesError && (
+          <div className="mb-3 p-3 rounded-xl border border-rose-200 bg-rose-50 text-rose-800 text-xs">
+            <div className="font-bold">Erro ao carregar histórico de vendas</div>
+            <div className="mt-0.5 opacity-90 break-words">{salesError}</div>
+          </div>
+        )}
+
+        {loadingSales ? (
+          <div className="table-wrap">
+            <table className="table-base">
+              <thead>
+                <tr>
+                  <th>Nº</th><th>Data</th><th>Origem</th><th>Pagamento</th>
+                  <th className="text-right">Peças</th><th className="text-right">Total</th>
+                  <th className="text-right">Lucro</th><th className="text-right">Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {Array.from({ length: 5 }).map((_, i) => (
+                  <tr key={i}>
+                    {Array.from({ length: 8 }).map((__, j) => (
+                      <td key={j}>
+                        <div className="h-4 bg-ink-100 rounded animate-pulse w-20" />
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : recentSales.length === 0 ? (
           <EmptyStateSmall text="Sem vendas no período. Clique em Nova Venda para começar." />
         ) : (
           <div className="table-wrap">
@@ -406,36 +454,48 @@ export default function DashboardPage() {
                   <th>Nº</th>
                   <th>Data</th>
                   <th>Origem</th>
+                  <th>Cliente</th>
                   <th>Pagamento</th>
                   <th className="text-right">Peças</th>
                   <th className="text-right">Total cliente</th>
-                  <th className="text-right">Lucro</th>
+                  <th className="text-right">Recebido</th>
+                  <th className="text-right">A receber</th>
                   <th className="text-right">Status</th>
                 </tr>
               </thead>
               <tbody>
-                {recentSales.map(s => {
-                  const st = statusLabel(s.status)
+                {recentSales.map(r => {
+                  const st = statusLabel(r.status ?? 'PENDENTE')
+                  const lucro = Number(r.revenue ?? 0) - (
+                    Number(r.items_cost ?? 0) +
+                    Number(r.allocated_purchase_cost ?? 0) +
+                    Number(r.payment_fees ?? 0) +
+                    Number(r.packaging_cost ?? 0) +
+                    Number(r.extra_costs ?? 0)
+                  )
                   return (
-                    <tr key={s.id} className="hover:bg-ink-50/50 transition">
+                    <tr key={r.sale_id ?? (r as any).id} className="hover:bg-ink-50/50 transition">
                       <td className="font-bold num">
-                        <Link to={`/vendas/${s.id}`} className="text-brand-800 hover:underline">
-                          #{String(s.friendly_number ?? '')}
-                        </Link>
+                        {r.sale_id
+                          ? <Link to={`/vendas/${r.sale_id}`} className="text-brand-800 hover:underline">#{String(r.friendly_number ?? '')}</Link>
+                          : <span className="text-brand-800">#{String(r.friendly_number ?? '')}</span>
+                        }
                       </td>
-                      <td className="text-ink-700 num">{formatDate(s.sale_date ?? s.created_at, true)}</td>
+                      <td className="text-ink-700 num">{formatDate(r.sale_date, true)}</td>
                       <td>
-                        <span className="chip bg-ink-100 text-ink-700">{sourceLabel(s.source_snapshot)}</span>
+                        <span className="chip bg-ink-100 text-ink-700">{sourceLabel(r.source_snapshot)}</span>
                       </td>
+                      <td className="text-ink-700 text-sm max-w-[160px] truncate">{r.customer_name || <span className="italic text-ink-400">Não identificado</span>}</td>
                       <td className="text-ink-700 text-sm">
-                        {[s.payment_provider_snapshot, paymentMethodLabel(s.payment_method_snapshot),
-                          (s.installments_snapshot ?? 1) > 1 ? `${s.installments_snapshot}x` : null]
+                        {[r.payment_provider_snapshot, paymentMethodLabel(r.payment_method_snapshot),
+                          (Number(r.installments_snapshot ?? 1) > 1) ? `${r.installments_snapshot}x` : null]
                           .filter(Boolean).join(' · ') || '-'}
                       </td>
-                      <td className="text-right num font-semibold">{String(Number(s.total_items ?? 0))}</td>
-                      <td className="text-right num font-bold text-ink-900">{formatCurrency(s.total_customer)}</td>
-                      <td className={cn('text-right num font-bold', Number(s.real_profit ?? 0) >= 0 ? 'text-emerald-700' : 'text-rose-700')}>
-                        {formatCurrency(s.real_profit)}
+                      <td className="text-right num font-semibold">{String(Number(r.pieces_sold ?? 0))}</td>
+                      <td className="text-right num font-bold text-ink-900">{formatCurrency(r.revenue)}</td>
+                      <td className="text-right num text-emerald-700 font-semibold">{formatCurrency(r.amount_received)}</td>
+                      <td className={cn('text-right num font-semibold', Number(r.amount_receivable ?? 0) > 0 ? 'text-amber-700' : 'text-ink-400')}>
+                        {formatCurrency(r.amount_receivable ?? 0)}
                       </td>
                       <td className="text-right"><span className={st.class}>{st.label}</span></td>
                     </tr>
