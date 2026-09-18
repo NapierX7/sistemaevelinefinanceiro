@@ -11,6 +11,34 @@ import type { UUID, Product, Category, Sale, SaleItem, SalePayment, SalePackagin
 
 export const usingSupabase = isSupabaseConfigured && supabase !== null
 
+const INVALIDATE_EVENT = 'eg:invalidate'
+
+export function dispatchInvalidateAll() {
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent(INVALIDATE_EVENT))
+    ;((window as any).__reloadDashboard as undefined | (() => void))?.()
+  }
+}
+
+export function dispatchInvalidate(scope: 'all' | 'dashboard' | 'sales' | 'inventory' | 'financial' | 'purchases' | 'products' = 'all') {
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent(INVALIDATE_EVENT, { detail: { scope } }))
+    if (scope === 'all' || scope === 'dashboard') {
+      ;((window as any).__reloadDashboard as undefined | (() => void))?.()
+    }
+  }
+}
+
+export function onInvalidate(callback: (scope?: string) => void): () => void {
+  if (typeof window === 'undefined') return () => {}
+  const handler = (e: Event) => {
+    const ev = e as CustomEvent<any>
+    callback(ev.detail?.scope ?? 'all')
+  }
+  window.addEventListener(INVALIDATE_EVENT, handler as EventListener)
+  return () => window.removeEventListener(INVALIDATE_EVENT, handler as EventListener)
+}
+
 export async function listProducts(): Promise<Product[]> {
   if (!usingSupabase) return Demo.demoListProducts()
   const { data, error } = await (supabase!)

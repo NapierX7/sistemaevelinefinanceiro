@@ -8,7 +8,7 @@ import {
 } from '@/lib/format'
 import {
   listAllProducts, listCategories, listPackagingTypes,
-  createProduct, updateProduct
+  createProduct, updateProduct, onInvalidate, dispatchInvalidate
 } from '@/services'
 import type { Product, Category, PackagingType } from '@/types/supabase'
 
@@ -41,6 +41,15 @@ export default function ProductsPage() {
   }
 
   useEffect(() => { loadAll() }, [])
+
+  useEffect(() => {
+    const cleanup = onInvalidate((scope) => {
+      if (scope === 'all' || scope === 'products' || scope === 'inventory' || scope === 'sales' || scope === 'purchases') {
+        loadAll()
+      }
+    })
+    return cleanup
+  }, [])
 
   const filtered = useMemo(() => {
     return products.filter(p => {
@@ -243,6 +252,8 @@ function ProductModal({
       if (editingId) await updateProduct(editingId, payload as any)
       else await createProduct(payload as any)
       alert('Produto salvo com sucesso!')
+      dispatchInvalidate('products')
+      dispatchInvalidate('inventory')
       onSaved()
     } catch (e) {
       console.error(e)

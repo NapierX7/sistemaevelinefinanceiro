@@ -7,7 +7,8 @@ import {
   formatCurrency, cn, parseBrl, formatDate, toInputDate, formatFriendlyNumber, pluralize
 } from '@/lib/format'
 import {
-  listPurchases, listAllProducts, createPurchase, getPurchaseDetail
+  listPurchases, listAllProducts, createPurchase, getPurchaseDetail,
+  onInvalidate, dispatchInvalidate
 } from '@/services'
 import type { PurchaseEntry, Product } from '@/types/supabase'
 import type { CreatePurchaseParams } from '@/services'
@@ -52,6 +53,15 @@ export default function PurchasesPage() {
   }
 
   useEffect(() => { load() }, [])
+
+  useEffect(() => {
+    const cleanup = onInvalidate((scope) => {
+      if (scope === 'all' || scope === 'purchases' || scope === 'inventory' || scope === 'products') {
+        load()
+      }
+    })
+    return cleanup
+  }, [])
 
   const loadDetail = async (id: string) => {
     setDetailId(id)
@@ -104,7 +114,7 @@ export default function PurchasesPage() {
                 </td></tr>
               ) : purchases.map((p, i) => (
                 <tr key={p.id} className="hover:bg-ink-50/50 transition">
-                  <td className="font-bold num">#{formatFriendlyNumber(purchases.length - i, 4)}</td>
+                  <td className="font-bold num">#{String(purchases.length - i)}</td>
                   <td className="num text-ink-700">{formatDate(p.entry_date)}</td>
                   <td className="font-medium text-ink-800">{p.supplier || '—'}</td>
                   <td className="text-ink-600 text-sm">{p.origin || '—'}</td>
@@ -259,6 +269,9 @@ function NewPurchaseModal({
       }
       await createPurchase(params)
       alert('Entrada registrada com sucesso!')
+      dispatchInvalidate('purchases')
+      dispatchInvalidate('inventory')
+      dispatchInvalidate('products')
       onSaved()
     } catch (e) {
       console.error(e)

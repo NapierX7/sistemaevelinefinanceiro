@@ -7,7 +7,7 @@ import {
   formatCurrency, formatPercent, formatDate, formatDateTime, formatFriendlyNumber, parseBrl, sourceLabel, statusLabel, paymentMethodLabel, pluralize, rangePresets, inRange, cn
 } from '@/lib/format'
 import type { Sale, UUID, SaleSource, PaymentMethod, SaleStatus } from '@/types/supabase'
-import { listSales, cancelSale, listPaymentProviders, listAllProducts } from '@/services'
+import { listSales, cancelSale, listPaymentProviders, listAllProducts, onInvalidate, dispatchInvalidateAll } from '@/services'
 import type { ProviderWithModalities } from '@/services'
 
 type PresetKey = keyof ReturnType<typeof rangePresets> | 'PERSONALIZADO'
@@ -47,6 +47,21 @@ export default function SalesHistoryPage() {
       .then(([s, p, pv]) => {
         setSales(s); setProducts(p); setProviders(pv)
       }).finally(() => setLoading(false))
+  }, [])
+
+  useEffect(() => {
+    const cleanup = onInvalidate((scope) => {
+      if (scope === 'all' || scope === 'sales' || scope === 'dashboard') {
+        setLoading(true)
+        Promise.allSettled([listSales(), listAllProducts(), listPaymentProviders()])
+          .then(([s, p, pv]) => {
+            if (s.status === 'fulfilled') setSales(s.value)
+            if (p.status === 'fulfilled') setProducts(p.value)
+            if (pv.status === 'fulfilled') setProviders(pv.value)
+          }).finally(() => setLoading(false))
+      }
+    })
+    return cleanup
   }, [])
 
   useEffect(() => {
@@ -127,6 +142,7 @@ export default function SalesHistoryPage() {
       setCanceling(true)
       await cancelSale(cancelModal.sale.id, cancelReason.trim())
       alert('Venda cancelada com sucesso!')
+      dispatchInvalidateAll()
       setSales(prev => prev.map(s => s.id === cancelModal.sale!.id
         ? { ...s, status: 'CANCELADA' as SaleStatus, cancel_reason: cancelReason.trim(), cancelled_at: new Date().toISOString() }
         : s))
@@ -431,7 +447,7 @@ export default function SalesHistoryPage() {
                             {[snapProvider, paymentMethodLabel(snapMethod), snapInstallments > 1 ? `${snapInstallments}x` : null]
                               .filter(Boolean).join(' · ') || '-'}
                           </td>
-                          <td className="text-right num font-semibold">{formatFriendlyNumber(Number((s as any).total_items ?? 0))}</td>
+                          <td className="text-right num font-semibold">{String(Number((s as any).total_items ?? 0))}</td>
                           <td className="text-right num font-bold text-ink-900">{formatCurrency(s.total_customer)}</td>
                           <td className={cn('text-right num font-bold',
                             s.status === 'CANCELADA' ? 'text-ink-400 line-through' :

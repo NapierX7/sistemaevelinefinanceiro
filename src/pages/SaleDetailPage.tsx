@@ -7,7 +7,7 @@ import {
   formatCurrency, formatPercent, formatDate, formatDateTime, formatFriendlyNumber, parseBrl, sourceLabel, statusLabel, paymentMethodLabel, pluralize, cn
 } from '@/lib/format'
 import type { Sale, SaleItem, SalePayment, SalePackaging, SaleCost, UUID, PaymentMethod, SaleStatus, SaleSource } from '@/types/supabase'
-import { getSaleDetail, cancelSale, recordRemainingPayment, updateSale, updateSalePayment, deleteSalePayment } from '@/services'
+import { getSaleDetail, cancelSale, recordRemainingPayment, updateSale, updateSalePayment, deleteSalePayment, onInvalidate, dispatchInvalidateAll } from '@/services'
 
 export default function SaleDetailPage() {
   const { id } = useParams<{ id: string }>()
@@ -78,6 +78,16 @@ export default function SaleDetailPage() {
   }
 
   useEffect(() => { load() }, [id])
+
+  useEffect(() => {
+    const cleanup = onInvalidate((scope) => {
+      if (scope === 'all' || scope === 'sales' || scope === 'dashboard' || scope === 'financial') {
+        load()
+      }
+    })
+    return cleanup
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id])
 
   const s = detail?.sale
   const items = detail?.items ?? []
@@ -175,6 +185,7 @@ export default function SaleDetailPage() {
       } as any)
       setPaymentEdit({ ...paymentEdit, open: false })
       alert('Pagamento atualizado com sucesso!')
+      dispatchInvalidateAll()
       load()
     } catch (e: any) {
       alert('Erro ao atualizar pagamento: ' + (e?.message ?? String(e)))
@@ -189,6 +200,7 @@ export default function SaleDetailPage() {
       setSaving(true)
       await deleteSalePayment(paymentId)
       alert('Pagamento excluído com sucesso!')
+      dispatchInvalidateAll()
       load()
     } catch (e: any) {
       alert('Erro ao excluir pagamento: ' + (e?.message ?? String(e)))
@@ -218,6 +230,7 @@ export default function SaleDetailPage() {
       if (!res) throw new Error('Sem retorno do servidor.')
       alert('Venda atualizada com sucesso!')
       closeEditMode()
+      dispatchInvalidateAll()
       load()
     } catch (e: any) {
       console.error(e)
@@ -277,6 +290,7 @@ export default function SaleDetailPage() {
       }
       alert(`Pagamento restante de ${formatCurrency(amountNum)} registrado! Status: ${(res as any)?.new_status ?? 'CONCLUIDA'}`)
       setQuitOpen(false)
+      dispatchInvalidateAll()
       load()
     } catch (e: any) {
       alert('Erro: ' + (e?.message ?? String(e)))
@@ -295,6 +309,7 @@ export default function SaleDetailPage() {
       setCancelOpen(false)
       setCancelStep(1)
       setCancelReason('')
+      dispatchInvalidateAll()
       load()
     } catch (e: any) {
       console.error(e)

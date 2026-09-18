@@ -9,6 +9,7 @@ import {
 import type { Product, Sale, SaleItem, SalePayment, SalePackaging, SaleCost, Coupon, UUID, PaymentMethod, SaleSource, PaymentFeeRule, PackagingType } from '@/types/supabase'
 import {
   listAllProducts, listPackagingTypes, listPaymentProviders, findFee, listCoupons, getSetting, finalizeSale,
+  dispatchInvalidateAll
 } from '@/services'
 import type { FinalizeSaleParams, ProviderWithModalities } from '@/services'
 
@@ -388,6 +389,7 @@ export default function NewSalePage() {
       const sale_id = res?.sale_id ?? res?.id ?? res
       const friendly_number = res?.friendly_number ?? res?.num ?? ''
       alert(`Venda #${friendly_number ? formatFriendlyNumber(friendly_number) : ''} finalizada!`)
+      dispatchInvalidateAll()
       navigate(`/vendas/${sale_id}`)
     } catch (e: any) {
       console.error(e)

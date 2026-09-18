@@ -7,7 +7,8 @@ import {
   formatCurrency, formatDate, formatDateTime, cn, formatFriendlyNumber, pluralize
 } from '@/lib/format'
 import {
-  listAllProducts, listCategories, listInventoryMovements, listInventoryBatches
+  listAllProducts, listCategories, listInventoryMovements, listInventoryBatches,
+  onInvalidate
 } from '@/services'
 import type { Product, Category, InventoryMovement, InventoryBatch } from '@/types/supabase'
 
@@ -43,6 +44,15 @@ export default function InventoryPage() {
 
   useEffect(() => { load() }, [])
 
+  useEffect(() => {
+    const cleanup = onInvalidate((scope) => {
+      if (scope === 'all' || scope === 'inventory' || scope === 'products' || scope === 'purchases' || scope === 'sales') {
+        load()
+      }
+    })
+    return cleanup
+  }, [])
+
   const kpis = useMemo(() => {
     let pecas = 0
     let investido = 0
@@ -77,7 +87,7 @@ export default function InventoryPage() {
       </div>
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-        <KpiCard label="Peças disponíveis" value={formatFriendlyNumber(kpis.pecas)}
+        <KpiCard label="Peças disponíveis" value={String(kpis.pecas)}
           icon={<Package className="w-5 h-5" />} tone="brand"
           sub={pluralize(products.filter(p => p.active).length, 'SKU ativo', 'SKUs ativos')} />
         <KpiCard label="Valor investido" value={formatCurrency(kpis.investido)}
@@ -86,7 +96,7 @@ export default function InventoryPage() {
         <KpiCard label="Potencial de venda" value={formatCurrency(kpis.potencial)}
           icon={<TrendingUp className="w-5 h-5" />} tone="emerald"
           sub="preço de venda atual" />
-        <KpiCard label="SKUs cadastrados" value={formatFriendlyNumber(products.length)}
+        <KpiCard label="SKUs cadastrados" value={String(products.length)}
           icon={<Box className="w-5 h-5" />} tone="ink"
           sub={pluralize(categories.length, 'categoria')} />
       </div>
@@ -192,7 +202,7 @@ export default function InventoryPage() {
                             <div className="text-xs text-ink-500 num">{p.sku || 'Sem SKU'}</div>
                           </td>
                           <td>{cat?.name || <span className="text-ink-400">—</span>}</td>
-                          <td className="text-right num font-bold">{formatFriendlyNumber(qty)}</td>
+                          <td className="text-right num font-bold">{String(qty)}</td>
                           <td className="text-right num">{formatCurrency(custo)}</td>
                           <td className="text-right num">{formatCurrency(venda)}</td>
                           <td className="text-right num font-bold text-ink-900">{formatCurrency(total)}</td>
@@ -303,8 +313,8 @@ export default function InventoryPage() {
                             </div>
                           </td>
                           <td className="num text-ink-600">{formatDate(b.received_at)}</td>
-                          <td className="text-right num">{formatFriendlyNumber(original)}</td>
-                          <td className="text-right num font-bold text-ink-900">{formatFriendlyNumber(disponivel)}</td>
+                          <td className="text-right num">{String(original)}</td>
+                          <td className="text-right num font-bold text-ink-900">{String(disponivel)}</td>
                           <td className="text-right num">{formatCurrency(custo)}</td>
                           <td className="text-right num font-bold text-brand-900">{formatCurrency(total)}</td>
                         </tr>

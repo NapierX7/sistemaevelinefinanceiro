@@ -1,9 +1,9 @@
 import { Menu, LogOut, UserRound, Bell } from 'lucide-react'
 import { useAuth } from '@/contexts/AuthContext'
-import { cn, formatFriendlyNumber } from '@/lib/format'
+import { cn } from '@/lib/format'
 import { useNavigate } from 'react-router-dom'
 import { useEffect, useState } from 'react'
-import { listSales } from '@/services'
+import { listSales, onInvalidate } from '@/services'
 
 interface Props { onOpenSidebar: () => void }
 
@@ -13,13 +13,20 @@ export default function Topbar({ onOpenSidebar }: Props) {
   const [todayCount, setTodayCount] = useState<number>(0)
 
   useEffect(() => {
-    listSales()
+    const load = () => listSales()
       .then(list => {
         const today = new Date().toISOString().slice(0, 10)
-        const n = list.filter(s => s.status === 'CONCLUIDA' && s.sale_date.slice(0,10) === today).length
+        const n = list.filter(s => s.status === 'CONCLUIDA' && (s.sale_date ?? s.created_at).slice(0,10) === today).length
         setTodayCount(n)
       })
       .catch(() => {})
+    load()
+    const cleanup = onInvalidate((scope) => {
+      if (scope === 'all' || scope === 'sales' || scope === 'dashboard') {
+        load()
+      }
+    })
+    return cleanup
   }, [])
 
   return (
@@ -42,8 +49,7 @@ export default function Topbar({ onOpenSidebar }: Props) {
               <span className="font-bold text-ink-900 truncate">Bem-vinda, Eveline</span>
               {todayCount > 0 && (
                 <span className="chip bg-brand-50 text-brand-800 ring-1 ring-brand-200">
-                  {formatFriendlyNumber(todayCount)
-                    .replace(/^0+/, '') || todayCount} venda{todayCount !== 1 ? 's' : ''} hoje
+                  {String(todayCount)} venda{todayCount !== 1 ? 's' : ''} hoje
                 </span>
               )}
             </div>

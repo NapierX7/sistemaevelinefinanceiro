@@ -1,17 +1,19 @@
 import { useEffect, useMemo, useState } from 'react'
 import {
   DollarSign, TrendingUp, Wallet, ArrowUpRight, ArrowDownRight,
-  Calendar, ChevronDown, Filter, Plus, X, Trash2,
-  ShoppingBag, Gift, Tag, ScrollText, Sparkles, Wrench, Truck, Megaphone, MoreHorizontal
+  Calendar, ChevronDown, Filter, Plus, X, Trash2, AlertCircle,
+  ShoppingBag, Gift, Tag, ScrollText, Sparkles, Wrench, Truck, Megaphone, MoreHorizontal,
+  CreditCard, Clock
 } from 'lucide-react'
 import {
   formatCurrency, formatDate, rangePresets, inRange,
   cn, pluralize, paymentMethodLabel, parseBrl, toInputDate
 } from '@/lib/format'
 import {
-  listFinancialTransactions, listSales, registrarDespesa
+  dashboardSales, dashboardFinancial, registrarDespesa,
+  onInvalidate, dispatchInvalidate
 } from '@/services'
-import type { FinancialTransaction, Sale } from '@/types/supabase'
+import type { DashboardSaleRow, DashboardFinancialRow } from '@/types/supabase'
 import type { RegistrarDespesaParams } from '@/services'
 
 type PresetKey = keyof ReturnType<typeof rangePresets> | 'PERSONALIZADO'
@@ -21,9 +23,12 @@ export default function FinancePage() {
   const [preset, setPreset] = useState<PresetKey>('ESTE_MES')
   const [from, setFrom] = useState<string>(presets.ESTE_MES.from.toISOString().slice(0, 10))
   const [to, setTo] = useState<string>(presets.ESTE_MES.to.toISOString().slice(0, 10))
-  const [transactions, setTransactions] = useState<FinancialTransaction[]>([])
-  const [sales, setSales] = useState<Sale[]>([])
-  const [loading, setLoading] = useState(true)
+  const [transactions, setTransactions] = useState<DashboardFinancialRow[]>([])
+  const [salesRows, setSalesRows] = useState<DashboardSaleRow[]>([])
+  const [loadingSales, setLoadingSales] = useState(true)
+  const [loadingFin, setLoadingFin] = useState(true)
+  const [salesError, setSalesError] = useState<string | null>(null)
+  const [finError, setFinError] = useState<string | null>(null)
   const [modalDespesaOpen, setModalDespesaOpen] = useState(false)
 
   useEffect(() => {
@@ -35,49 +40,92 @@ export default function FinancePage() {
   }, [preset])
 
   const load = async () => {
-    setLoading(true)
+    setLoadingSales(true); setLoadingFin(true); setSalesError(null); setFinError(null)
     try {
-      const [t, s] = await Promise.all([listFinancialTransactions(), listSales()])
-      setTransactions(t)
-      setSales(s)
-    } catch (e) {
-      console.error(e)
-      alert('Erro ao carregar financeiro.')
-    } finally {
-      setLoading(false)
-    }
+      const [fin, sales] = await Promise.all([
+        dashboardFinancial({ startInclusive: from, endInclusive: to }),
+        dashboardSales({ startInclusive: from, endInclusive: to })
+      ])
+      setTransactions(fin); setSalesRows(sales)
+    } catch (e) { /* each individual service set its own errors via throw - capture per call below */ }
+    finally { setLoadingSales(false); setLoadingFin(false) }
   }
 
-  useEffect(() => { load() }, [])
+  useEffect(() => {
+    let cancelled = false
+    setLoadingSales(true); setSalesError(null)
+    dashboardSales({ startInclusive: from, endInclusive: to })
+      .then(d => { if (!cancelled) setSalesRows(d) })
+      .catch(err => {
+        console.error('[Finance] vendas view falhou:', err)
+        if (!cancelled) setSalesError(err?.message ?? String(err))
+      })
+      .finally(() => { if (!cancelled) setLoadingSales(false) })
+    return () => { cancelled = true }
+  }, [from, to])
 
-  const { fromDate, toDate } = useMemo(() => ({
-    fromDate: new Date(from + 'T00:00:00'),
-    toDate: new Date(to + 'T23:59:59'),
-  }), [from, to])
+  useEffect(() => {
+    let cancelled = false
+    setLoadingFin(true); setFinError(null)
+    dashboardFinancial({ startInclusive: from, endInclusive: to })
+      .then(d => { if (!cancelled) setTransactions(d) })
+      .catch(err => {
+        console.error('[Finance] financeiro view falhou:', err)
+        if (!cancelled) setFinError(err?.message ?? String(err))
+      })
+      .finally(() => { if (!cancelled) setLoadingFin(false) })
+    return () => { cancelled = true }
+  }, [from, to])
 
-  const periodSales = useMemo(
-    () => sales.filter(s => inRange(s.sale_date ?? s.created_at, fromDate, toDate) && s.status !== 'CANCELADA'),
-    [sales, fromDate, toDate]
-  )
-  const periodTrans = useMemo(
-    () => transactions.filter(t => inRange(t.trans_date, fromDate, toDate)),
-    [transactions, fromDate, toDate]
-  )
+  // Hook refresh global (quando usuário finaliza venda em NovaVenda, ou cancela em outra página)
+  useEffect(() => {
+    const cleanup = onInvalidate((scope) => {
+      if (scope === 'all' || scope === 'financial' || scope === 'sales' || scope === 'dashboard') {
+        setSalesError(null); setFinError(null)
+        setLoadingSales(true); setLoadingFin(true)
+        Promise.allSettled([
+          dashboardSales({ startInclusive: from, endInclusive: to }),
+          dashboardFinancial({ startInclusive: from, endInclusive: to })
+        ]).then(([salesRes, finRes]) => {
+          if (salesRes.status === 'fulfilled') setSalesRows(salesRes.value)
+          else { setSalesError(String(salesRes.reason?.message ?? salesRes.reason)) ; console.error(salesRes.reason) }
+          if (finRes.status === 'fulfilled') setTransactions(finRes.value)
+          else { setFinError(String(finRes.reason?.message ?? finRes.reason)) ; console.error('[fin error]') }
+        }).finally(() => { setLoadingSales(false); setLoadingFin(false) })
+      }
+    })
+    return cleanup
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [from, to])
+
+  const periodSales = salesRows // já vem filtrado pela view no período
+  const periodTrans = transactions // já vem filtrado pela view no período
 
   const kpis = useMemo(() => {
-    const faturamento = periodSales.reduce((s, v) => s + Number(v.total_customer ?? 0), 0)
-    const lucro = periodSales.reduce((s, v) => s + Number(v.real_profit ?? 0), 0)
+    const faturamento = periodSales.reduce((s, v) => s + Number(v.revenue ?? 0), 0)
+    const recebido = periodSales.reduce((s, v) => s + Number(v.amount_received ?? 0), 0)
+    const aReceber = periodSales.reduce((s, v) => s + Number(v.amount_receivable ?? 0), 0)
+
+    const custoMerc = periodSales.reduce((s, v) => s + Number(v.items_cost ?? 0), 0)
+    const custoAlloc = periodSales.reduce((s, v) => s + Number(v.allocated_purchase_cost ?? 0), 0)
+    const custoEmbalagens = periodSales.reduce((s, v) => s + Number(v.packaging_cost ?? 0), 0)
+    const custoFrete = periodSales.reduce((s, v) => s + Number(v.extra_costs ?? 0), 0)
+    const custoTaxas = periodSales.reduce((s, v) => s + Number(v.payment_fees ?? 0), 0)
+    const descontos = periodSales.reduce((s, v) => s + Number(v.total_discounts ?? 0), 0)
+    const lucro = faturamento - (custoMerc + custoAlloc + custoEmbalagens + custoFrete + custoTaxas + descontos)
+
     const entradas = periodTrans
-      .filter(t => t.trans_type === 'ENTRADA')
-      .reduce((s, v) => s + Number(v.amount ?? 0), 0)
+      .filter(t => t.status === 'CONFIRMADO' && t.trans_type === 'ENTRADA')
+      .reduce((s, v) => s + (Number(v.amount ?? 0) > 0 ? Number(v.amount ?? 0) : 0), 0)
     const saidas = periodTrans
-      .filter(t => t.trans_type === 'SAIDA')
-      .reduce((s, v) => s + Number(v.amount ?? 0), 0)
+      .filter(t => t.status === 'CONFIRMADO' && t.trans_type === 'SAIDA')
+      .reduce((s, v) => s + Math.abs(Number(v.amount ?? 0)), 0)
     const saldo = entradas - saidas
-    return { faturamento, lucro, entradas, saidas, saldo }
+    return { faturamento, recebido, aReceber, lucro, entradas, saidas, saldo }
   }, [periodSales, periodTrans])
 
-  const catLabel = (c: string) => {
+  const catLabel = (c: string | null) => {
+    if (!c) return 'Outros'
     const map: Record<string, string> = {
       VENDA: 'Venda',
       COMPRA_ESTOQUE: 'Compra estoque',
@@ -98,12 +146,14 @@ export default function FinancePage() {
     return map[c] || c
   }
 
+  const loadingAny = loadingSales || loadingFin
+
   return (
     <div className="space-y-5 pb-4 sm:pb-6">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
         <div>
           <h1 className="text-xl sm:text-2xl font-black tracking-tight text-ink-900">Financeiro</h1>
-          <p className="text-sm text-ink-500 mt-0.5">Faturamento, lucro e fluxo de caixa.</p>
+          <p className="text-sm text-ink-500 mt-0.5">Faturamento, lucro e fluxo de caixa — usando as views oficiais.</p>
         </div>
         <div className="flex flex-col sm:flex-row gap-2 sm:items-center">
           <button onClick={() => setModalDespesaOpen(true)} className="btn-primary">
@@ -140,7 +190,30 @@ export default function FinancePage() {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+      {(salesError || finError) && (
+        <div className="space-y-2">
+          {salesError && (
+            <div className="p-3 rounded-xl border border-rose-200 bg-rose-50 text-rose-800 text-xs flex items-start gap-2">
+              <AlertCircle className="w-4 h-4 mt-0.5 flex-shrink-0" />
+              <div>
+                <div className="font-bold">Erro ao carregar vendas do período (view v_dashboard_sales)</div>
+                <div className="mt-0.5 opacity-90 break-words">{salesError}</div>
+              </div>
+            </div>
+          )}
+          {finError && (
+            <div className="p-3 rounded-xl border border-rose-200 bg-rose-50 text-rose-800 text-xs flex items-start gap-2">
+              <AlertCircle className="w-4 h-4 mt-0.5 flex-shrink-0" />
+              <div>
+                <div className="font-bold">Erro ao carregar financeiro do período (view v_dashboard_financial)</div>
+                <div className="mt-0.5 opacity-90 break-words">{finError}</div>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-3">
         <div className="card p-5 border-t-4 !border-t-emerald-500">
           <div className="flex items-start justify-between mb-3">
             <div>
@@ -151,15 +224,21 @@ export default function FinancePage() {
               <DollarSign className="w-5 h-5" />
             </div>
           </div>
-          <div className="text-2xl sm:text-3xl font-black num text-emerald-800">{formatCurrency(kpis.faturamento)}</div>
-          <div className="mt-2 text-xs text-ink-500">{pluralize(periodSales.length, 'venda', 'vendas')} no período</div>
+          <div className="text-2xl sm:text-3xl font-black num text-emerald-800">
+            {salesError ? '—' : formatCurrency(kpis.faturamento)}
+          </div>
+          <div className="mt-2 text-xs text-ink-500">
+            {salesError ? 'Verifique a view v_dashboard_sales' : pluralize(periodSales.length, 'venda', 'vendas')} · {kpis.recebido > 0 || kpis.aReceber > 0
+              ? <>recebido <strong className="text-emerald-700">{formatCurrency(kpis.recebido)}</strong> · a receber <strong className="text-amber-700">{formatCurrency(kpis.aReceber)}</strong></>
+              : ''}
+          </div>
         </div>
 
         <div className="card p-5 border-t-4 !border-t-brand-700">
           <div className="flex items-start justify-between mb-3">
             <div>
-              <div className="kpi-label">LUCRO</div>
-              <div className="text-[11px] text-ink-400 mt-0.5">receita − todos os custos</div>
+              <div className="kpi-label">LUCRO REAL</div>
+              <div className="text-[11px] text-ink-400 mt-0.5">receita − custos e taxas reais</div>
             </div>
             <div className="w-10 h-10 rounded-lg bg-brand-50 ring-1 ring-brand-100 flex items-center justify-center text-brand-700">
               <TrendingUp className="w-5 h-5" />
@@ -167,12 +246,50 @@ export default function FinancePage() {
           </div>
           <div className={cn(
             'text-2xl sm:text-3xl font-black num',
-            kpis.lucro >= 0 ? 'text-brand-900' : 'text-rose-700'
+            salesError ? 'text-rose-700' : kpis.lucro >= 0 ? 'text-brand-900' : 'text-rose-700'
           )}>
-            {kpis.lucro >= 0 ? '' : '− '}{formatCurrency(Math.abs(kpis.lucro))}
+            {salesError ? '—' : (kpis.lucro >= 0 ? '' : '− ')}{formatCurrency(Math.abs(kpis.lucro))}
           </div>
           <div className="mt-2 text-xs text-ink-500">
-            Margem: {kpis.faturamento > 0 ? `${((kpis.lucro / kpis.faturamento) * 100).toFixed(1)}%` : '—'}
+            {salesError ? '—' : (
+              <>Margem: {kpis.faturamento > 0 ? `${((kpis.lucro / kpis.faturamento) * 100).toFixed(1)}%` : 'sem vendas'}</>
+            )}
+          </div>
+        </div>
+
+        <div className="card p-5 border-t-4 !border-t-emerald-600">
+          <div className="flex items-start justify-between mb-3">
+            <div>
+              <div className="kpi-label">RECEBIDO</div>
+              <div className="text-[11px] text-ink-400 mt-0.5">pagamentos já confirmados</div>
+            </div>
+            <div className="w-10 h-10 rounded-lg bg-emerald-50 ring-1 ring-emerald-100 flex items-center justify-center text-emerald-700">
+              <CreditCard className="w-5 h-5" />
+            </div>
+          </div>
+          <div className="text-2xl sm:text-3xl font-black num text-emerald-900">
+            {salesError ? '—' : formatCurrency(kpis.recebido)}
+          </div>
+          <div className="mt-2 text-xs text-ink-500">
+            {salesError ? '—' : (kpis.faturamento > 0 ? `${((kpis.recebido / kpis.faturamento) * 100).toFixed(0)}% recebido` : '')}
+          </div>
+        </div>
+
+        <div className="card p-5 border-t-4 !border-t-amber-500">
+          <div className="flex items-start justify-between mb-3">
+            <div>
+              <div className="kpi-label">A RECEBER</div>
+              <div className="text-[11px] text-ink-400 mt-0.5">valores pendentes</div>
+            </div>
+            <div className="w-10 h-10 rounded-lg bg-amber-50 ring-1 ring-amber-100 flex items-center justify-center text-amber-700">
+              <Clock className="w-5 h-5" />
+            </div>
+          </div>
+          <div className="text-2xl sm:text-3xl font-black num text-amber-800">
+            {salesError ? '—' : formatCurrency(kpis.aReceber)}
+          </div>
+          <div className="mt-2 text-xs text-ink-500">
+            {salesError ? '—' : (kpis.aReceber === 0 ? 'tudo em dia' : 'contas a receber')}
           </div>
         </div>
 
@@ -180,7 +297,7 @@ export default function FinancePage() {
           <div className="flex items-start justify-between mb-3">
             <div>
               <div className="kpi-label">SALDO EM CAIXA</div>
-              <div className="text-[11px] text-ink-400 mt-0.5">entradas − saídas (movimento real)</div>
+              <div className="text-[11px] text-ink-400 mt-0.5">entradas − saídas (CONFIRMADO)</div>
             </div>
             <div className="w-10 h-10 rounded-lg bg-violet-50 ring-1 ring-violet-100 flex items-center justify-center text-violet-700">
               <Wallet className="w-5 h-5" />
@@ -188,26 +305,27 @@ export default function FinancePage() {
           </div>
           <div className={cn(
             'text-2xl sm:text-3xl font-black num',
-            kpis.saldo >= 0 ? 'text-violet-900' : 'text-rose-700'
+            finError ? 'text-rose-700' : kpis.saldo >= 0 ? 'text-violet-900' : 'text-rose-700'
           )}>
-            {kpis.saldo >= 0 ? '' : '− '}{formatCurrency(Math.abs(kpis.saldo))}
+            {finError ? '—' : (kpis.saldo >= 0 ? '' : '− ')}{formatCurrency(Math.abs(kpis.saldo))}
           </div>
           <div className="mt-2 text-xs text-ink-500">
-            {pluralize(periodTrans.length, 'transação', 'transações')}
+            {finError ? 'Ver view v_dashboard_financial' : pluralize(periodTrans.length, 'lançamento', 'lançamentos')}
           </div>
         </div>
       </div>
 
       <div className="card overflow-hidden">
-        <div className="px-4 sm:px-5 py-4 border-b border-ink-100 flex items-center justify-between">
+        <div className="px-4 sm:px-5 py-4 border-b border-ink-100 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
           <div>
             <h3 className="font-bold text-ink-800">Movimentações do período</h3>
             <p className="text-xs text-ink-500 mt-0.5">
-              Todas as entradas e saídas financeiras no intervalo selecionado.
+              Todas entradas/saídas. Fonte: <span className="font-semibold">view v_dashboard_financial</span>.
+              Apenas <span className="font-semibold text-ink-700">status CONFIRMADO</span> movimenta o caixa.
             </p>
           </div>
-          <span className="chip bg-ink-100 text-ink-700">
-            {loading ? 'Carregando…' : pluralize(periodTrans.length, 'lançamento', 'lançamentos')}
+          <span className="chip bg-ink-100 text-ink-700 self-start sm:self-auto">
+            {loadingAny ? 'Carregando…' : pluralize(periodTrans.length, 'lançamento', 'lançamentos')}
           </span>
         </div>
         <div className="table-wrap">
@@ -215,15 +333,19 @@ export default function FinancePage() {
             <thead>
               <tr>
                 <th>Data</th>
-                <th>Tipo</th>
+                <th>Tipo / Status</th>
                 <th>Categoria</th>
                 <th>Descrição</th>
                 <th className="text-right">Valor R$</th>
               </tr>
             </thead>
             <tbody>
-              {loading ? (
+              {loadingFin ? (
                 <tr><td colSpan={5} className="text-center py-10 text-ink-500">Carregando...</td></tr>
+              ) : finError ? (
+                <tr><td colSpan={5} className="text-center py-10 text-rose-600 text-xs">
+                  Erro ao carregar financeiro: {finError}
+                </td></tr>
               ) : periodTrans.length === 0 ? (
                 <tr><td colSpan={5} className="text-center py-10 text-ink-500">
                   <Filter className="w-8 h-8 text-ink-300 mx-auto mb-2" />
@@ -231,32 +353,40 @@ export default function FinancePage() {
                 </td></tr>
               ) : periodTrans.map(t => {
                 const isEntrada = t.trans_type === 'ENTRADA'
+                const confirmado = t.status === 'CONFIRMADO'
                 const valorAbs = Math.abs(Number(t.amount ?? 0))
                 return (
-                  <tr key={t.id} className="hover:bg-ink-50/50 transition">
+                  <tr key={t.financial_transaction_id ?? (t as any).id} className={cn('transition', !confirmado && 'opacity-70 bg-amber-50/30')}>
                     <td className="num text-ink-700 whitespace-nowrap">{formatDate(t.trans_date)}</td>
                     <td>
-                      <span className={cn(
-                        'chip ring-1 flex w-fit items-center gap-1',
-                        isEntrada
-                          ? 'bg-emerald-50 text-emerald-700 ring-emerald-200'
-                          : 'bg-rose-50 text-rose-700 ring-rose-200'
-                      )}>
-                        {isEntrada ? <ArrowUpRight className="w-3 h-3" /> : <ArrowDownRight className="w-3 h-3" />}
-                        {isEntrada ? 'Entrada' : 'Saída'}
-                      </span>
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <span className={cn(
+                          'chip ring-1 flex w-fit items-center gap-1',
+                          isEntrada
+                            ? 'bg-emerald-50 text-emerald-700 ring-emerald-200'
+                            : 'bg-rose-50 text-rose-700 ring-rose-200'
+                        )}>
+                          {isEntrada ? <ArrowUpRight className="w-3 h-3" /> : <ArrowDownRight className="w-3 h-3" />}
+                          {isEntrada ? 'Entrada' : 'Saída'}
+                        </span>
+                        {!confirmado && (
+                          <span className="chip ring-1 bg-amber-50 text-amber-700 ring-amber-200 text-[10px] font-bold uppercase tracking-wider">
+                            {t.status}
+                          </span>
+                        )}
+                      </div>
                     </td>
                     <td>
                       <span className="chip bg-ink-100 text-ink-700">
-                        {catLabel(t.category)}
+                        {catLabel(t.category ?? null)}
                       </span>
                     </td>
                     <td>
                       <div className="text-sm text-ink-800 font-medium">{t.description}</div>
-                      {t.payment_method && (
-                        <div className="text-[11px] text-ink-400 mt-0.5">
-                          {paymentMethodLabel(t.payment_method)}
-                          {t.status === 'PENDENTE' && <span className="ml-2 text-amber-600">· Pendente</span>}
+                      {(t.payment_method || t.status !== 'CONFIRMADO') && (
+                        <div className="text-[11px] text-ink-400 mt-0.5 flex items-center gap-2 flex-wrap">
+                          {t.payment_method && <span>{paymentMethodLabel(t.payment_method)}</span>}
+                          {!confirmado && <span className="text-amber-600">· Pendente — não entra no caixa</span>}
                         </div>
                       )}
                     </td>
@@ -282,12 +412,12 @@ export default function FinancePage() {
                   <div className="space-y-1.5 text-right">
                     <div className="flex items-center justify-end gap-2 text-sm">
                       <ArrowUpRight className="w-3.5 h-3.5 text-emerald-600" />
-                      <span className="text-ink-600">Entradas:</span>
+                      <span className="text-ink-600">Entradas confirmadas:</span>
                       <span className="num font-bold text-emerald-700">{formatCurrency(kpis.entradas)}</span>
                     </div>
                     <div className="flex items-center justify-end gap-2 text-sm">
                       <ArrowDownRight className="w-3.5 h-3.5 text-rose-600" />
-                      <span className="text-ink-600">Saídas:</span>
+                      <span className="text-ink-600">Saídas confirmadas:</span>
                       <span className="num font-bold text-rose-700">{formatCurrency(kpis.saidas)}</span>
                     </div>
                     <div className="pt-2 mt-1 border-t border-ink-200 flex items-center justify-end gap-2">
@@ -311,14 +441,18 @@ export default function FinancePage() {
         <p className="text-[11px] text-ink-500 leading-relaxed max-w-3xl">
           <span className="font-semibold text-ink-600">Obs:</span> Saldo em caixa ≠ Lucro.
           Compras de mercadoria são despesa de caixa hoje, mas o custo só é reconhecido no lucro no momento da venda.
-          Taxas, embalagens e fretes também impactam os dois indicadores em momentos diferentes.
+          Faturamento é o total de vendas do período (view v_dashboard_sales.revenue).
+          Entradas de caixa só contabilizam transações com status <strong>CONFIRMADO</strong>.
         </p>
       </div>
 
       {modalDespesaOpen && (
         <DespesaModal
           onClose={() => setModalDespesaOpen(false)}
-          onSaved={() => { setModalDespesaOpen(false); load() }}
+          onSaved={() => {
+            setModalDespesaOpen(false)
+            dispatchInvalidate('financial')
+          }}
         />
       )}
     </div>
@@ -408,7 +542,7 @@ function DespesaModal({
           <div>
             <h2 className="text-lg font-black text-ink-900">Lançar despesa operacional</h2>
             <p className="text-xs text-ink-500 mt-0.5">
-              Sacolas, cheirinho, frete avulso, marketing — sem alterar vendas/estoque.
+              Sacolas, cheirinho, frete avulso, marketing — RPC registrar_despesa + view v_dashboard_financial.
             </p>
           </div>
           <button onClick={onClose} className="btn-ghost !p-2">
@@ -501,34 +635,34 @@ function DespesaModal({
           </div>
 
           <div>
-            <label className="label">Observações (opcional)</label>
-            <textarea className="input min-h-[80px]" value={notes}
+            <label className="label text-sm">Observações (opcional)</label>
+            <textarea
+              className="input min-h-[80px]"
+              value={notes}
               onChange={e => setNotes(e.target.value)}
-              placeholder="Nº NF, fornecedor, motivo etc." />
+              placeholder="NF, fornecedor, para quais pedidos foi utilizado etc."
+            />
           </div>
 
-          <div className="p-4 rounded-2xl bg-gradient-to-br from-rose-50 to-white border border-rose-100">
-            <div className="flex items-center justify-between">
-              <div>
-                <div className="text-[11px] uppercase tracking-wider text-rose-700/70 font-bold">Saída de caixa</div>
-                <div className="text-xs text-ink-500 mt-0.5">
-                  {DESPESA_PRESETS.find(p => p.k === category)?.label ?? category}
-                  {paymentMethod && ` · ${paymentMethodLabel(paymentMethod)}`}
-                </div>
-              </div>
-              <div className="text-2xl font-black num text-rose-700">
-                − {formatCurrency(amtNum)}
-              </div>
+          <div className="p-3 rounded-lg bg-rose-50 border border-rose-100 flex items-center justify-between">
+            <div>
+              <div className="text-[11px] font-bold uppercase tracking-wider text-rose-600/80">Total lançamento</div>
+              <div className="text-xs text-rose-700/80 mt-0.5">Será inserido como SAÍDA · CONFIRMADO em financial_transactions.</div>
+            </div>
+            <div className="text-2xl font-black text-rose-800 num">
+              − {formatCurrency(amtNum)}
             </div>
           </div>
         </div>
 
-        <div className="sticky bottom-0 bg-white border-t border-ink-100 px-5 py-4 flex flex-col-reverse sm:flex-row sm:justify-between gap-2">
-          <button onClick={onClose} disabled={saving} className="btn-ghost">
-            Cancelar
-          </button>
-          <button onClick={submit} disabled={saving} className="btn-primary">
-            {saving ? 'Salvando…' : '✓ Confirmar despesa'}
+        <div className="sticky bottom-0 bg-white border-t border-ink-100 px-5 py-4 flex flex-col-reverse sm:flex-row sm:justify-end gap-2">
+          <button onClick={onClose} disabled={saving} className="btn-secondary min-h-[44px]">Cancelar</button>
+          <button onClick={submit} disabled={saving} className="btn-danger min-h-[44px] justify-center">
+            {saving ? (
+              <>Lançando…</>
+            ) : (
+              <><Trash2 className="w-4 h-4" /> Confirmar despesa − {formatCurrency(amtNum)}</>
+            )}
           </button>
         </div>
       </div>
