@@ -10,7 +10,16 @@ import type { Sale, SaleItem, SalePayment, UUID, SaleSource, PaymentMethod, Sale
 import { listSales, cancelSale, listPaymentProviders, listAllProducts, onInvalidate, dispatchInvalidateAll, listSaleItemsBySaleIds, listSalePaymentsBySaleIds } from '@/services'
 import type { ProviderWithModalities } from '@/services'
 
-type PresetKey = keyof ReturnType<typeof rangePresets> | 'PERSONALIZADO'
+function formatTime(iso?: string | null): string {
+  if (!iso) return ''
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return ''
+  const hh = String(d.getHours()).padStart(2, '0')
+  const mm = String(d.getMinutes()).padStart(2, '0')
+  return `${hh}:${mm}`
+}
+
+type PresetKey = string
 
 type FilterInstallments = 'TODOS' | '1' | '2' | '3+'
 
@@ -81,9 +90,11 @@ export default function SalesHistoryPage() {
 
   useEffect(() => {
     if (preset !== 'PERSONALIZADO') {
-      const p = presets[preset as Exclude<PresetKey, 'PERSONALIZADO'>]
-      setFrom(p.from.toISOString().slice(0, 10))
-      setTo(p.to.toISOString().slice(0, 10))
+      const p = (presets as any)[preset]
+      if (p) {
+        setFrom(p.from.toISOString().slice(0, 10))
+        setTo(p.to.toISOString().slice(0, 10))
+      }
     }
   }, [preset])
 
@@ -307,7 +318,7 @@ export default function SalesHistoryPage() {
                 onChange={e => setPreset(e.target.value as PresetKey)}
                 className="select pr-10 min-w-[160px]"
               >
-                {Object.entries(presets).map(([k, v]) => (
+                {Object.entries(presets).map(([k, v]: [string, any]) => (
                   <option key={k} value={k}>{v.label}</option>
                 ))}
                 <option value="PERSONALIZADO">Personalizado</option>
@@ -477,48 +488,96 @@ export default function SalesHistoryPage() {
           </div>
         ) : (
           <>
-            <div className="hidden sm:block">
-              <div className="table-wrap">
-                <table className="table-base">
+            {/*
+              Desktop: tabela compacta (Largura útil >= 1366px não deve ter scroll horiz).
+              Estratégia:
+              - # + Data em uma coluna só;
+              - valores monetários com whitespace-nowrap + alinhado à direita;
+              - Cliente com max-w ellipsis + tooltip (title);
+              - padding células 10px-14px (horizontal);
+              - NENHUM min-width: max-content;
+              - actions com botões compactos (sem "Ver detalhe" enorme).
+            */}
+            <div className="hidden sm:block min-w-0">
+              <div className="table-wrap overflow-x-auto w-full">
+                <table className="table-base w-full border-collapse min-w-0" style={{ tableLayout: 'fixed' }}>
+                  <colgroup>
+                    <col style={{ width: '120px' }} />
+                    <col style={{ width: '104px' }} />
+                    <col style={{ width: 'auto', minWidth: '180px' }} />
+                    <col style={{ width: '140px' }} />
+                    <col style={{ width: '72px' }} />
+                    <col style={{ width: '108px' }} />
+                    <col style={{ width: '108px' }} />
+                    <col style={{ width: '104px' }} />
+                    <col style={{ width: '150px' }} />
+                  </colgroup>
                   <thead>
                     <tr>
-                      <th>Nº</th>
-                      <th>Data e hora</th>
-                      <th>Origem</th>
-                      <th>Cliente</th>
-                      <th>Pagamento</th>
-                      <th className="text-right">Peças</th>
-                      <th className="text-right">Total cliente</th>
-                      <th className="text-right">Lucro real</th>
-                      <th>Status</th>
-                      <th className="text-right">Ações</th>
+                      <th className="!px-3 !py-2.5">Venda / Data</th>
+                      <th className="!px-3 !py-2.5">Origem</th>
+                      <th className="!px-3 !py-2.5">Cliente</th>
+                      <th className="!px-3 !py-2.5">Pagamento</th>
+                      <th className="text-center !px-3 !py-2.5">Peças</th>
+                      <th className="text-right !px-3 !py-2.5">Total</th>
+                      <th className="text-right !px-3 !py-2.5">Lucro</th>
+                      <th className="!px-3 !py-2.5">Status</th>
+                      <th className="text-right !px-3 !py-2.5">Ações</th>
                     </tr>
                   </thead>
                   <tbody>
                     {filtered.map(s => {
                       const st = statusLabel(s.status)
                       return (
-                        <tr key={s.id} className="hover:bg-ink-50/50 transition">
-                          <td className="font-bold num">
-                            <button
-                              onClick={() => navigate(`/vendas/${s.id}`)}
-                              className="text-brand-800 hover:underline text-left"
-                            >
-                              #{String(s.friendly_number ?? '')}
-                            </button>
+                        <tr
+                          key={s.id}
+                          className="hover:bg-ink-50/50 transition cursor-pointer"
+                          onClick={(e) => {
+                            // Clique na linha (exceto botões) abre o detalhe
+                            const tgt = (e.target as HTMLElement | null)
+                            if (tgt && (tgt.closest('button') || tgt.closest('a'))) return
+                            navigate(`/vendas/${s.id}`)
+                          }}
+                        >
+                          <td className="!px-3 !py-2.5 align-top align-middle">
+                            <div className="flex flex-col items-start gap-0.5">
+                              <button
+                                onClick={(e) => { e.stopPropagation(); navigate(`/vendas/${s.id}`) }}
+                                className="text-brand-800 hover:underline font-black num text-sm whitespace-nowrap"
+                              >
+                                #{String(s.friendly_number ?? '')}
+                              </button>
+                              <div className="num text-[11px] text-ink-500 whitespace-nowrap leading-tight">
+                                {formatDate(s.sale_date ?? s.created_at)}
+                              </div>
+                              <div className="num text-[11px] text-ink-400 whitespace-nowrap leading-tight">
+                                {formatTime(s.sale_date ?? s.created_at)}
+                              </div>
+                            </div>
                           </td>
-                          <td className="text-ink-700 num whitespace-nowrap">{formatDateTime(s.sale_date ?? s.created_at)}</td>
-                          <td>
-                            <span className="chip bg-ink-100 text-ink-700">{sourceLabel(s.source)}</span>
+                          <td className="!px-3 !py-2.5 align-top align-middle">
+                            <span className="chip bg-ink-100 text-ink-700 !text-[11px] !py-0 leading-tight">
+                              {sourceLabel(s.source)}
+                            </span>
                           </td>
-                          <td className="min-w-[160px]">
+                          <td className="!px-3 !py-2.5 align-top align-middle min-w-0">
                             {s.customer_name ? (
-                              <div className="flex items-start gap-2">
+                              <div className="flex items-start gap-2 min-w-0">
                                 <UserCircle className="w-4 h-4 text-ink-400 mt-0.5 flex-shrink-0" />
                                 <div className="min-w-0">
-                                  <div className="font-semibold text-ink-900 truncate">{s.customer_name}</div>
+                                  <div
+                                    className="font-semibold text-ink-900 truncate text-sm leading-tight"
+                                    title={s.customer_name}
+                                  >
+                                    {s.customer_name}
+                                  </div>
                                   {s.customer_phone && (
-                                    <div className="text-xs text-ink-500 num truncate">{s.customer_phone}</div>
+                                    <div
+                                      className="text-xs text-ink-500 num truncate"
+                                      title={s.customer_phone}
+                                    >
+                                      {s.customer_phone}
+                                    </div>
                                   )}
                                 </div>
                               </div>
@@ -526,45 +585,57 @@ export default function SalesHistoryPage() {
                               <span className="text-ink-400 text-sm italic">Não identificado</span>
                             )}
                           </td>
-                          <td className="text-ink-700 text-sm whitespace-nowrap">
-                            {pagamentoLabel(s) || '-'}
+                          <td className="!px-3 !py-2.5 align-top align-middle">
+                            <span className="text-ink-700 text-xs whitespace-nowrap leading-tight">
+                              {pagamentoLabel(s) || '-'}
+                            </span>
                           </td>
-                          <td className="text-right num font-semibold">{String(pecasBySale(s.id))}</td>
-                          <td className="text-right num font-bold text-ink-900">{formatCurrency(s.total_customer)}</td>
-                          <td className={cn('text-right num font-bold',
+                          <td className="text-center num font-semibold !px-3 !py-2.5 align-top align-middle">
+                            {String(pecasBySale(s.id))}
+                          </td>
+                          <td className="text-right num font-bold text-ink-900 whitespace-nowrap !px-3 !py-2.5 align-top align-middle">
+                            {formatCurrency(s.total_customer)}
+                          </td>
+                          <td className={cn(
+                            'text-right num font-bold whitespace-nowrap !px-3 !py-2.5 align-top align-middle',
                             s.status === 'CANCELADA' ? 'text-ink-400 line-through' :
-                            Number(s.real_profit ?? 0) >= 0 ? 'text-emerald-700' : 'text-rose-700')}>
+                            Number(s.real_profit ?? 0) >= 0 ? 'text-emerald-700' : 'text-rose-700')}
+                          >
                             {s.status === 'CANCELADA' ? formatCurrency(0) : formatCurrency(s.real_profit)}
                           </td>
-                          <td><span className={st.class}>{st.label}</span></td>
-                          <td className="text-right">
+                          <td className="!px-3 !py-2.5 align-top align-middle">
+                            <span className={st.class + ' !text-[11px] !py-0.5 whitespace-nowrap'}>
+                              {st.label}
+                            </span>
+                          </td>
+                          <td className="text-right !px-3 !py-2.5 align-top align-middle">
                             <div className="flex items-center justify-end gap-1.5 flex-wrap">
                               <button
-                                onClick={() => navigate(`/vendas/${s.id}#editar`)}
-                                className="btn-secondary !py-1.5 !px-2.5 text-xs whitespace-nowrap min-h-[36px]"
+                                onClick={(e) => { e.stopPropagation(); navigate(`/vendas/${s.id}#editar`) }}
+                                className="btn-secondary !py-1 !px-2 text-[11px] whitespace-nowrap min-h-[32px] font-bold"
                                 title="Editar venda"
                               >
-                                <Edit3 className="w-3.5 h-3.5" /> Editar
+                                Editar
                               </button>
                               <button
-                                onClick={() => navigate(`/vendas/${s.id}`)}
-                                className="btn-secondary !py-1.5 !px-2.5 text-xs whitespace-nowrap min-h-[36px]"
+                                onClick={(e) => { e.stopPropagation(); navigate(`/vendas/${s.id}`) }}
+                                className="btn-secondary !py-1 !px-2 text-[11px] whitespace-nowrap min-h-[32px] font-bold"
                                 title="Ver detalhe"
                               >
-                                Ver detalhe
+                                Detalhes
                               </button>
                               <button
-                                onClick={() => openCancel(s)}
+                                onClick={(e) => { e.stopPropagation(); openCancel(s) }}
                                 disabled={s.status === 'CANCELADA'}
                                 className={cn(
-                                  '!py-1.5 !px-2.5 text-xs whitespace-nowrap min-h-[36px] rounded-lg border transition inline-flex items-center gap-1.5 font-semibold',
+                                  '!py-1 !px-2 text-[11px] whitespace-nowrap min-h-[32px] rounded-lg border transition inline-flex items-center gap-1 font-bold',
                                   s.status === 'CANCELADA'
                                     ? 'border-ink-100 bg-ink-50 text-ink-400 cursor-not-allowed'
                                     : 'border-rose-200 bg-white text-rose-700 hover:bg-rose-50'
                                 )}
                                 title="Cancelar venda"
                               >
-                                <Trash2 className="w-3.5 h-3.5" /> Cancelar
+                                Cancelar
                               </button>
                             </div>
                           </td>

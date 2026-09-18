@@ -230,6 +230,7 @@ export interface Sale {
   fee_actual: Money;
   real_profit: Money;
   real_margin: Money;
+  notes?: string | null;
   coupon_id?: UUID | null;
   coupon_snapshot?: string | null;
   cancel_reason?: string | null;

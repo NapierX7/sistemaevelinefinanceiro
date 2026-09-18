@@ -69,6 +69,14 @@ export default function SaleDetailPage() {
     fee_real_snapshot: '', fee_percent_snapshot: '', installments: 1, notes_snapshot: ''
   })
 
+  // Feedback visual inline (substitui alert() nativo — requisito do projeto)
+  const [toast, setToast] = useState<{ type: 'ok' | 'err'; msg: string } | null>(null)
+  const showFeedback = (type: 'ok' | 'err', msg: string, ms = 4200) => {
+    setToast({ type, msg })
+    window.clearTimeout((showFeedback as any)._t)
+    ;(showFeedback as any)._t = window.setTimeout(() => setToast(null), ms)
+  }
+
   const load = () => {
     if (!id) return
     setLoading(true)
@@ -105,15 +113,51 @@ export default function SaleDetailPage() {
   const totalDescProdutos = items.reduce((sum, i) => sum + Number(i.discount ?? 0), 0)
 
   const cogsTotal = Number(s?.items_cost ?? (s as any)?.cogs_total ?? 0)
+  // ==========================================================================
+  // LUCRO REAL: composição OFICIAL, 100% baseada em snapshots históricos
+  // de sales (NÃO recalcula com produtos.xxx atuais, NÃO usa estoque atual).
+  //
+  // FÓRMULA CANÔNICA (usada no Supabase SQL do backend):
+  //   real_profit =
+  //     total_customer                 (valor líquido pago pelo cliente,
+  //                                     DESCONTOS já aplicados — NÃO abater
+  //                                     pix_discount/total_discounts NOVAMENTE
+  //                                     para não fazer desconto duplo)
+  //     - items_cost                   (COGS: unit_cost_snapshot * qty
+  //                                     FIFO dos sale_items)
+  //     - allocated_purchase_cost      (rateio da compra: frete + outros
+  //                                     rateados dos lotes consumidos nesta
+  //                                     venda — este é o R$12,55 da Venda#41
+  //                                     que entrava silenciosamente na conta
+  //                                     mas não era exibido no bloco anterior)
+  //     - fee_actual                   (taxas de pagamento REALMENTE cobradas)
+  //     - packaging_cost               (embalagem snapshot)
+  //     - extra_costs                  (custos extras lançados)
+  //     - shipping_cost_snapshot       (frete, se houver)
+  //
+  // margem = real_profit / total_customer * 100
+  //
+  // IMPORTANTE — Evitar dupla contabilização do desconto:
+  //   total_customer NÃO é (preço cheio), é (líquido com desconto).
+  //   NÃO subtrair total_discounts / pix_discount mais de uma vez.
+  // ==========================================================================
+  const rateioCompraTotal = Number(s?.allocated_purchase_cost ?? 0)
   const feeActualTotal = Number(s?.fee_actual ?? (s as any)?.fee_actual_total ?? 0)
   const feeExpectedTotal = Number(s?.fee_expected ?? 0)
   const packCostActual = packaging ? (packaging.is_free ? 0 : Number(packaging.custom_cost ?? packaging.custo_snapshot ?? 0))
     : Number((s as any)?.packaging_cost_actual ?? s?.packaging_cost ?? 0)
   const extraCostsTotal = costs.reduce((sum, c) => sum + Number(c.amount ?? 0), 0)
   const shipCost = Number((s as any)?.shipping_cost_snapshot ?? 0)
-  const custoTotalSnapshot = cogsTotal + feeActualTotal + packCostActual + extraCostsTotal + shipCost
-  const lucroReal = Number(s?.real_profit ?? (Number(s?.total_customer ?? 0) - custoTotalSnapshot))
-  const margem = Number(s?.total_customer ?? 0) ? (lucroReal / Number(s?.total_customer ?? 0)) * 100 : 0
+  const custoTotalSnapshot = cogsTotal + rateioCompraTotal + feeActualTotal + packCostActual + extraCostsTotal + shipCost
+  // Preferência total pelo snapshot oficial sales.real_profit do banco (que
+  // bate 100% com a view v_dashboard_sales). Usamos a fórmula local apenas
+  // se o banco por algum motivo não populou real_profit.
+  const lucroReal = s && typeof s.real_profit === 'number' && isFinite(Number(s.real_profit))
+    ? Number(s.real_profit)
+    : (Number(s?.total_customer ?? 0) - custoTotalSnapshot)
+  const margem = s && (Number(s.total_customer ?? 0) > 0.009)
+    ? (lucroReal / Number(s.total_customer)) * 100
+    : 0
 
   const taxaEconomia = feeExpectedTotal - feeActualTotal
 
@@ -138,7 +182,8 @@ export default function SaleDetailPage() {
       source: s.source,
       status: s.status,
       total_customer: String(Number(s.total_customer ?? 0).toFixed(2)),
-      notes: String((s as any).notes ?? s.cancel_reason ?? ''),
+      // Sem cast necessário agora; `notes` faz parte do tipo Sale oficial.
+      notes: String(s.notes ?? s.cancel_reason ?? ''),
     })
     setEditMode(true)
   }
@@ -182,13 +227,14 @@ export default function SaleDetailPage() {
         fee_percent_snapshot: feePerc,
         installments: Math.max(1, Number(paymentEdit.installments) || 1),
         notes_snapshot: paymentEdit.notes_snapshot.trim() || undefined,
-      } as any)
+      })
       setPaymentEdit({ ...paymentEdit, open: false })
-      alert('Pagamento atualizado com sucesso!')
+      showFeedback('ok', 'Pagamento atualizado com sucesso.')
       dispatchInvalidateAll()
       load()
     } catch (e: any) {
-      alert('Erro ao atualizar pagamento: ' + (e?.message ?? String(e)))
+      console.error('[SaleDetail] erro ao atualizar pagamento:', e)
+      showFeedback('err', 'Erro ao atualizar pagamento: ' + (e?.message ?? String(e)))
     } finally {
       setSaving(false)
     }
@@ -199,11 +245,12 @@ export default function SaleDetailPage() {
     try {
       setSaving(true)
       await deleteSalePayment(paymentId)
-      alert('Pagamento excluído com sucesso!')
+      showFeedback('ok', 'Pagamento excluído com sucesso.')
       dispatchInvalidateAll()
       load()
     } catch (e: any) {
-      alert('Erro ao excluir pagamento: ' + (e?.message ?? String(e)))
+      console.error('[SaleDetail] erro ao excluir pagamento:', e)
+      showFeedback('err', 'Erro ao excluir pagamento: ' + (e?.message ?? String(e)))
     } finally {
       setSaving(false)
     }
@@ -214,27 +261,35 @@ export default function SaleDetailPage() {
     try {
       setSaving(true)
       const totalNum = parseBrl(patch.total_customer) ?? 0
-      if (totalNum < 0) { alert('Total do cliente não pode ser negativo.'); return }
-      const updates: any = {
+      if (totalNum < 0) { showFeedback('err', 'Total do cliente não pode ser negativo.'); return }
+
+      // Payload EXPLÍCITO com APENAS colunas REAIS editáveis de public.sales.
+      // Nunca enviamos objetos do estado React diretamente para .update()
+      // para evitar colunas que não existem no schema (ex.: "notes" desatualizado
+      // gerava "Could not find the 'notes' column...").
+      const payload: Partial<Sale> = {
         customer_name: patch.customer_name.trim() || null,
         customer_phone: patch.customer_phone.trim() || null,
         source: patch.source,
         status: patch.status,
-        total_customer: totalNum,
-        notes: patch.notes.trim() || null,
+        total_customer: Number(totalNum),
+        notes: patch.notes.trim().length ? patch.notes.trim() : null,
       }
       if (patch.sale_date) {
-        updates.sale_date = new Date(patch.sale_date + 'T12:00:00').toISOString()
+        payload.sale_date = new Date(patch.sale_date + 'T12:00:00').toISOString()
       }
-      const res = await updateSale(s.id, updates)
-      if (!res) throw new Error('Sem retorno do servidor.')
-      alert('Venda atualizada com sucesso!')
+      payload.updated_at = new Date().toISOString()
+
+      const res = await updateSale(s.id, payload)
+      if (!res) throw new Error('Sem retorno do servidor ao salvar venda.')
+
+      showFeedback('ok', 'Venda atualizada com sucesso.')
       closeEditMode()
       dispatchInvalidateAll()
       load()
     } catch (e: any) {
-      console.error(e)
-      alert('Erro ao salvar alterações: ' + (e?.message ?? String(e)))
+      console.error('[SaleDetail] erro ao salvar patch da venda:', e)
+      showFeedback('err', 'Erro ao salvar alterações: ' + (e?.message ?? String(e)))
     } finally {
       setSaving(false)
     }
@@ -266,8 +321,8 @@ export default function SaleDetailPage() {
     if (!s) return
     try {
       const amountNum = parseBrl(quitAmount)
-      if (!amountNum || amountNum <= 0) { alert('Informe um valor válido.'); return }
-      if (amountNum > (pendingBalance + 0.01)) { alert(`Valor ${formatCurrency(amountNum)} > saldo pendente ${formatCurrency(pendingBalance)}. Reduza.`); return }
+      if (!amountNum || amountNum <= 0) { showFeedback('err', 'Informe um valor válido.'); return }
+      if (amountNum > (pendingBalance + 0.01)) { showFeedback('err', `Valor ${formatCurrency(amountNum)} > saldo pendente ${formatCurrency(pendingBalance)}. Reduza.`); return }
       const feeNum = parseBrl(quitFee) ?? 0
       setQuiting(true)
       const res = await recordRemainingPayment(s.id, {
@@ -285,15 +340,15 @@ export default function SaleDetailPage() {
         },
       })
       if ((res as any)?.error) {
-        alert('Erro: ' + String((res as any).error))
-        return
+        throw new Error(String((res as any).error))
       }
-      alert(`Pagamento restante de ${formatCurrency(amountNum)} registrado! Status: ${(res as any)?.new_status ?? 'CONCLUIDA'}`)
+      showFeedback('ok', `Pagamento de ${formatCurrency(amountNum)} registrado. Status: ${(res as any)?.new_status ?? 'CONCLUIDA'}`)
       setQuitOpen(false)
       dispatchInvalidateAll()
       load()
     } catch (e: any) {
-      alert('Erro: ' + (e?.message ?? String(e)))
+      console.error('[SaleDetail] erro ao registrar pagamento restante:', e)
+      showFeedback('err', 'Erro: ' + (e?.message ?? String(e)))
     } finally {
       setQuiting(false)
     }
@@ -301,19 +356,19 @@ export default function SaleDetailPage() {
 
   const doCancel = async () => {
     if (!s) return
-    if (!cancelReason.trim()) { alert('Informe o motivo do cancelamento.'); return }
+    if (!cancelReason.trim()) { showFeedback('err', 'Informe o motivo do cancelamento.'); return }
     try {
       setCanceling(true)
       await cancelSale(s.id, cancelReason.trim())
-      alert('Venda cancelada com sucesso!')
+      showFeedback('ok', 'Venda cancelada com sucesso.')
       setCancelOpen(false)
       setCancelStep(1)
       setCancelReason('')
       dispatchInvalidateAll()
       load()
     } catch (e: any) {
-      console.error(e)
-      alert('Erro ao cancelar: ' + (e?.message ?? String(e)))
+      console.error('[SaleDetail] erro ao cancelar venda:', e)
+      showFeedback('err', 'Erro ao cancelar: ' + (e?.message ?? String(e)))
     } finally {
       setCanceling(false)
     }
@@ -342,6 +397,35 @@ export default function SaleDetailPage() {
 
   return (
     <div className="pb-24 sm:pb-8 space-y-4">
+      {/* Feedback inline (ok/erro) — substitui alert() nativo */}
+      {toast && (
+        <div
+          role="status"
+          className={cn(
+            'rounded-xl border shadow-sm px-4 py-3 flex items-start gap-3 animate-in fade-in slide-in-from-top-2',
+            toast.type === 'ok'
+              ? 'bg-emerald-50 border-emerald-200 text-emerald-900'
+              : 'bg-rose-50 border-rose-200 text-rose-900'
+          )}
+        >
+          <Check className={cn('w-5 h-5 flex-shrink-0 mt-0.5',
+            toast.type === 'ok' ? 'text-emerald-600' : 'text-rose-600')} />
+          <div className="min-w-0 flex-1">
+            <div className="text-sm font-bold leading-snug">
+              {toast.type === 'ok' ? 'Sucesso' : 'Ops'}
+            </div>
+            <div className="text-sm mt-0.5 break-words">{toast.msg}</div>
+          </div>
+          <button
+            onClick={() => setToast(null)}
+            className="btn-ghost !p-1.5 flex-shrink-0"
+            aria-label="Fechar aviso"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
+
       {isCancelled && (
         <div className="rounded-xl bg-rose-50 border-2 border-rose-200 p-4 flex items-start gap-3">
           <AlertTriangle className="w-6 h-6 text-rose-600 flex-shrink-0 mt-0.5" />
@@ -881,13 +965,20 @@ export default function SaleDetailPage() {
                 <Receipt className="w-4 h-4" /> Bloco financeiro · snapshots
               </h3>
               <div className="space-y-2.5 text-sm">
-                <ReviewRow label="Custo mercadorias (COGS)" value={formatCurrency(cogsTotal)} />
-                <ReviewRow label="Taxa pagamento (REAL)" value={formatCurrency(feeActualTotal)} />
+                <ReviewRow label="Mercadorias (COGS)" value={formatCurrency(cogsTotal)} />
+                {rateioCompraTotal > 0.009 && (
+                  <ReviewRow
+                    label={<span>Rateio de compras <span className="text-white/50">(frete + outros rateados nos lotes)</span></span>}
+                    value={formatCurrency(rateioCompraTotal)} />
+                )}
+                <ReviewRow label="Taxa pagamento (real)" value={formatCurrency(feeActualTotal)} />
                 <ReviewRow label="Embalagem (real)" value={formatCurrency(packCostActual)} />
                 <ReviewRow label="Outros custos" value={formatCurrency(extraCostsTotal)} />
-                {shipCost > 0 && <ReviewRow label="Frete incluso" value={formatCurrency(shipCost)} />}
+                {shipCost > 0.009 && <ReviewRow label="Frete incluso" value={formatCurrency(shipCost)} />}
                 <div className="border-t border-white/10 my-3 pt-3">
-                  <ReviewRow label="= CUSTO TOTAL" value={formatCurrency(custoTotalSnapshot)} strong />
+                  <ReviewRow
+                    label={<span>= CUSTO TOTAL <span className="text-white/50">(soma dos itens acima)</span></span>}
+                    value={formatCurrency(custoTotalSnapshot)} strong />
                 </div>
                 <div className="pt-3 mt-3 border-t border-white/10 space-y-3">
                   <div>
@@ -937,7 +1028,7 @@ export default function SaleDetailPage() {
               </div>
               <textarea
                 rows={4}
-                value={editMode ? patch.notes : ((s as any).notes ?? (isCancelled ? s.cancel_reason ?? '' : ''))}
+                value={editMode ? patch.notes : (s.notes ?? (isCancelled ? s.cancel_reason ?? '' : ''))}
                 onChange={editMode ? e => setPatch(p => ({ ...p, notes: e.target.value })) : undefined}
                 disabled={!editMode}
                 placeholder={editMode ? "Adicione observações internas sobre esta venda…" : "Sem observações nesta venda."}
@@ -1330,7 +1421,7 @@ export default function SaleDetailPage() {
                   </button>
                   <button
                     onClick={() => {
-                      if (!cancelReason.trim()) { alert('Informe o motivo para prosseguir.'); return }
+                      if (!cancelReason.trim()) { showFeedback('err', 'Informe o motivo para prosseguir.'); return }
                       setCancelStep(2)
                     }}
                     disabled={canceling || !cancelReason.trim()}
@@ -1400,7 +1491,8 @@ function Row({ label, value, negative, strong }: { label: string; value: string;
   )
 }
 
-function ReviewRow({ label, value, strong }: { label: string; value: string; strong?: boolean }) {
+function ReviewRow({ label, value, strong }:
+  { label: string | React.ReactNode; value: string; strong?: boolean }) {
   return (
     <div className="flex items-baseline justify-between gap-3">
       <span className={cn('text-white/70', strong && 'text-white/90 font-bold')}>{label}</span>

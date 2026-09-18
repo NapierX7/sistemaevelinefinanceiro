@@ -470,15 +470,23 @@ export async function updateSale(sale_id: UUID, patch: Partial<Sale>): Promise<S
     ret = Demo.demoUpdateSale(sale_id, patch)
   } else {
     const sup: any = supabase
-    const patchSafe: any = {}
-    if (patch.customer_name !== undefined) patchSafe.customer_name = patch.customer_name
-    if (patch.customer_phone !== undefined) patchSafe.customer_phone = patch.customer_phone
-    if (patch.sale_date !== undefined) patchSafe.sale_date = patch.sale_date
-    if (patch.source !== undefined) patchSafe.source = patch.source
-    if (patch.status !== undefined) patchSafe.status = patch.status
-    if ((patch as any).notes !== undefined) patchSafe.notes = (patch as any).notes
-    if (patch.total_customer !== undefined) patchSafe.total_customer = Number(patch.total_customer)
-    if (patch.updated_at === undefined || !patch.updated_at) patchSafe.updated_at = new Date().toISOString()
+    // Payload EXPLÍCITO com apenas colunas REAIS de public.sales que podem
+    // ser editadas por este serviço. Nunca espalhamos `patch` diretamente
+    // para evitar colunas que não existem no schema cache do PostgREST
+    // (ex.: "Could not find the 'notes' column of 'sales'...").
+    const patchSafe: Partial<Sale> = {}
+    if ('customer_name' in patch) patchSafe.customer_name = patch.customer_name
+    if ('customer_phone' in patch) patchSafe.customer_phone = patch.customer_phone
+    if ('sale_date' in patch) patchSafe.sale_date = patch.sale_date
+    if ('source' in patch) patchSafe.source = patch.source
+    if ('status' in patch) patchSafe.status = patch.status
+    if ('notes' in patch) patchSafe.notes = patch.notes
+    if ('total_customer' in patch) patchSafe.total_customer = Number(patch.total_customer ?? 0)
+    if (!('updated_at' in patch) || !patch.updated_at) {
+      patchSafe.updated_at = new Date().toISOString()
+    } else {
+      patchSafe.updated_at = patch.updated_at
+    }
     const { data, error } = await sup
       .from('sales')
       .update(patchSafe)
