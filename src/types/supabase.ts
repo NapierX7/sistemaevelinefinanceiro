@@ -434,6 +434,7 @@ export interface DashboardStockSummary {
   total_sales_potential: number
   total_skus: number
   out_of_stock_skus: number
+  in_stock_skus?: number
 }
 
 export interface DashboardSaleRow {

@@ -936,11 +936,12 @@ export function demoDashboardStockSummary(): DashboardStockSummary {
     cur.cost += q * Number(b.unit_cost ?? 0)
     stockByProduct.set(b.product_id, cur)
   }
-  let total_units = 0, total_stock_cost = 0, total_sales_potential = 0, out_of_stock_skus = 0
+  let total_units = 0, total_stock_cost = 0, total_sales_potential = 0, out_of_stock_skus = 0, in_stock_skus = 0
   const total_skus = s.products.length
   for (const p of s.products) {
     const q = stockByProduct.get(p.id)?.qty ?? 0
     if (q <= 0) out_of_stock_skus += 1
+    else in_stock_skus += 1
     total_units += q
     total_stock_cost += stockByProduct.get(p.id)?.cost ?? 0
     total_sales_potential += q * Number((p as any).sale_price ?? 0)
@@ -951,6 +952,7 @@ export function demoDashboardStockSummary(): DashboardStockSummary {
     total_sales_potential: Number(total_sales_potential.toFixed(2)),
     total_skus,
     out_of_stock_skus,
+    in_stock_skus,
   }
 }
 
@@ -1003,12 +1005,15 @@ function demoDashboardSaleRows(): DashboardSaleRow[] {
 export function demoDashboardSales(range: { startInclusive: string; endInclusive: string }): DashboardSaleRow[] {
   const [sy, sm, sd] = range.startInclusive.split('-').map(Number)
   const [ey, em, ed] = range.endInclusive.split('-').map(Number)
-  const d0 = new Date(sy, (sm ?? 1) - 1, sd ?? 1).getTime()
-  const d1 = new Date(ey, (em ?? 1) - 1, ed ?? 28, 23, 59, 59, 999).getTime()
+  const startTs = new Date(sy, (sm ?? 1) - 1, sd ?? 1).getTime()
+  // endExclusiveTs = endInclusive + 1 dia, meia noite (mesma semântica do < endDate+1 T00:00 do Supabase)
+  const endDay = new Date(ey, (em ?? 1) - 1, ed ?? 1)
+  endDay.setDate(endDay.getDate() + 1)
+  const endExclusiveTs = endDay.getTime()
   return demoDashboardSaleRows()
     .filter(r => {
       const t = new Date(r.sale_date).getTime()
-      return t >= d0 && t <= d1
+      return t >= startTs && t < endExclusiveTs
     })
     .sort((a, b) => new Date(b.sale_date).getTime() - new Date(a.sale_date).getTime())
 }
@@ -1017,12 +1022,14 @@ export function demoDashboardFinancial(range: { startInclusive: string; endInclu
   const s = loadStore()
   const [sy, sm, sd] = range.startInclusive.split('-').map(Number)
   const [ey, em, ed] = range.endInclusive.split('-').map(Number)
-  const d0 = new Date(sy, (sm ?? 1) - 1, sd ?? 1).getTime()
-  const d1 = new Date(ey, (em ?? 1) - 1, ed ?? 28, 23, 59, 59, 999).getTime()
+  const startTs = new Date(sy, (sm ?? 1) - 1, sd ?? 1).getTime()
+  const endDay = new Date(ey, (em ?? 1) - 1, ed ?? 1)
+  endDay.setDate(endDay.getDate() + 1)
+  const endExclusiveTs = endDay.getTime()
   const out: DashboardFinancialRow[] = []
   for (const t of s.financial_transactions) {
     const tm = new Date(t.trans_date ?? t.created_at).getTime()
-    if (tm < d0 || tm > d1) continue
+    if (tm < startTs || tm >= endExclusiveTs) continue
     out.push({
       financial_transaction_id: t.id,
       trans_date: (t.trans_date ?? t.created_at).slice(0, 10),
@@ -1035,4 +1042,11 @@ export function demoDashboardFinancial(range: { startInclusive: string; endInclu
     })
   }
   return out.sort((a, b) => new Date(b.trans_date).getTime() - new Date(a.trans_date).getTime())
+}
+
+export function demoListSalePaymentsBySaleIds(saleIds: string[]): SalePayment[] {
+  if (!saleIds?.length) return []
+  const setIds = new Set(saleIds)
+  const s = loadStore()
+  return s.sale_payments.filter(p => setIds.has(p.sale_id)) ?? []
 }

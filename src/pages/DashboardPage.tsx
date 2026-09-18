@@ -1,16 +1,21 @@
 import { useEffect, useMemo, useState } from 'react'
 import {
   Calendar, DollarSign, TrendingUp, Package, ShoppingCart, Receipt,
-  ArrowUpRight, ArrowDownRight, Filter, AlertTriangle, ChevronDown, AlertCircle
+  ArrowUpRight, ArrowDownRight, Filter, AlertTriangle, ChevronDown, AlertCircle,
+  CreditCard, Wallet, Clock
 } from 'lucide-react'
 import {
   formatCurrency, formatPercent, formatDate, rangePresets,
   statusLabel, sourceLabel, paymentMethodLabel, pluralize, cn
 } from '@/lib/format'
 import {
-  dashboardStockSummary, dashboardSales, dashboardFinancial
+  dashboardStockSummary, dashboardSales, dashboardFinancial,
+  listSalePaymentsBySaleIds
 } from '@/services'
-import type { DashboardStockSummary, DashboardSaleRow, DashboardFinancialRow } from '@/types/supabase'
+import type {
+  DashboardStockSummary, DashboardSaleRow, DashboardFinancialRow,
+  SalePayment, UUID
+} from '@/types/supabase'
 import { Link } from 'react-router-dom'
 
 type PresetKey = keyof ReturnType<typeof rangePresets> | 'PERSONALIZADO'
@@ -24,14 +29,17 @@ export default function DashboardPage() {
   const [stock, setStock] = useState<DashboardStockSummary | null>(null)
   const [salesRows, setSalesRows] = useState<DashboardSaleRow[]>([])
   const [finRows, setFinRows] = useState<DashboardFinancialRow[]>([])
+  const [salePayments, setSalePayments] = useState<SalePayment[]>([])
 
   const [loadingStock, setLoadingStock] = useState(true)
   const [loadingSales, setLoadingSales] = useState(true)
   const [loadingFin, setLoadingFin] = useState(true)
+  const [loadingPayments, setLoadingPayments] = useState(false)
 
   const [stockError, setStockError] = useState<string | null>(null)
   const [salesError, setSalesError] = useState<string | null>(null)
   const [finError, setFinError] = useState<string | null>(null)
+  const [paymentsError, setPaymentsError] = useState<string | null>(null)
 
   const [loadTick, setLoadTick] = useState(0)
 
@@ -85,22 +93,34 @@ export default function DashboardPage() {
     return () => { cancelled = true }
   }, [from, to, loadTick])
 
+  useEffect(() => {
+    let cancelled = false
+    const ids: UUID[] = salesRows
+      .map(r => (r as any).sale_id ?? (r as any).id)
+      .filter(Boolean) as UUID[]
+    if (ids.length === 0) {
+      setSalePayments([])
+      setPaymentsError(null)
+      setLoadingPayments(false)
+      return
+    }
+    setLoadingPayments(true)
+    setPaymentsError(null)
+    listSalePaymentsBySaleIds(ids)
+      .then(arr => { if (!cancelled) setSalePayments(arr) })
+      .catch(err => {
+        console.error('[Dashboard] sale_payments por ids falhou:', err)
+        if (!cancelled) setPaymentsError(err?.message ?? String(err))
+      })
+      .finally(() => { if (!cancelled) setLoadingPayments(false) })
+    return () => { cancelled = true }
+  }, [salesRows])
+
   const kpis = useMemo(() => {
     const rows = salesRows
     const faturamento = rows.reduce((s, v) => s + Number(v.revenue ?? 0), 0)
-    const lucro = rows.reduce((s, v) => {
-      const totalSaida =
-        Number(v.items_cost ?? 0) +
-        Number(v.allocated_purchase_cost ?? 0) +
-        Number(v.payment_fees ?? 0) +
-        Number(v.packaging_cost ?? 0) +
-        Number(v.extra_costs ?? 0)
-      return s + (Number(v.revenue ?? 0) - totalSaida)
-    }, 0)
-    const pedidos = rows.length
-    const pecas = rows.reduce((s, v) => s + Number(v.pieces_sold ?? 0), 0)
-    const ticketMedio = pedidos ? faturamento / pedidos : 0
-    const margem = faturamento ? (lucro / faturamento) * 100 : 0
+    const recebido = rows.reduce((s, v) => s + Number(v.amount_received ?? 0), 0)
+    const aReceber = rows.reduce((s, v) => s + Number(v.amount_receivable ?? 0), 0)
 
     const custoMerc = rows.reduce((s, v) => s + Number(v.items_cost ?? 0), 0)
     const custoAlloc = rows.reduce((s, v) => s + Number(v.allocated_purchase_cost ?? 0), 0)
@@ -109,22 +129,58 @@ export default function DashboardPage() {
     const custoEmbalagens = rows.reduce((s, v) => s + Number(v.packaging_cost ?? 0), 0)
     const descontos = rows.reduce((s, v) => s + Number(v.total_discounts ?? 0), 0)
 
+    const saidasVenda = custoMerc + custoAlloc + custoFrete + custoTaxas + custoEmbalagens + descontos
+    const lucro = faturamento - saidasVenda
+    const pedidos = rows.length
+    const pecas = rows.reduce((s, v) => s + Number(v.pieces_sold ?? 0), 0)
+    const ticketMedio = pedidos ? faturamento / pedidos : 0
+    const margem = faturamento ? (lucro / faturamento) * 100 : 0
+
     return {
-      faturamento, lucro, margem, pedidos, pecas, ticketMedio,
+      faturamento, recebido, aReceber,
+      lucro, margem, pedidos, pecas, ticketMedio,
       custoMerc, custoAlloc, custoFrete, custoTaxas, custoEmbalagens, descontos
     }
   }, [salesRows])
 
   const pagamentos = useMemo(() => {
+    const paymentsBySale = new Map<string, SalePayment[]>()
+    for (const p of salePayments) {
+      if (!paymentsBySale.has(p.sale_id)) paymentsBySale.set(p.sale_id, [])
+      paymentsBySale.get(p.sale_id)!.push(p)
+    }
     const groups: Record<string, { label: string; count: number; total: number }> = {}
-    salesRows.forEach(r => {
-      const key = [r.payment_provider_snapshot, r.payment_method_snapshot].filter(Boolean).join(' · ') || 'Sem pagamento'
-      if (!groups[key]) groups[key] = { label: key, count: 0, total: 0 }
-      groups[key].count += 1
-      groups[key].total += Number(r.revenue ?? 0)
-    })
+
+    for (const r of salesRows) {
+      const saleId: string | undefined = (r as any).sale_id ?? (r as any).id
+      const received = Number(r.amount_received ?? 0)
+      const list = saleId ? paymentsBySale.get(saleId) ?? [] : []
+      if (list.length === 0) {
+        let key = 'Sem pagamento'
+        if (received > 0) key = 'Recebido (outros)'
+        if (!groups[key]) groups[key] = { label: key, count: 0, total: 0 }
+        groups[key].count += 1
+        groups[key].total += received > 0 ? received : Number(r.revenue ?? 0)
+        continue
+      }
+      for (const sp of list) {
+        const methodParts: string[] = []
+        const prov = sp.provider_snapshot ?? (sp as any).provider ?? null
+        const met = sp.method ?? (sp as any).payment_method_snapshot ?? null
+        if (prov) methodParts.push(String(prov))
+        if (met) methodParts.push(paymentMethodLabel(String(met)))
+        const mod: any = (sp as any).modality_snapshot ?? (sp as any).modality
+        if (mod && (!met || String(mod) !== String(met))) methodParts.push(String(mod))
+        const parc = Number((sp as any).installments ?? 1)
+        if (parc > 1) methodParts.push(`${parc}x`)
+        const key = methodParts.length ? methodParts.join(' · ') : 'Outro'
+        if (!groups[key]) groups[key] = { label: key, count: 0, total: 0 }
+        groups[key].count += 1
+        groups[key].total += Number(sp.amount ?? 0)
+      }
+    }
     return Object.values(groups).sort((a, b) => b.total - a.total)
-  }, [salesRows])
+  }, [salesRows, salePayments])
 
   const { receitas, despesas, saldoCaixa } = useMemo(() => {
     let r = 0, d = 0
@@ -138,7 +194,7 @@ export default function DashboardPage() {
   }, [finRows])
 
   const recentSales = [...salesRows].slice(0, 8)
-  const loadingAny = loadingStock || loadingSales || loadingFin
+  const loadingAny = loadingStock || loadingSales || loadingFin || loadingPayments
 
   return (
     <div className="space-y-5 pb-4 sm:pb-6">
@@ -177,10 +233,16 @@ export default function DashboardPage() {
       </div>
 
       {/* KPIs primários */}
-      <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3">
+      <div className="grid grid-cols-2 lg:grid-cols-4 xl:grid-cols-8 gap-3">
         <KpiCard label="Faturamento" value={salesError ? 'Erro' : formatCurrency(kpis.faturamento)}
           icon={<DollarSign className="w-5 h-5" />} tone={salesError ? 'rose' : 'brand'}
           sub={salesError ? salesError.slice(0, 30) : pluralize(kpis.pedidos, 'pedido')} />
+        <KpiCard label="Recebido" value={salesError ? 'Erro' : formatCurrency(kpis.recebido)}
+          icon={<Wallet className="w-5 h-5" />} tone={salesError ? 'rose' : 'emerald'}
+          sub={salesError ? '-' : 'confirmado nas vendas'} />
+        <KpiCard label="A receber" value={salesError ? 'Erro' : formatCurrency(kpis.aReceber)}
+          icon={<Clock className="w-5 h-5" />} tone={salesError ? 'rose' : 'amber'}
+          sub={salesError ? '-' : (kpis.aReceber > 0 ? 'pendente de entrada' : 'em dia')} />
         <KpiCard label="Lucro real" value={salesError ? 'Erro' : formatCurrency(kpis.lucro)}
           icon={<TrendingUp className="w-5 h-5" />} tone={salesError ? 'rose' : (kpis.lucro >= 0 ? 'emerald' : 'rose')}
           sub={salesError ? 'Consulte o log' : formatPercent(kpis.margem) + ' margem'} />
@@ -302,15 +364,45 @@ export default function DashboardPage() {
       {/* Pagamentos + Descontos + Estoque */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
         <div className="card p-5">
-          <h3 className="font-bold text-ink-800 mb-3">Vendas por pagamento</h3>
-          {pagamentos.length === 0 ? <EmptyStateSmall /> : (
+          <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center gap-2">
+              <h3 className="font-bold text-ink-800">Vendas por pagamento</h3>
+              {loadingPayments && (
+                <span className="chip bg-ink-100 text-ink-500 animate-pulse">Atualizando…</span>
+              )}
+            </div>
+          </div>
+          {paymentsError && (
+            <div className="mb-3 p-3 rounded-xl border border-rose-200 bg-rose-50 text-rose-800 text-xs">
+              <div className="font-bold flex items-center gap-1.5"><AlertCircle className="w-3.5 h-3.5" /> Erro ao detalhar pagamentos</div>
+              <div className="mt-0.5 opacity-90 break-words">{paymentsError}</div>
+            </div>
+          )}
+          {loadingSales || (loadingPayments && salePayments.length === 0 && !paymentsError) ? (
+            <div className="space-y-2.5">
+              {Array.from({ length: 3 }).map((_, i) => (
+                <div key={i}>
+                  <div className="flex justify-between mb-1">
+                    <div className="h-3.5 w-40 bg-ink-100 rounded animate-pulse" />
+                    <div className="h-3.5 w-16 bg-ink-100 rounded animate-pulse" />
+                  </div>
+                  <div className="h-2 rounded-full bg-ink-100 animate-pulse" />
+                </div>
+              ))}
+            </div>
+          ) : pagamentos.length === 0 ? (
+            <EmptyStateSmall />
+          ) : (
             <div className="space-y-2.5">
               {pagamentos.map(pg => {
-                const pct = kpis.faturamento ? (pg.total / kpis.faturamento) * 100 : 0
+                const denom = kpis.recebido > 0 ? kpis.recebido : kpis.faturamento
+                const pct = denom ? (pg.total / denom) * 100 : 0
                 return (
                   <div key={pg.label}>
                     <div className="flex justify-between items-baseline text-sm mb-1">
-                      <span className="font-semibold text-ink-800 truncate">{pg.label}</span>
+                      <span className="font-semibold text-ink-800 truncate flex items-center gap-1.5">
+                        <CreditCard className="w-3.5 h-3.5 text-ink-400" />{pg.label}
+                      </span>
                       <span className="num text-xs text-ink-500">{pg.count}x · {formatPercent(pct, 0)}</span>
                     </div>
                     <div className="flex items-center justify-between gap-2">
@@ -327,12 +419,23 @@ export default function DashboardPage() {
         </div>
 
         <div className="card p-5">
-          <h3 className="font-bold text-ink-800 mb-3">Descontos concedidos</h3>
-          {kpis.descontos === 0 ? <EmptyStateSmall /> : (
+          <h3 className="font-bold text-ink-800 mb-3">Descontos & Taxas</h3>
+          {loadingSales ? (
+            <div className="space-y-2.5">
+              {Array.from({ length: 4 }).map((_, i) => (
+                <div key={i} className="h-4 bg-ink-100 rounded animate-pulse w-full" />
+              ))}
+            </div>
+          ) : kpis.descontos === 0 && kpis.custoTaxas === 0 && kpis.custoEmbalagens === 0 && kpis.custoFrete === 0 ? (
+            <EmptyStateSmall />
+          ) : (
             <div className="space-y-3">
               {[
-                { k: 'Total descontos', v: kpis.descontos, c: 'bg-rose-600', strong: true },
-              ].map(r => (
+                kpis.descontos > 0 ? { k: 'Descontos concedidos', v: kpis.descontos, c: 'bg-rose-600', strong: true } : null,
+                kpis.custoTaxas > 0 ? { k: 'Taxas de pagamento', v: kpis.custoTaxas, c: 'bg-orange-600', strong: false } : null,
+                kpis.custoEmbalagens > 0 ? { k: 'Embalagens (rateadas)', v: kpis.custoEmbalagens, c: 'bg-violet-600', strong: false } : null,
+                kpis.custoFrete > 0 ? { k: 'Frete / extras', v: kpis.custoFrete, c: 'bg-sky-600', strong: false } : null,
+              ].filter(Boolean).map((r: any) => (
                 <div key={r.k} className="flex items-center justify-between">
                   <div className="flex items-center gap-2.5">
                     <div className={cn('w-2.5 h-2.5 rounded-full', r.c)} />
@@ -368,7 +471,7 @@ export default function DashboardPage() {
           {loadingStock ? (
             <div className="space-y-2.5 mb-4">
               <div className="grid grid-cols-2 gap-2.5">
-                {Array.from({ length: 4 }).map((_, i) => (
+                {Array.from({ length: 6 }).map((_, i) => (
                   <div key={i} className="p-3 rounded-lg bg-ink-50 border border-ink-100">
                     <div className="h-2.5 w-24 bg-ink-200 rounded animate-pulse" />
                     <div className="h-5 w-16 bg-ink-200 rounded mt-1 animate-pulse" />
@@ -382,6 +485,8 @@ export default function DashboardPage() {
               <MiniKpi label="Custo do estoque" value={formatCurrency(stock?.total_stock_cost ?? 0)} />
               <MiniKpi label="Potencial de venda" value={formatCurrency(stock?.total_sales_potential ?? 0)} />
               <MiniKpi label="SKUs cadastrados" value={String(stock?.total_skus ?? 0)} />
+              <MiniKpi label="Com estoque" value={String(stock?.in_stock_skus ?? 0)} />
+              <MiniKpi label="Sem estoque" value={String(stock?.out_of_stock_skus ?? 0)} />
             </div>
           )}
 
@@ -392,7 +497,7 @@ export default function DashboardPage() {
                   <AlertBlock
                     icon={<AlertTriangle className="w-4 h-4" />}
                     tone="rose"
-                    title={`${stock.out_of_stock_skus} ${pluralize(stock.out_of_stock_skus, 'produto', 'produtos')} sem estoque`}
+                    title={`${stock.out_of_stock_skus} ${pluralize(stock.out_of_stock_skus, 'produto', 'produtos')} sem estoque · ${stock.in_stock_skus ?? 0} ${pluralize(Number(stock.in_stock_skus ?? 0), 'com', 'com')}`}
                     items={[]}
                   />
                 </div>
@@ -426,15 +531,16 @@ export default function DashboardPage() {
             <table className="table-base">
               <thead>
                 <tr>
-                  <th>Nº</th><th>Data</th><th>Origem</th><th>Pagamento</th>
+                  <th>Nº</th><th>Data</th><th>Origem</th><th>Cliente</th><th>Pagamento</th>
                   <th className="text-right">Peças</th><th className="text-right">Total</th>
-                  <th className="text-right">Lucro</th><th className="text-right">Status</th>
+                  <th className="text-right">Recebido</th><th className="text-right">A receber</th>
+                  <th className="text-right">Status</th>
                 </tr>
               </thead>
               <tbody>
                 {Array.from({ length: 5 }).map((_, i) => (
                   <tr key={i}>
-                    {Array.from({ length: 8 }).map((__, j) => (
+                    {Array.from({ length: 10 }).map((__, j) => (
                       <td key={j}>
                         <div className="h-4 bg-ink-100 rounded animate-pulse w-20" />
                       </td>
@@ -466,13 +572,6 @@ export default function DashboardPage() {
               <tbody>
                 {recentSales.map(r => {
                   const st = statusLabel(r.status ?? 'PENDENTE')
-                  const lucro = Number(r.revenue ?? 0) - (
-                    Number(r.items_cost ?? 0) +
-                    Number(r.allocated_purchase_cost ?? 0) +
-                    Number(r.payment_fees ?? 0) +
-                    Number(r.packaging_cost ?? 0) +
-                    Number(r.extra_costs ?? 0)
-                  )
                   return (
                     <tr key={r.sale_id ?? (r as any).id} className="hover:bg-ink-50/50 transition">
                       <td className="font-bold num">
@@ -489,7 +588,7 @@ export default function DashboardPage() {
                       <td className="text-ink-700 text-sm">
                         {[r.payment_provider_snapshot, paymentMethodLabel(r.payment_method_snapshot),
                           (Number(r.installments_snapshot ?? 1) > 1) ? `${r.installments_snapshot}x` : null]
-                          .filter(Boolean).join(' · ') || '-'}
+                          .filter(Boolean).join(' · ') || (Number(r.amount_received ?? 0) > 0 ? 'Recebido' : '-')}
                       </td>
                       <td className="text-right num font-semibold">{String(Number(r.pieces_sold ?? 0))}</td>
                       <td className="text-right num font-bold text-ink-900">{formatCurrency(r.revenue)}</td>

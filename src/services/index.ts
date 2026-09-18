@@ -541,36 +541,54 @@ export async function registrarDespesa(p: RegistrarDespesaParams): Promise<{ id:
 export async function dashboardStockSummary(): Promise<DashboardStockSummary> {
   if (!usingSupabase) return Demo.demoDashboardStockSummary()
   const sup: any = supabase
-  const { data, error } = await sup.from('v_dashboard_stock_summary').select('*').single()
+  const { data, error } = await sup
+    .from('v_dashboard_stock_summary')
+    .select('total_units, total_stock_cost, total_sales_potential, total_skus, out_of_stock_skus, in_stock_skus')
+    .single()
   if (error) {
     console.error('[services.dashboardStockSummary] erro:', error)
     throw new Error(`Dashboard Estoque: ${error.message || String(error)}`)
   }
+  const d: any = data ?? {}
   return {
-    total_units: Number((data as any).total_units ?? 0),
-    total_stock_cost: Number((data as any).total_stock_cost ?? 0),
-    total_sales_potential: Number((data as any).total_sales_potential ?? 0),
-    total_skus: Number((data as any).total_skus ?? 0),
-    out_of_stock_skus: Number((data as any).out_of_stock_skus ?? 0),
+    total_units: Number(d.total_units ?? 0),
+    total_stock_cost: Number(d.total_stock_cost ?? 0),
+    total_sales_potential: Number(d.total_sales_potential ?? 0),
+    total_skus: Number(d.total_skus ?? 0),
+    out_of_stock_skus: Number(d.out_of_stock_skus ?? 0),
+    in_stock_skus: Number(d.in_stock_skus ?? 0),
   }
 }
 
+function addDay(dateStr: string): string {
+  // Retorna YYYY-MM-DD acrescido de 1 dia, para usar lt em range de data
+  const [y, m, d] = dateStr.split('-').map(Number)
+  const dt = new Date(y, (m ?? 1) - 1, d ?? 1)
+  dt.setDate(dt.getDate() + 1)
+  const YYYY = dt.getFullYear()
+  const MM = String(dt.getMonth() + 1).padStart(2, '0')
+  const DD = String(dt.getDate()).padStart(2, '0')
+  return `${YYYY}-${MM}-${DD}`
+}
+
 export interface DashboardDateRange {
-  startInclusive: string // YYYY-MM-DD
-  endInclusive: string   // YYYY-MM-DD
+  startInclusive: string // YYYY-MM-DD (inclusivo)
+  endInclusive: string   // YYYY-MM-DD (inclusivo — query usará < endInclusive + 1 dia)
 }
 
 export async function dashboardSales(range: DashboardDateRange): Promise<DashboardSaleRow[]> {
   if (!usingSupabase) return Demo.demoDashboardSales(range)
   const sup: any = supabase
+  const endExclusiveISO = addDay(range.endInclusive) + 'T00:00:00'
+  const startISO = range.startInclusive + 'T00:00:00'
   const { data, error } = await sup
     .from('v_dashboard_sales')
     .select('*')
-    .gte('sale_date', range.startInclusive + 'T00:00:00')
-    .lte('sale_date', range.endInclusive + 'T23:59:59')
+    .gte('sale_date', startISO)
+    .lt('sale_date', endExclusiveISO)
     .order('sale_date', { ascending: false })
   if (error) {
-    console.error('[services.dashboardSales] erro:', error)
+    console.error('[services.dashboardSales] erro:', error, { startISO, endExclusiveISO })
     throw new Error(`Dashboard Vendas: ${error.message || String(error)}`)
   }
   return (data ?? []) as DashboardSaleRow[]
@@ -579,15 +597,32 @@ export async function dashboardSales(range: DashboardDateRange): Promise<Dashboa
 export async function dashboardFinancial(range: DashboardDateRange): Promise<DashboardFinancialRow[]> {
   if (!usingSupabase) return Demo.demoDashboardFinancial(range)
   const sup: any = supabase
+  const endExclusiveISO = addDay(range.endInclusive) + 'T00:00:00'
+  const startISO = range.startInclusive + 'T00:00:00'
   const { data, error } = await sup
     .from('v_dashboard_financial')
     .select('*')
-    .gte('trans_date', range.startInclusive + 'T00:00:00')
-    .lte('trans_date', range.endInclusive + 'T23:59:59')
+    .gte('trans_date', startISO)
+    .lt('trans_date', endExclusiveISO)
     .order('trans_date', { ascending: false })
   if (error) {
-    console.error('[services.dashboardFinancial] erro:', error)
+    console.error('[services.dashboardFinancial] erro:', error, { startISO, endExclusiveISO })
     throw new Error(`Dashboard Financeiro: ${error.message || String(error)}`)
   }
   return (data ?? []) as DashboardFinancialRow[]
+}
+
+export async function listSalePaymentsBySaleIds(saleIds: UUID[]): Promise<SalePayment[]> {
+  if (!saleIds?.length) return []
+  if (!usingSupabase) return Demo.demoListSalePaymentsBySaleIds(saleIds)
+  const sup: any = supabase
+  const { data, error } = await sup
+    .from('sale_payments')
+    .select('*')
+    .in('sale_id', saleIds)
+  if (error) {
+    console.error('[services.listSalePaymentsBySaleIds] erro:', error)
+    throw new Error(`Vendas por pagamento (query sale_payments): ${error.message || String(error)}`)
+  }
+  return (data ?? []) as SalePayment[]
 }
