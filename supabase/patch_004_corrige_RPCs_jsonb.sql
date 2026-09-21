@@ -264,7 +264,7 @@ BEGIN
   WHERE id = v_sale_id;
 
   INSERT INTO public.financial_transactions
-    (trans_date, trans_type, category, description, amount, related_sale_id, payment_method, status, created_by)
+    (trans_date, trans_type, category, description, amount, related_sale_id, payment_method, status, created_by, payment_source)
   VALUES (
     CURRENT_DATE,
     'ENTRADA',
@@ -274,33 +274,28 @@ BEGIN
     v_sale_id,
     CASE WHEN p_payment IS NOT NULL THEN COALESCE(p_payment->>'method','OUTRO') ELSE 'OUTRO' END,
     'CONFIRMADO',
-    p_user_id
+    p_user_id,
+    'CAIXA_EVELINE'
   );
   IF v_fee_actual > 0 THEN
     INSERT INTO public.financial_transactions
-      (trans_date, trans_type, category, description, amount, related_sale_id, status, created_by)
+      (trans_date, trans_type, category, description, amount, related_sale_id, status, created_by, payment_source)
     VALUES (
       CURRENT_DATE, 'SAIDA', 'TAXA',
       'Taxa pagamento Venda #' || lpad(v_friendly::text, 6, '0'),
-      v_fee_actual, v_sale_id, 'CONFIRMADO', p_user_id
+      v_fee_actual, v_sale_id, 'CONFIRMADO', p_user_id, 'CAIXA_EVELINE'
     );
   END IF;
-  IF v_packaging_cost > 0 THEN
-    INSERT INTO public.financial_transactions
-      (trans_date, trans_type, category, description, amount, related_sale_id, status, created_by)
-    VALUES (
-      CURRENT_DATE, 'SAIDA', 'EMBALAGEM',
-      'Embalagem Venda #' || lpad(v_friendly::text, 6, '0'),
-      v_packaging_cost, v_sale_id, 'CONFIRMADO', p_user_id
-    );
-  END IF;
+  -- Embalagem: custo GERENCIAL apenas. NÃO gera SAÍDA financeira.
+  -- O dinheiro já saiu quando o material foi comprado (compra de sacolas/adesivos etc).
+  -- Mantido apenas em sales.packaging_cost e deduzido de real_profit.
   IF v_extra_costs_total > 0 THEN
     INSERT INTO public.financial_transactions
-      (trans_date, trans_type, category, description, amount, related_sale_id, status, created_by)
+      (trans_date, trans_type, category, description, amount, related_sale_id, status, created_by, payment_source)
     VALUES (
       CURRENT_DATE, 'SAIDA', 'OUTRA_DESPESA',
       'Custos extras Venda #' || lpad(v_friendly::text, 6, '0'),
-      v_extra_costs_total, v_sale_id, 'CONFIRMADO', p_user_id
+      v_extra_costs_total, v_sale_id, 'CONFIRMADO', p_user_id, 'CAIXA_EVELINE'
     );
   END IF;
 
@@ -340,9 +335,10 @@ CREATE OR REPLACE FUNCTION public.create_purchase_entry(
   p_shipping_cost NUMERIC DEFAULT 0,
   p_other_costs JSONB DEFAULT '[]'::jsonb,
   p_notes TEXT DEFAULT NULL,
-  p_user_id UUID DEFAULT NULL
-)
-RETURNS JSONB AS $$
+  p_user_id UUID DEFAULT NULL,
+  p_funding_source TEXT DEFAULT 'CAIXA_EVELINE',
+  p_creditor_name TEXT DEFAULT NULL
+) RETURNS JSONB LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
 DECLARE
   v_entry_id UUID;
   v_items_total NUMERIC(12,2) := 0;
@@ -356,18 +352,46 @@ DECLARE
   v_qty INTEGER;
   v_cost NUMERIC(12,4);
   _item JSONB;
+  i JSONB;
   _oc JSONB;
   item RECORD;
+  v_fs TEXT := COALESCE(p_funding_source,'CAIXA_EVELINE');
+  v_creditor TEXT;
+  v_obl_category TEXT;
+  v_obligation_id UUID;
+  v_obl_description TEXT;
 BEGIN
   IF p_cost_allocation_method NOT IN ('quantity','value','none') THEN
     RAISE EXCEPTION 'Método de rateio inválido';
   END IF;
 
+  -- funding_source OFICIAL: 4 valores apenas.
+  -- Inválido → cai em OUTRO (nunca em pendente liquidar)
+  IF v_fs NOT IN ('CAIXA_EVELINE','FABIANA','DONA','OUTRO') THEN
+    v_fs := 'OUTRO';
+  END IF;
+
+  v_creditor := TRIM(COALESCE(NULLIF(p_creditor_name,''),
+    CASE v_fs
+      WHEN 'FABIANA' THEN 'Fabiana'
+      WHEN 'DONA'    THEN 'Dona da Loja'
+      ELSE NULL
+    END
+  ));
+
+  v_obl_category := CASE v_fs
+    WHEN 'FABIANA' THEN 'APORTE_TERCEIROS'
+    WHEN 'DONA'    THEN 'MATERIAL_DONA'
+    ELSE 'OUTRO'
+  END;
+
   INSERT INTO public.purchase_entries
-    (entry_date, supplier, origin, cost_allocation_method, notes, created_by)
+    (entry_date, supplier, origin, cost_allocation_method, notes, created_by,
+     funding_source, creditor_name)
   VALUES (
     COALESCE(p_entry_date, CURRENT_DATE), p_supplier, p_origin,
-    p_cost_allocation_method, p_notes, p_user_id
+    p_cost_allocation_method, p_notes, p_user_id,
+    v_fs, v_creditor
   ) RETURNING id INTO v_entry_id;
 
   IF p_other_costs IS NOT NULL THEN
@@ -492,28 +516,74 @@ BEGIN
     total_cost = v_total_cost
   WHERE id = v_entry_id;
 
-  INSERT INTO public.financial_transactions
-    (trans_date, trans_type, category, description, amount, related_purchase_id, status, created_by)
-  VALUES (
-    CURRENT_DATE, 'SAIDA', 'COMPRA_ESTOQUE',
-    'Mercadoria compra ' || COALESCE(p_supplier, p_origin, p_entry_date::text),
-    v_items_total, v_entry_id, 'CONFIRMADO', p_user_id
-  );
-  IF COALESCE(p_shipping_cost, 0) > 0 THEN
-    INSERT INTO public.financial_transactions
-      (trans_date, trans_type, category, description, amount, related_purchase_id, status, created_by)
-    VALUES (
-      CURRENT_DATE, 'SAIDA', 'FRETE',
-      'Frete/deslocamento compra',
-      p_shipping_cost, v_entry_id, 'CONFIRMADO', p_user_id
-    );
+  -- ============================================================
+  -- FINANCEIRO CONDICIONAL (origem do dinheiro / conciliação correta)
+  --  4 valores OFICIAIS (itens #6 e #2 do fechamento):
+  --   CAIXA_EVELINE → cria SAÍDAS com payment_source='CAIXA_EVELINE'
+  --   FABIANA/DONA/OUTRO → NÃO toca caixa. Cria obligations PENDENTE.
+  -- ============================================================
+  IF v_fs = 'CAIXA_EVELINE' THEN
+    IF v_items_total > 0 THEN
+      INSERT INTO public.financial_transactions
+        (trans_date, trans_type, category, description, amount, related_purchase_id, status, created_by, payment_source)
+      VALUES (
+        COALESCE(p_entry_date, CURRENT_DATE), 'SAIDA', 'COMPRA_ESTOQUE',
+        'Mercadoria compra ' || COALESCE(p_supplier, p_origin, p_entry_date::text),
+        v_items_total, v_entry_id, 'CONFIRMADO', p_user_id, 'CAIXA_EVELINE'
+      );
+    END IF;
+    IF COALESCE(p_shipping_cost, 0) > 0 THEN
+      INSERT INTO public.financial_transactions
+        (trans_date, trans_type, category, description, amount, related_purchase_id, status, created_by, payment_source)
+      VALUES (
+        COALESCE(p_entry_date, CURRENT_DATE), 'SAIDA', 'FRETE',
+        'Frete/deslocamento compra',
+        p_shipping_cost, v_entry_id, 'CONFIRMADO', p_user_id, 'CAIXA_EVELINE'
+      );
+    END IF;
+    IF v_others_total > 0 THEN
+      INSERT INTO public.financial_transactions
+        (trans_date, trans_type, category, description, amount, related_purchase_id, status, created_by, payment_source)
+      VALUES (
+        COALESCE(p_entry_date, CURRENT_DATE), 'SAIDA', 'OUTRA_DESPESA',
+        'Outros custos compra (rateio: ' || COALESCE(p_supplier,'fornecedor') || ')',
+        v_others_total, v_entry_id, 'CONFIRMADO', p_user_id, 'CAIXA_EVELINE'
+      );
+    END IF;
+  ELSIF v_fs IN ('FABIANA','DONA','OUTRO') THEN
+    IF v_total_cost > 0 AND v_creditor IS NOT NULL THEN
+      v_obl_description := CONCAT_WS(' - ',
+        'Compra mercadoria ' || COALESCE(p_supplier, p_origin, ''),
+        p_notes
+      );
+      BEGIN
+        INSERT INTO public.obligations
+          (creditor_name, description, original_amount, amount_paid, status, category,
+           related_purchase_id, created_by, issue_date)
+        VALUES (v_creditor, v_obl_description, v_total_cost, 0::numeric, 'PENDENTE', v_obl_category,
+                v_entry_id, p_user_id, COALESCE(p_entry_date, CURRENT_DATE))
+        RETURNING id INTO v_obligation_id;
+
+        UPDATE public.purchase_entries SET related_obligation_id = v_obligation_id WHERE id = v_entry_id;
+      EXCEPTION WHEN OTHERS THEN NULL; END;
+    END IF;
   END IF;
 
   INSERT INTO public.audit_logs (user_id, action, entity, entity_id, metadata)
   VALUES (p_user_id, 'CREATE', 'PURCHASE', v_entry_id,
-    jsonb_build_object('items_total', v_items_total, 'total_cost', v_total_cost));
+    jsonb_build_object(
+      'items_total', v_items_total, 'total_cost', v_total_cost,
+      'funding_source', v_fs, 'creditor_name', v_creditor,
+      'obligation_id', v_obligation_id,
+      'financial_created', (v_fs = 'CAIXA_EVELINE')::boolean
+    ));
 
-  RETURN jsonb_build_object('ok', true, 'purchase_entry_id', v_entry_id, 'total_cost', v_total_cost);
+  RETURN jsonb_build_object(
+    'ok', true, 'purchase_entry_id', v_entry_id, 'total_cost', v_total_cost,
+    'funding_source', v_fs, 'creditor_name', v_creditor,
+    'obligation_id', v_obligation_id,
+    'financial_created', (v_fs = 'CAIXA_OPERACIONAL')::boolean
+  );
 EXCEPTION WHEN OTHERS THEN
   RAISE;
 END;

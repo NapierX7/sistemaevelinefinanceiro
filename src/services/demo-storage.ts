@@ -16,6 +16,7 @@ import type {
   PurchaseEntry,
   PurchaseEntryItem,
   PurchaseCost,
+  PurchaseFundingSource,
   FinancialTransaction,
   InventoryMovement,
   InventoryBatch,
@@ -25,6 +26,7 @@ import type {
   DashboardStockRow,
   DashboardSaleRow,
   DashboardFinancialRow,
+  ObligationRow,
 } from '@/types/supabase'
 
 const STORE_KEY = 'eveline-gestao-demo-store-v1'
@@ -401,10 +403,22 @@ export function demoCreatePurchaseEntry(args: {
   shipping_cost?: number,
   other_costs?: Array<{description: string, category?: string, amount: number}>,
   notes?: string, user_id?: UUID,
+  funding_source?: PurchaseFundingSource | string,
+  creditor_name?: string,
 }) {
   const s = loadStore()
   const items = args.items ?? []
   const method = args.cost_allocation_method ?? 'quantity'
+  const fs = (['CAIXA_EVELINE','FABIANA','DONA','OUTRO'] as readonly string[])
+    .includes(String(args.funding_source ?? '')) ? String(args.funding_source) : 'CAIXA_EVELINE'
+  const rawCreditor = args.creditor_name ?? undefined;
+  const creditor = (typeof rawCreditor === 'string' && rawCreditor.trim().length > 0)
+    ? rawCreditor.trim()
+    : (fs === 'FABIANA' ? 'Fabiana' : (fs === 'DONA' ? 'Dona da Loja' : undefined));
+  const oblCategory = fs === 'FABIANA' ? 'APORTE_TERCEIROS'
+    : fs === 'DONA' ? 'MATERIAL_DONA'
+    : 'OUTRO'
+
   const entry: PurchaseEntry = {
     id: uid(), entry_date: args.entry_date ?? new Date().toISOString().slice(0,10),
     supplier: args.supplier ?? null, origin: args.origin ?? null,
@@ -412,6 +426,9 @@ export function demoCreatePurchaseEntry(args: {
     other_costs: 0, total_cost: 0,
     cost_allocation_method: method, notes: args.notes ?? null,
     created_by: args.user_id ?? null, created_at: todayISO(),
+    funding_source: fs,
+    related_obligation_id: null,
+    creditor_name: creditor ?? null,
   }
   s.purchases.push(entry)
 
@@ -478,23 +495,69 @@ export function demoCreatePurchaseEntry(args: {
   entry.other_costs = +othersTotal.toFixed(2)
   entry.total_cost = +(entry.items_total + entry.shipping_cost + entry.other_costs).toFixed(2)
 
-  // financeiro
-  s.financial_transactions.push({
-    id: uid(), trans_date: entry.entry_date, trans_type: 'SAIDA', category: 'COMPRA_ESTOQUE',
-    description: `Mercadoria compra ${entry.supplier || entry.origin || entry.entry_date}`,
-    amount: entry.items_total, related_purchase_id: entry.id, status: 'CONFIRMADO',
-    created_by: args.user_id ?? null, created_at: todayISO(),
-  })
-  if (entry.shipping_cost > 0) {
+  // ============================================================
+  // financeiro condicional (origem do dinheiro)
+  // CAIXA_EVELINE → cria SAÍDAS financeiras com payment_source
+  // FABIANA/DONA/OUTRO → cria obligation PENDENTE (NÃO toca caixa)
+  // ============================================================
+  let obligation_id: UUID | null = null
+  let financial_created = false
+  if (fs === 'CAIXA_EVELINE') {
+    financial_created = true
     s.financial_transactions.push({
-      id: uid(), trans_date: entry.entry_date, trans_type: 'SAIDA', category: 'FRETE',
-      description: 'Frete/deslocamento compra',
-      amount: entry.shipping_cost, related_purchase_id: entry.id, status: 'CONFIRMADO',
+      id: uid(), trans_date: entry.entry_date, trans_type: 'SAIDA', category: 'COMPRA_ESTOQUE',
+      description: `Mercadoria compra ${entry.supplier || entry.origin || entry.entry_date}`,
+      amount: entry.items_total, related_purchase_id: entry.id, status: 'CONFIRMADO',
       created_by: args.user_id ?? null, created_at: todayISO(),
+      payment_source: 'CAIXA_EVELINE',
     })
+    if (entry.shipping_cost > 0) {
+      s.financial_transactions.push({
+        id: uid(), trans_date: entry.entry_date, trans_type: 'SAIDA', category: 'FRETE',
+        description: 'Frete/deslocamento compra',
+        amount: entry.shipping_cost, related_purchase_id: entry.id, status: 'CONFIRMADO',
+        created_by: args.user_id ?? null, created_at: todayISO(),
+        payment_source: 'CAIXA_EVELINE',
+      })
+    }
+    if (entry.other_costs > 0) {
+      s.financial_transactions.push({
+        id: uid(), trans_date: entry.entry_date, trans_type: 'SAIDA', category: 'OUTRA_DESPESA',
+        description: `Outros custos compra (rateio: ${entry.supplier || 'fornecedor'})`,
+        amount: entry.other_costs, related_purchase_id: entry.id, status: 'CONFIRMADO',
+        created_by: args.user_id ?? null, created_at: todayISO(),
+        payment_source: 'CAIXA_EVELINE',
+      })
+    }
+  } else if (['FABIANA','DONA','OUTRO'].includes(fs) && entry.total_cost > 0) {
+    const ob: ObligationRow & {[k: string]: any} = {
+      id: uid(),
+      creditor_name: creditor || (fs === 'FABIANA' ? 'Fabiana' : fs === 'DONA' ? 'Dona da Loja' : 'Outro'),
+      description: `Compra mercadoria ${entry.supplier || entry.origin || ''}${entry.notes ? ' - ' + entry.notes : ''}`,
+      amount: entry.total_cost,
+      amount_paid: 0,
+      remaining_balance: entry.total_cost,
+      status: 'PENDENTE',
+      category: oblCategory,
+      due_date: null,
+      notes: null,
+      related_purchase_id: entry.id,
+      created_at: todayISO(),
+      paid_at: null,
+      last_payment_at: null,
+    }
+    if (!(s as any).obligations) (s as any).obligations = []
+    ;(s as any).obligations.push(ob)
+    obligation_id = ob.id
+    entry.related_obligation_id = obligation_id
   }
+
   saveStore(s)
-  return { ok: true, purchase_entry_id: entry.id, total_cost: entry.total_cost }
+  return {
+    ok: true, purchase_entry_id: entry.id, total_cost: entry.total_cost,
+    funding_source: fs, creditor_name: creditor ?? null, obligation_id,
+    financial_created,
+  }
 }
 
 // ========== RPC: finalize_sale ==========
@@ -672,6 +735,7 @@ export function demoFinalizeSale(args: {
     description: `Venda #${String(friendly_number).padStart(6,'0')}`,
     amount: total_customer, related_sale_id: sale.id, status: 'CONFIRMADO',
     payment_method: args.payment?.method, created_by: args.user_id ?? null, created_at: todayISO(),
+    payment_source: 'CAIXA_EVELINE',
   })
   if (fee_actual > 0) {
     s.financial_transactions.push({
@@ -679,14 +743,7 @@ export function demoFinalizeSale(args: {
       description: `Taxa pagamento Venda #${String(friendly_number).padStart(6,'0')}`,
       amount: +fee_actual.toFixed(2), related_sale_id: sale.id, status: 'CONFIRMADO',
       created_by: args.user_id ?? null, created_at: todayISO(),
-    })
-  }
-  if (packaging_cost > 0) {
-    s.financial_transactions.push({
-      id: uid(), trans_date: sale.sale_date.slice(0,10), trans_type: 'SAIDA', category: 'EMBALAGEM',
-      description: `Embalagem Venda #${String(friendly_number).padStart(6,'0')}`,
-      amount: +packaging_cost.toFixed(2), related_sale_id: sale.id, status: 'CONFIRMADO',
-      created_by: args.user_id ?? null, created_at: todayISO(),
+      payment_source: 'CAIXA_EVELINE',
     })
   }
   if (extra_costs > 0) {
@@ -695,6 +752,7 @@ export function demoFinalizeSale(args: {
       description: `Custos extras Venda #${String(friendly_number).padStart(6,'0')}`,
       amount: +extra_costs.toFixed(2), related_sale_id: sale.id, status: 'CONFIRMADO',
       created_by: args.user_id ?? null, created_at: todayISO(),
+      payment_source: 'CAIXA_EVELINE',
     })
   }
 
@@ -1089,3 +1147,100 @@ export function demoListSaleItemsBySaleIds(saleIds: string[]): SaleItem[] {
   const s = loadStore()
   return s.sale_items.filter(i => setIds.has(i.sale_id)) ?? []
 }
+
+export function demoListObligationsPendentes(): ObligationRow[] {
+  const s = loadStore()
+  const source = Array.isArray((s as any).obligations) ? (s as any).obligations as any[] : []
+  const out: ObligationRow[] = []
+  for (const o of source) {
+    const status = (String(o.status ?? 'PENDENTE').toUpperCase()) as any
+    if (status === 'PAGO' || status === 'CANCELADO') continue
+    const amount = Number(o.amount ?? o.valor ?? 0)
+    const amount_paid = Number(o.amount_paid ?? 0)
+    out.push({
+      id: String(o.id ?? crypto.randomUUID()),
+      creditor_name: String(o.creditor_name ?? o.credor ?? '—'),
+      description: o.description ?? o.motivo ?? null,
+      amount,
+      amount_paid,
+      remaining_balance: +(amount - amount_paid).toFixed(2),
+      status: (['PENDENTE', 'PARCIAL', 'PAGO', 'CANCELADO'].includes(status) ? status : 'PENDENTE') as any,
+      category: String(o.category ?? o.categoria ?? 'OUTRO'),
+      due_date: o.due_date ?? o.vencimento ?? null,
+      notes: o.notes ?? o.observacoes ?? null,
+      related_purchase_id: o.related_purchase_id ?? null,
+      created_at: o.created_at ?? null,
+      paid_at: o.paid_at ?? null,
+      last_payment_at: o.last_payment_at ?? null,
+    })
+  }
+  return out
+}
+
+// ========== RPC: pay_obligation ==========
+export function demoPayObligation(args: {
+  obligation_id: string,
+  amount: number,
+  payment_method?: string,
+  notes?: string,
+  trans_date?: string,
+  payment_ref?: string,
+  user_id?: UUID,
+}) {
+  const s = loadStore()
+  const payAmount = Number(args.amount ?? 0)
+  if (payAmount <= 0) throw new Error('Valor do pagamento deve ser maior que zero.')
+  const obligations = Array.isArray((s as any).obligations) ? (s as any).obligations as any[] : []
+  const idx = obligations.findIndex((o: any) => String(o.id) === String(args.obligation_id))
+  if (idx < 0) throw new Error('Obrigação não encontrada.')
+  const ob = obligations[idx]
+  const obAmount = Number(ob.amount ?? 0)
+  const obPaid = Number(ob.amount_paid ?? 0)
+  const remaining = +(obAmount - obPaid).toFixed(2)
+  if (payAmount > remaining + 0.009) {
+    throw new Error(`Pagamento (R$ ${payAmount.toFixed(2)}) maior que saldo pendente (R$ ${remaining.toFixed(2)}).`)
+  }
+  if (args.payment_ref && args.payment_ref.trim()) {
+    const existente = s.financial_transactions.find((f: any) =>
+      String(f.related_obligation_id) === String(args.obligation_id) &&
+      String(f.payment_ref ?? '') === String(args.payment_ref)
+    )
+    if (existente) return { ok: false, idempotent: true, message: 'Pagamento já lançado com esta referência.' }
+  }
+  const newPaid = +(obPaid + payAmount).toFixed(2)
+  const newRemaining = +(obAmount - newPaid).toFixed(2)
+  ob.amount_paid = newPaid
+  ob.status = newRemaining <= 0.009 ? 'PAGO' : 'PARCIAL'
+  ob.last_payment_at = todayISO()
+  if (newRemaining <= 0.009) ob.paid_at = todayISO()
+
+  const trans = {
+    id: uid(),
+    trans_date: args.trans_date ?? new Date().toISOString().slice(0, 10),
+    trans_type: 'SAIDA' as const,
+    category: 'PAGAMENTO_OBRIGACAO',
+    description: `Pagamento obrigação ${ob.creditor_name ?? ''}${args.payment_ref ? ' · Ref. ' + args.payment_ref : ''}${args.notes ? ' · ' + args.notes : ''}`,
+    amount: payAmount,
+    related_obligation_id: String(args.obligation_id),
+    status: 'CONFIRMADO' as const,
+    created_by: args.user_id ?? null,
+    payment_method: args.payment_method ?? 'PIX',
+    payment_ref: args.payment_ref ?? null,
+    notes: args.notes ?? null,
+    payment_source: 'CAIXA_EVELINE',
+    created_at: todayISO(),
+  }
+  s.financial_transactions.push(trans)
+  obligations[idx] = ob
+  saveStore(s)
+  return {
+    ok: true,
+    idempotent: false,
+    obligation_id: ob.id,
+    financial_transaction_id: trans.id,
+    amount_paid: payAmount,
+    remaining_balance: newRemaining,
+    new_status: ob.status,
+  }
+}
+

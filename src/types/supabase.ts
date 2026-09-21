@@ -183,7 +183,16 @@ export interface PurchaseEntry {
   notes?: string | null;
   created_by?: UUID | null;
   created_at: string;
+  funding_source?: PurchaseFundingSource | string | null;
+  related_obligation_id?: UUID | null;
+  creditor_name?: string | null;
 }
+
+export type PurchaseFundingSource =
+  | 'CAIXA_EVELINE'
+  | 'FABIANA'
+  | 'DONA'
+  | 'OUTRO';
 
 export interface PurchaseEntryItem {
   id: UUID;
@@ -331,11 +340,13 @@ export interface FinancialTransaction {
   amount: Money;
   related_sale_id?: UUID | null;
   related_purchase_id?: UUID | null;
+  related_obligation_id?: UUID | null;
   payment_method?: string | null;
   status: 'PENDENTE' | 'CONFIRMADO' | 'CANCELADO';
   due_date?: string | null;
   created_by?: UUID | null;
   notes?: string | null;
+  payment_source?: 'CAIXA_EVELINE' | 'FABIANA' | 'DONA' | 'OUTRO' | string | null;
   created_at: string;
   updated_at?: string;
 }
@@ -477,6 +488,7 @@ export interface DashboardSaleRow {
 }
 
 export interface DashboardFinancialRow {
+  id?: UUID | string
   financial_transaction_id?: UUID | string
   trans_date: string
   trans_type: 'ENTRADA' | 'SAIDA' | string
@@ -485,4 +497,34 @@ export interface DashboardFinancialRow {
   category?: string | null
   description?: string | null
   payment_method?: string | null
+  payment_source?: 'CAIXA_EVELINE' | 'FABIANA' | 'DONA' | 'OUTRO' | string | null
+  related_sale_id?: UUID | string | null
+  related_purchase_id?: UUID | string | null
+  related_obligation_id?: UUID | string | null
+}
+
+/**
+ * Obrigações / valores a restituir (terceiros, dona, sócios, aportes que devem ser devolvidos).
+ *
+ * IMPORTANTE (regras de negócio 7,8,9):
+ *   - O custo das mercadorias/materials continua válido normalmente (FIFO, CMV, lucro).
+ *   - Enquanto PENDENTE, NÃO reduz caixa atual.
+ *   - Quando efetivamente pago: lançar SAÍDA em financial_transactions naquele momento.
+ *   - Obrigações NÃO são faturamento, NÃO são lucro, NÃO são contas a receber de clientes.
+ */
+export interface ObligationRow {
+  id: UUID | string
+  creditor_name: string
+  description?: string | null
+  amount: Money
+  amount_paid?: Money
+  remaining_balance?: Money
+  status: 'PENDENTE' | 'PAGO' | 'PARCIAL' | 'CANCELADO'
+  category?: 'APORTE_TERCEIROS' | 'MATERIAL_DONA' | 'EMPRESTIMO_SOCIO' | 'OUTRO' | string
+  due_date?: string | null
+  notes?: string | null
+  related_purchase_id?: UUID | null
+  created_at?: string | null
+  paid_at?: string | null
+  last_payment_at?: string | null
 }

@@ -2,7 +2,7 @@ import {
   isSupabaseConfigured, supabase, getCurrentUserId,
 } from '@/lib/supabase'
 import * as Demo from './demo-storage'
-import type { UUID, Product, Category, Sale, SaleItem, SalePayment, SalePackaging, SaleCost, PurchaseEntry, FinancialTransaction, InventoryMovement, InventoryBatch, PaymentFeeRule, PackagingType, Coupon, Setting, PaymentProvider, PaymentModality, DashboardStockSummary, DashboardStockRow, DashboardSaleRow, DashboardFinancialRow } from '@/types/supabase'
+import type { UUID, Product, Category, Sale, SaleItem, SalePayment, SalePackaging, SaleCost, PurchaseEntry, PurchaseFundingSource, FinancialTransaction, InventoryMovement, InventoryBatch, PaymentFeeRule, PackagingType, Coupon, Setting, PaymentProvider, PaymentModality, DashboardStockSummary, DashboardStockRow, DashboardSaleRow, DashboardFinancialRow, ObligationRow } from '@/types/supabase'
 
 // ================================================================
 // CAMADA UNIFICADA DE DADOS
@@ -413,13 +413,21 @@ export interface CreatePurchaseParams {
   shipping_cost?: number
   other_costs?: Array<{description: string, category?: string, amount: number}>
   notes?: string
+  funding_source?: PurchaseFundingSource | string
+  creditor_name?: string
 }
 
 export async function createPurchase(p: CreatePurchaseParams) {
   const userId = getCurrentUserId()
+  const funding_source = (p.funding_source as any) ?? 'CAIXA_EVELINE'
   let ret: any
   if (!usingSupabase) {
-    ret = Demo.demoCreatePurchaseEntry({ ...p, user_id: userId ?? undefined })
+    ret = Demo.demoCreatePurchaseEntry({
+      ...p,
+      funding_source,
+      creditor_name: p.creditor_name ?? undefined,
+      user_id: userId ?? undefined
+    })
   } else {
     const { data, error } = await (supabase as any).rpc('create_purchase_entry', {
       p_entry_date: p.entry_date ?? null,
@@ -430,6 +438,42 @@ export async function createPurchase(p: CreatePurchaseParams) {
       p_shipping_cost: p.shipping_cost ?? 0,
       p_other_costs: (p.other_costs ?? []) as any,
       p_notes: p.notes ?? null,
+      p_user_id: userId ?? null,
+      p_funding_source: funding_source,
+      p_creditor_name: p.creditor_name ?? null,
+    })
+    if (error) throw error
+    ret = data
+  }
+  setTimeout(__reloadDashboard, 50)
+  return ret
+}
+
+export interface PayObligationParams {
+  obligation_id: UUID | string
+  amount: number
+  payment_method?: string
+  notes?: string
+  trans_date?: string
+  payment_ref?: string
+}
+
+export async function payObligation(p: PayObligationParams) {
+  const userId = getCurrentUserId()
+  let ret: any
+  if (!usingSupabase) {
+    ret = Demo.demoPayObligation({
+      ...p,
+      user_id: userId ?? undefined,
+    })
+  } else {
+    const { data, error } = await (supabase as any).rpc('pay_obligation', {
+      p_obligation_id: p.obligation_id,
+      p_amount: Number(p.amount),
+      p_payment_method: p.payment_method ?? 'PIX',
+      p_notes: p.notes ?? null,
+      p_trans_date: p.trans_date ?? new Date().toISOString().slice(0, 10),
+      p_payment_ref: p.payment_ref ?? null,
       p_user_id: userId ?? null,
     })
     if (error) throw error
@@ -470,10 +514,6 @@ export async function updateSale(sale_id: UUID, patch: Partial<Sale>): Promise<S
     ret = Demo.demoUpdateSale(sale_id, patch)
   } else {
     const sup: any = supabase
-    // Payload EXPLÍCITO com apenas colunas REAIS de public.sales que podem
-    // ser editadas por este serviço. Nunca espalhamos `patch` diretamente
-    // para evitar colunas que não existem no schema cache do PostgREST
-    // (ex.: "Could not find the 'notes' column of 'sales'...").
     const patchSafe: Partial<Sale> = {}
     if ('customer_name' in patch) patchSafe.customer_name = patch.customer_name
     if ('customer_phone' in patch) patchSafe.customer_phone = patch.customer_phone
@@ -498,6 +538,43 @@ export async function updateSale(sale_id: UUID, patch: Partial<Sale>): Promise<S
   }
   setTimeout(__reloadDashboard, 50)
   return ret
+}
+
+export async function listObligationsPendentes(): Promise<ObligationRow[]> {
+  if (!usingSupabase) return Demo.demoListObligationsPendentes()
+  const sup: any = supabase
+  const STATUS_NAO_PENDENTES = ['PAGO', 'CANCELADO'] as const
+  const mapRow = (d: any): ObligationRow => ({
+    id: d.id,
+    creditor_name: String(d.creditor_name ?? d.credor ?? d.creditor ?? 'Credor'),
+    description: d.description ?? d.descricao ?? null,
+    amount: Number(d.amount ?? d.valor ?? 0),
+    status: (['PENDENTE','PAGO','PARCIAL','CANCELADO'].includes(String(d.status ?? ''))
+      ? String(d.status) as any
+      : 'PENDENTE'),
+    category: d.category ?? d.categoria ?? undefined,
+    due_date: d.due_date ?? d.data_vencimento ?? null,
+    notes: d.notes ?? d.observacoes ?? null,
+    related_purchase_id: d.related_purchase_id ?? d.purchase_entry_id ?? null,
+  })
+  try {
+    const { data, error } = await sup
+      .from('v_dashboard_obligations')
+      .select('*')
+      .order('creditor_name', { ascending: true } as any)
+    if (!error && Array.isArray(data)) {
+      return data.filter((d: any) => !(STATUS_NAO_PENDENTES as readonly string[]).includes(String(d.status ?? ''))).map(mapRow)
+    }
+  } catch (e: any) {
+    console.warn('[services] v_dashboard_obligations indisponível, fallback tabela obligations:', e?.message ?? String(e))
+  }
+  const { data, error } = await sup
+    .from('obligations')
+    .select('*')
+    .not('status', 'in', `(${STATUS_NAO_PENDENTES.join(',')})`)
+    .order('creditor_name', { ascending: true } as any)
+  if (error) { console.error('[services] listObligationsPendentes error:', error); throw error }
+  return (data ?? []).map(mapRow)
 }
 
 export async function updateSalePayment(payment_id: UUID, patch: Partial<SalePayment>): Promise<SalePayment | null> {

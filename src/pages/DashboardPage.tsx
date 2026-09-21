@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import {
   Calendar, DollarSign, TrendingUp, Package, ShoppingCart, Receipt,
   ArrowUpRight, ArrowDownRight, Filter, AlertTriangle, ChevronDown, AlertCircle,
-  CreditCard, Wallet, Clock
+  CreditCard, Wallet, Clock, Check, X
 } from 'lucide-react'
 import {
   formatCurrency, formatPercent, formatDate, rangePresets,
@@ -10,11 +10,11 @@ import {
 } from '@/lib/format'
 import {
   dashboardStockSummary, dashboardSales, dashboardFinancial,
-  listSalePaymentsBySaleIds
+  listSalePaymentsBySaleIds, listObligationsPendentes, payObligation, dispatchInvalidateAll
 } from '@/services'
 import type {
   DashboardStockSummary, DashboardSaleRow, DashboardFinancialRow,
-  SalePayment, UUID
+  SalePayment, UUID, ObligationRow
 } from '@/types/supabase'
 import { Link } from 'react-router-dom'
 
@@ -30,16 +30,30 @@ export default function DashboardPage() {
   const [salesRows, setSalesRows] = useState<DashboardSaleRow[]>([])
   const [finRows, setFinRows] = useState<DashboardFinancialRow[]>([])
   const [salePayments, setSalePayments] = useState<SalePayment[]>([])
+  const [obligationsRows, setObligationsRows] = useState<ObligationRow[]>([])
 
   const [loadingStock, setLoadingStock] = useState(true)
   const [loadingSales, setLoadingSales] = useState(true)
   const [loadingFin, setLoadingFin] = useState(true)
   const [loadingPayments, setLoadingPayments] = useState(false)
+  const [loadingOblig, setLoadingOblig] = useState(true)
 
   const [stockError, setStockError] = useState<string | null>(null)
   const [salesError, setSalesError] = useState<string | null>(null)
   const [finError, setFinError] = useState<string | null>(null)
   const [paymentsError, setPaymentsError] = useState<string | null>(null)
+  const [obligError, setObligError] = useState<string | null>(null)
+
+  const [showPayModal, setShowPayModal] = useState(false)
+  const [paySelectedObligationId, setPaySelectedObligationId] = useState<string>('')
+  const [payAmount, setPayAmount] = useState<string>('')
+  const [payMethod, setPayMethod] = useState<string>('PIX')
+  const [payRef, setPayRef] = useState<string>('')
+  const [payNotes, setPayNotes] = useState<string>('')
+  const [payDate, setPayDate] = useState<string>(new Date().toISOString().slice(0, 10))
+  const [payLoading, setPayLoading] = useState(false)
+  const [payActionError, setPayActionError] = useState<string | null>(null)
+  const [paySuccessMsg, setPaySuccessMsg] = useState<string | null>(null)
 
   const [loadTick, setLoadTick] = useState(0)
 
@@ -95,6 +109,19 @@ export default function DashboardPage() {
 
   useEffect(() => {
     let cancelled = false
+    setLoadingOblig(true); setObligError(null)
+    listObligationsPendentes()
+      .then(d => { if (!cancelled) setObligationsRows(d) })
+      .catch(err => {
+        console.error('[Dashboard] obrigações pendentes falhou:', err)
+        if (!cancelled) setObligError(err?.message ?? String(err))
+      })
+      .finally(() => { if (!cancelled) setLoadingOblig(false) })
+    return () => { cancelled = true }
+  }, [loadTick])
+
+  useEffect(() => {
+    let cancelled = false
     const ids: UUID[] = salesRows
       .map(r => (r as any).sale_id ?? (r as any).id)
       .filter(Boolean) as UUID[]
@@ -118,7 +145,10 @@ export default function DashboardPage() {
 
   const kpis = useMemo(() => {
     const rows = salesRows
-    const faturamento = rows.reduce((s, v) => s + Number(v.revenue ?? 0), 0)
+    const faturamento = rows.reduce((s, v) => {
+      const tc = Number((v as any).total_customer ?? 0)
+      return s + (tc > 0 ? tc : Number(v.revenue ?? 0))
+    }, 0)
     const recebido = rows.reduce((s, v) => s + Number(v.amount_received ?? 0), 0)
     const aReceber = rows.reduce((s, v) => s + Number(v.amount_receivable ?? 0), 0)
 
@@ -129,7 +159,7 @@ export default function DashboardPage() {
     const custoEmbalagens = rows.reduce((s, v) => s + Number(v.packaging_cost ?? 0), 0)
     const descontos = rows.reduce((s, v) => s + Number(v.total_discounts ?? 0), 0)
 
-    const saidasVenda = custoMerc + custoAlloc + custoFrete + custoTaxas + custoEmbalagens + descontos
+    const saidasVenda = custoMerc + custoAlloc + custoFrete + custoTaxas + custoEmbalagens
     const lucro = faturamento - saidasVenda
     const pedidos = rows.length
     const pecas = rows.reduce((s, v) => s + Number(v.pieces_sold ?? 0), 0)
@@ -198,19 +228,154 @@ export default function DashboardPage() {
   // caixa != lucro e caixa != recebido.
   // NÃO FORÇAR IGUALDADE. As duas métricas são legítimas e independentes.
   // ============================================================================
-  const { receitas, despesas, saldoCaixa } = useMemo(() => {
+  // ============================================================================
+  // CAIXA EVELINE (somente dinheiro que realmente entrou/saiu da conta operacional)
+  // ============================================================================
+  // Regra #2 e #9 do fechamento:
+  //   - payment_source = 'CAIXA_EVELINE' — movimentações da conta operacional
+  //   - CONFIRMADO apenas
+  //   - Compras pagas por Fabiana/Dona/Outro NÃO entram aqui
+  //   - Pagamento de obrigação (SAIDA) entra aqui Apenas quando o dinheiro realmente sai
+  //
+  // Fallback por enquanto: se payment_source for NULL (histórico antes da coluna existir),
+  // inclui no cálculo como CAIXA_EVELINE para não quebrar leitura.
+  // Quando a correção histórica das compras Fabi for aplicada, o payment_source
+  // será definido em todas as transações e o fallback não importará mais.
+  // ============================================================================
+  // ============================================================================
+  // CAIXA EVELINE (somente dinheiro que realmente entrou/saiu da conta operacional)
+  // ============================================================================
+  // REGRA DEFINITIVA item 3:
+  //   - Somente movimentações com payment_source === 'CAIXA_EVELINE' entram no saldo.
+  //   - NULL, vazio ou NAO_INFORMADO NÃO são considerados Caixa Eveline.
+  //   - Estes aparecem no Bloco V (Pendências de classificação).
+  // ============================================================================
+  const { receitas, despesas, saldoCaixa, movimentosEvelineCount, naoInformado } = useMemo(() => {
     let r = 0, d = 0
+    let cnt = 0
+    const niList: DashboardFinancialRow[] = []
     for (const t of finRows) {
       if (t.status !== 'CONFIRMADO') continue
-      const amt = Number(t.amount ?? 0)
-      if (t.trans_type === 'ENTRADA' && amt > 0) r += amt
-      if (t.trans_type === 'SAIDA') d += Math.max(0, Math.abs(amt))
+      const psRaw = String(t.payment_source ?? '').trim()
+      const ps = psRaw.toUpperCase()
+      if (ps === 'CAIXA_EVELINE') {
+        const amt = Number(t.amount ?? 0)
+        if (t.trans_type === 'ENTRADA' && amt > 0) r += amt
+        if (t.trans_type === 'SAIDA') d += Math.max(0, Math.abs(amt))
+        cnt += 1
+      } else if (ps === '' || ps === 'NAO_INFORMADO' || psRaw === null || psRaw === undefined) {
+        niList.push(t)
+      }
     }
-    return { receitas: r, despesas: d, saldoCaixa: r - d }
+    const saldo = r - d
+    return { receitas: r, despesas: d, saldoCaixa: saldo, movimentosEvelineCount: cnt, naoInformado: niList }
   }, [finRows])
 
+  const caixaProjetado = Number(saldoCaixa ?? 0) + Number(kpis.aReceber ?? 0)
+  const potencialFinanceiroTotal = caixaProjetado + Number(stock?.total_sales_potential ?? 0)
+
+  const obrigacoes = useMemo(() => {
+    const byCredor = new Map<string, { creditor: string; total: number; count: number }>()
+    let total = 0
+    for (const o of obligationsRows) {
+      const amt = Number(o.amount ?? 0)
+      if (amt <= 0) continue
+      total += amt
+      const name = (o.creditor_name || 'Sem credor').toString().trim()
+      const prev = byCredor.get(name) ?? { creditor: name, total: 0, count: 0 }
+      prev.total += amt
+      prev.count += 1
+      byCredor.set(name, prev)
+    }
+    return {
+      total,
+      linhas: Array.from(byCredor.values()).sort((a, b) => b.total - a.total)
+    }
+  }, [obligationsRows])
+
   const recentSales = [...salesRows].slice(0, 8)
-  const loadingAny = loadingStock || loadingSales || loadingFin || loadingPayments
+  const loadingAny = loadingStock || loadingSales || loadingFin || loadingPayments || loadingOblig
+
+  function openPayModal() {
+    const first = obligationsRows.filter(o => o.status !== 'PAGO' && o.status !== 'CANCELADO')[0]
+    setPaySelectedObligationId(first ? String(first.id) : '')
+    if (first) {
+      const remaining = Number(first.remaining_balance ?? first.amount ?? 0)
+      setPayAmount(remaining > 0 ? remaining.toFixed(2) : '')
+    } else {
+      setPayAmount('')
+    }
+    setPayMethod('PIX')
+    setPayRef('')
+    setPayNotes('')
+    setPayDate(new Date().toISOString().slice(0, 10))
+    setPayActionError(null)
+    setPaySuccessMsg(null)
+    setPayLoading(false)
+    setShowPayModal(true)
+  }
+
+  function onSelectObligationChange(oid: string) {
+    setPaySelectedObligationId(oid)
+    const obl = obligationsRows.find(o => String(o.id) === oid)
+    if (obl) {
+      const remaining = Number(obl.remaining_balance ?? obl.amount ?? 0)
+      setPayAmount(remaining > 0 ? remaining.toFixed(2) : '')
+    }
+    setPayActionError(null)
+    setPaySuccessMsg(null)
+  }
+
+  async function handleSubmitPay(e: React.FormEvent) {
+    e.preventDefault()
+    const amtRaw = Number(payAmount.replace(',', '.'))
+    if (!paySelectedObligationId) {
+      setPayActionError('Selecione uma obrigação para pagar.')
+      return
+    }
+    if (!(amtRaw > 0)) {
+      setPayActionError('Valor inválido. Informe um valor numérico maior que zero.')
+      return
+    }
+    setPayLoading(true)
+    setPayActionError(null)
+    setPaySuccessMsg(null)
+    try {
+      const res = await payObligation({
+        obligation_id: paySelectedObligationId,
+        amount: amtRaw,
+        payment_method: payMethod || undefined,
+        payment_ref: payRef.trim() || undefined,
+        notes: payNotes.trim() || undefined,
+        trans_date: payDate || undefined,
+      })
+      if (res && typeof res === 'object') {
+        const anyRes = res as any
+        if (anyRes.ok === false && anyRes.idempotent === true) {
+          setPaySuccessMsg('Pagamento já registrado anteriormente (idempotente). Nenhuma duplicidade criada.')
+        } else if (anyRes.ok === false) {
+          setPayActionError(String(anyRes.error ?? 'Falha ao registrar pagamento.'))
+          setPayLoading(false)
+          return
+        } else {
+          setPaySuccessMsg(
+            'Pagamento de ' + formatCurrency(amtRaw) + ' registrado. ' +
+            'Saldo restante: ' + formatCurrency(Number(anyRes.remaining_balance ?? 0)) + '.'
+          )
+        }
+      } else {
+        setPaySuccessMsg('Pagamento registrado com sucesso.')
+      }
+      dispatchInvalidateAll()
+      setTimeout(() => {
+        setShowPayModal(false)
+      }, 1400)
+    } catch (err: any) {
+      setPayActionError(err?.message ?? String(err ?? 'Erro desconhecido ao pagar obrigação.'))
+    } finally {
+      setPayLoading(false)
+    }
+  }
 
   return (
     <div className="space-y-5 pb-4 sm:pb-6">
@@ -248,54 +413,140 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      {/* KPIs primários — max 4 cols no desktop pra não vazar conteúdo */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
-        <KpiCard label="Faturamento" value={salesError ? 'Erro' : formatCurrency(kpis.faturamento)}
-          icon={<DollarSign className="w-5 h-5" />} tone={salesError ? 'rose' : 'brand'}
-          sub={salesError ? salesError.slice(0, 30) : pluralize(kpis.pedidos, 'pedido')} />
-        <KpiCard label="Recebido" value={salesError ? 'Erro' : formatCurrency(kpis.recebido)}
-          icon={<Wallet className="w-5 h-5" />} tone={salesError ? 'rose' : 'emerald'}
-          sub={salesError ? '-' : 'confirmado nas vendas'} />
-        <KpiCard label="A receber" value={salesError ? 'Erro' : formatCurrency(kpis.aReceber)}
-          icon={<Clock className="w-5 h-5" />} tone={salesError ? 'rose' : 'amber'}
-          sub={salesError ? '-' : (kpis.aReceber > 0 ? 'pendente de entrada' : 'em dia')} />
-        <KpiCard label="Lucro real" value={salesError ? 'Erro' : formatCurrency(kpis.lucro)}
-          icon={<TrendingUp className="w-5 h-5" />} tone={salesError ? 'rose' : (kpis.lucro >= 0 ? 'emerald' : 'rose')}
-          sub={salesError ? 'Consulte o log' : formatPercent(kpis.margem) + ' margem'} />
-        <KpiCard label="Margem %" value={salesError ? 'Erro' : formatPercent(kpis.margem, 1)}
-          icon={<Receipt className="w-5 h-5" />} tone={salesError ? 'rose' : 'violet'}
-          sub={salesError ? '-' : (kpis.faturamento ? `sobre ${formatCurrency(kpis.faturamento)}` : 'sem vendas')} />
-        <KpiCard label="Pedidos" value={salesError ? 'Erro' : String(kpis.pedidos)}
-          icon={<ShoppingCart className="w-5 h-5" />} tone={salesError ? 'rose' : 'ink'}
-          sub={salesError ? '-' : pluralize(kpis.pedidos, 'pedido efetuado')} />
-        <KpiCard label="Peças vendidas" value={salesError ? 'Erro' : String(kpis.pecas)}
-          icon={<Package className="w-5 h-5" />} tone={salesError ? 'rose' : 'blue'}
-          sub={salesError ? '-' : (kpis.pedidos ? `média ${(kpis.pecas / kpis.pedidos).toFixed(1)}/pedido` : '-')} />
-        <KpiCard label="Ticket médio" value={salesError ? 'Erro' : formatCurrency(kpis.ticketMedio)}
-          icon={<ArrowUpRight className="w-5 h-5" />} tone={salesError ? 'rose' : 'amber'}
-          sub={salesError ? '-' : pluralize(kpis.pedidos, 'pedido considerados')} />
-      </div>
-
-      {/* Custos detalhados + Caixa */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
-        <div className="card p-5 lg:col-span-2">
-          <div className="flex items-center justify-between mb-4">
-            <h3 className="font-bold text-ink-800">Composição dos custos no período</h3>
-            <span className="chip bg-ink-100 text-ink-600">
-              {loadingSales ? 'Carregando…' : pluralize(salesRows.length, 'venda')}
-            </span>
-          </div>
-
-          {salesError && (
-            <div className="mb-3 p-3 rounded-xl border border-rose-200 bg-rose-50 text-rose-800 text-xs">
-              <div className="font-bold flex items-center gap-1.5"><AlertCircle className="w-3.5 h-3.5" /> Erro ao carregar vendas</div>
-              <div className="mt-0.5 opacity-90 break-words">{salesError}</div>
+      {/* ============================================================
+          BLOCO I · CAIXA + PROJEÇÃO
+          ============================================================ */}
+      <section>
+        <div className="flex items-center gap-2 mb-2 px-0.5">
+          <div className="w-1.5 h-5 rounded-full bg-emerald-600" />
+          <h2 className="font-black text-ink-900 tracking-tight">I · Caixa & Projeção</h2>
+          <span className="chip bg-emerald-50 text-emerald-700 text-[10px] font-bold uppercase tracking-[0.14em]">
+            Cash basis + recebíveis
+          </span>
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+          <div className="flex flex-col justify-between p-4 rounded-card bg-gradient-to-br from-emerald-500 to-emerald-700 text-white shadow-sm">
+            <div className="flex items-center justify-between mb-3">
+              <div className="flex items-center gap-2">
+                <div className="w-9 h-9 rounded-xl bg-white/10 flex items-center justify-center">
+                  <Wallet className="w-4.5 h-4.5" />
+                </div>
+                <div>
+                  <div className="text-[11px] font-bold uppercase tracking-[0.12em] text-white/75">Saldo em caixa</div>
+                  <div className="text-[10px] text-white/60 mt-0.5">CAIXA_EVELINE · CONFIRMADO</div>
+                </div>
+              </div>
             </div>
-          )}
+            <div className="text-2xl sm:text-3xl font-black num tracking-tight">
+              {finError ? '—' : formatCurrency(saldoCaixa)}
+            </div>
+            <div className="mt-2 text-[10px] text-white/70 flex items-center justify-between">
+              <span>Entradas {finError ? '—' : formatCurrency(receitas)}</span>
+              <span>Saídas {finError ? '—' : formatCurrency(despesas)}</span>
+            </div>
+          </div>
+          <div className="flex flex-col justify-between p-4 rounded-card bg-white border border-ink-200 shadow-sm">
+            <div className="flex items-center gap-2 mb-3">
+              <div className="w-9 h-9 rounded-xl bg-amber-500/10 flex items-center justify-center text-amber-700">
+                <Clock className="w-4.5 h-4.5" />
+              </div>
+              <div>
+                <div className="text-[11px] font-bold uppercase tracking-[0.12em] text-ink-500">A receber</div>
+                <div className="text-[10px] text-ink-400 mt-0.5">vendas realizadas</div>
+              </div>
+            </div>
+            <div className="text-2xl sm:text-3xl font-black num tracking-tight text-amber-700">
+              {salesError ? '—' : formatCurrency(kpis.aReceber)}
+            </div>
+            <div className="mt-2 text-[10px] text-ink-400">
+              Não entrou no caixa ainda. Contabiliza no resultado.
+            </div>
+          </div>
+          <div className="flex flex-col justify-between p-4 rounded-card bg-gradient-to-br from-sky-500 to-brand-600 text-white shadow-sm">
+            <div className="flex items-center gap-2 mb-3">
+              <div className="w-9 h-9 rounded-xl bg-white/10 flex items-center justify-center">
+                <TrendingUp className="w-4.5 h-4.5" />
+              </div>
+              <div>
+                <div className="text-[11px] font-bold uppercase tracking-[0.12em] text-white/75">Caixa projetado</div>
+                <div className="text-[10px] text-white/60 mt-0.5">caixa + a receber</div>
+              </div>
+            </div>
+            <div className="text-2xl sm:text-3xl font-black num tracking-tight">
+              {(finError || salesError) ? '—' : formatCurrency(caixaProjetado)}
+            </div>
+            <div className="mt-2 text-[10px] text-white/70">
+              Projeção — não é saldo bancário.
+            </div>
+          </div>
+          <div className="flex flex-col justify-between p-4 rounded-card bg-white border border-ink-200 shadow-sm">
+            <div className="flex items-center gap-2 mb-3">
+              <div className="w-9 h-9 rounded-xl bg-violet-500/10 flex items-center justify-center text-violet-700">
+                <Package className="w-4.5 h-4.5" />
+              </div>
+              <div>
+                <div className="text-[11px] font-bold uppercase tracking-[0.12em] text-ink-500">Potencial financeiro total</div>
+                <div className="text-[10px] text-ink-400 mt-0.5">proj. + estoque</div>
+              </div>
+            </div>
+            <div className="text-2xl sm:text-3xl font-black num tracking-tight text-violet-700">
+              {(finError || salesError) ? '—' : formatCurrency(potencialFinanceiroTotal)}
+            </div>
+            <div className="mt-2 text-[10px] text-ink-400">
+              Projeção: caixa + receber + potencial estoque.
+            </div>
+          </div>
+        </div>
+        <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+          <div className="text-[10px] px-3 py-2 rounded-lg bg-ink-50 text-ink-500 border border-ink-100 leading-relaxed">
+            <b className="text-ink-700">Dinheiro disponível hoje:</b><br />
+            Somente o Saldo em Caixa (1º card). Projeções não são dinheiro real.
+          </div>
+          <div className="text-[10px] px-3 py-2 rounded-lg bg-amber-50 text-amber-800 border border-amber-100 leading-relaxed">
+            <b>Recebíveis:</b><br />
+            Não entram no caixa até aparecerem em <code>financial_transactions</code> CONFIRMADO.
+          </div>
+          <div className="text-[10px] px-3 py-2 rounded-lg bg-sky-50 text-sky-800 border border-sky-100 leading-relaxed">
+            <b>Potencial estoque:</b><br />
+            <code>qtd_disponível × preço_venda</code> em produtos ativos. Não somado ao caixa projetado oficial.
+          </div>
+          <div className="text-[10px] px-3 py-2 rounded-lg bg-rose-50 text-rose-800 border border-rose-100 leading-relaxed">
+            <b>Obrigações pendentes:</b><br />
+            Não subtraem do caixa hoje. Ver Bloco IV. Quando pagas saem no Saldo em Caixa.
+          </div>
+        </div>
+      </section>
 
-          {loadingSales ? (
-            <div className="space-y-3 pt-1">
-              {Array.from({ length: 7 }).map((_, i) => (
+      {/* ============================================================
+          BLOCO II · RESULTADO DO PERÍODO (accrual)
+          ============================================================ */}
+      <section>
+        <div className="flex items-center gap-2 mb-2 px-0.5">
+          <div className="w-1.5 h-5 rounded-full bg-brand-600" />
+          <h2 className="font-black text-ink-900 tracking-tight">II · Resultado do período</h2>
+          <span className="chip bg-brand-50 text-brand-700 text-[10px] font-bold uppercase tracking-[0.14em]">
+            Faturamento − Custos = Lucro
+          </span>
+        </div>
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
+          <div className="card p-5 lg:col-span-2">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="font-bold text-ink-800">Composição do resultado</h3>
+              <span className="chip bg-ink-100 text-ink-600">
+                {loadingSales ? 'Carregando…' : pluralize(salesRows.length, 'venda')}
+              </span>
+            </div>
+
+            {salesError && (
+              <div className="mb-3 p-3 rounded-xl border border-rose-200 bg-rose-50 text-rose-800 text-xs">
+                <div className="font-bold flex items-center gap-1.5"><AlertCircle className="w-3.5 h-3.5" /> Erro ao carregar vendas</div>
+                <div className="mt-0.5 opacity-90 break-words">{salesError}</div>
+              </div>
+            )}
+
+            {loadingSales ? (
+              <div className="space-y-3 pt-1">
+                {Array.from({ length: 7 }).map((_, i) => (
                 <div key={i}>
                   <div className="flex justify-between mb-1">
                     <div className="h-3.5 w-40 bg-ink-100 rounded animate-pulse" />
@@ -304,82 +555,367 @@ export default function DashboardPage() {
                   <div className="h-2 rounded-full bg-ink-100 animate-pulse" />
                 </div>
               ))}
+              </div>
+            ) : kpis.faturamento === 0 ? (
+              <EmptyStateSmall />
+            ) : (
+              <div className="space-y-3">
+                <CostBar rows={[
+                  { label: 'Receita (total cliente, líquido de desconto)', value: kpis.faturamento, tone: 'bg-brand-600', showPercent: true, total: kpis.faturamento },
+                  { label: 'Custo das mercadorias (FIFO/CMV)', value: kpis.custoMerc, tone: 'bg-rose-500', total: kpis.faturamento },
+                  kpis.custoAlloc > 0
+                    ? { label: 'Rateio de aquisição (frete/impostos em lotes)', value: kpis.custoAlloc, tone: 'bg-rose-400', total: kpis.faturamento }
+                    : null,
+                  { label: 'Taxas de pagamento (real)', value: kpis.custoTaxas, tone: 'bg-orange-500', total: kpis.faturamento },
+                  { label: 'Embalagem gerencial (consumida)', value: kpis.custoEmbalagens, tone: 'bg-violet-500', total: kpis.faturamento },
+                  { label: 'Frete / custos extras', value: kpis.custoFrete, tone: 'bg-sky-500', total: kpis.faturamento },
+                  { label: 'Lucro real', value: kpis.lucro, tone: kpis.lucro >= 0 ? 'bg-emerald-500' : 'bg-rose-700', total: kpis.faturamento, strong: true },
+                ].filter(Boolean) as any} />
+                <div className="mt-4 pt-3 border-t border-ink-100 text-[11px] text-ink-500 leading-relaxed grid grid-cols-1 sm:grid-cols-2 gap-x-4">
+                  <span>Descontos concedidos no período: <b className="text-ink-700 num">{formatCurrency(kpis.descontos)}</b> — já abatidos no faturamento (não é custo).</span>
+                  <span>Embalagem gerencial ≠ saída de caixa (dinheiro já saiu quando foram compradas).</span>
+                </div>
+              </div>
+            )}
+          </div>
+
+          <div className="card p-5 space-y-4">
+            <div className="flex items-center justify-between mb-1">
+              <h3 className="font-bold text-ink-800">KPIs de resultado</h3>
             </div>
-          ) : kpis.faturamento === 0 ? (
-            <EmptyStateSmall />
-          ) : (
-            <div className="space-y-3">
-              <CostBar rows={[
-                { label: 'Receita (total cliente)', value: kpis.faturamento, tone: 'bg-brand-600', showPercent: true, total: kpis.faturamento },
-                { label: 'Custo das mercadorias (FIFO)', value: kpis.custoMerc, tone: 'bg-rose-500', total: kpis.faturamento },
-                kpis.custoAlloc > 0
-                  ? { label: 'Rateio compras (impostos/frete)', value: kpis.custoAlloc, tone: 'bg-rose-400', total: kpis.faturamento }
-                  : null,
-                { label: 'Taxas de pagamento (real)', value: kpis.custoTaxas, tone: 'bg-orange-500', total: kpis.faturamento },
-                { label: 'Embalagens (real)', value: kpis.custoEmbalagens, tone: 'bg-violet-500', total: kpis.faturamento },
-                { label: 'Frete / custos extras', value: kpis.custoFrete, tone: 'bg-sky-500', total: kpis.faturamento },
-                { label: 'Descontos concedidos', value: kpis.descontos, tone: 'bg-amber-500', total: kpis.faturamento },
-                { label: 'Lucro real', value: kpis.lucro, tone: kpis.lucro >= 0 ? 'bg-emerald-500' : 'bg-rose-700', total: kpis.faturamento, strong: true },
-              ].filter(Boolean) as any} />
+            {loadingSales ? (
+              <div className="space-y-2.5">
+                {Array.from({ length: 4 }).map((_, i) => (
+                  <div key={i} className="h-4 bg-ink-100 rounded animate-pulse w-full" />
+                ))}
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {[
+                  { k: 'Faturamento (líquido)', v: kpis.faturamento, c: 'bg-brand-600', strong: true },
+                  kpis.descontos > 0 ? { k: 'Descontos (abatidos)', v: kpis.descontos, c: 'bg-rose-600', strong: false } : null,
+                  { k: 'Pedidos', v: kpis.pedidos, c: 'bg-ink-500', strong: false, isCount: true },
+                  { k: 'Peças vendidas', v: kpis.pecas, c: 'bg-blue-500', strong: false, isCount: true },
+                  { k: 'Ticket médio', v: kpis.ticketMedio, c: 'bg-amber-500', strong: false },
+                  { k: 'Margem %', v: kpis.margem / 100, c: 'bg-emerald-600', strong: true, isPercent: true },
+                  kpis.custoMerc > 0 ? { k: 'CMV (mercadoria FIFO)', v: kpis.custoMerc, c: 'bg-rose-500', strong: false } : null,
+                  kpis.custoAlloc > 0 ? { k: 'Rateio aquisição (lotes)', v: kpis.custoAlloc, c: 'bg-rose-400', strong: false } : null,
+                  kpis.custoTaxas > 0 ? { k: 'Taxas de pagamento', v: kpis.custoTaxas, c: 'bg-orange-600', strong: false } : null,
+                  kpis.custoEmbalagens > 0 ? { k: 'Embalagem gerencial', v: kpis.custoEmbalagens, c: 'bg-violet-600', strong: false } : null,
+                  kpis.custoFrete > 0 ? { k: 'Frete / extras', v: kpis.custoFrete, c: 'bg-sky-600', strong: false } : null,
+                ].filter(Boolean).map((r: any, i) => {
+                  if (r?.isCount) {
+                    return (
+                      <div key={i} className="flex items-center justify-between">
+                        <div className="flex items-center gap-2.5">
+                          <div className={cn('w-2.5 h-2.5 rounded-full', r.c)} />
+                          <span className={cn('text-sm', r.strong ? 'font-bold text-ink-900' : 'text-ink-700')}>{r.k}</span>
+                        </div>
+                        <span className={cn('num', r.strong ? 'text-sm font-black' : 'text-sm font-semibold text-ink-800')}>
+                          {String(r.v)}
+                        </span>
+                      </div>
+                    )
+                  }
+                  if (r?.isPercent) {
+                    return (
+                      <div key={i} className="flex items-center justify-between">
+                        <div className="flex items-center gap-2.5">
+                          <div className={cn('w-2.5 h-2.5 rounded-full', r.c)} />
+                          <span className={cn('text-sm', r.strong ? 'font-bold text-ink-900' : 'text-ink-700')}>{r.k}</span>
+                        </div>
+                        <span className={cn('num', r.strong ? 'text-sm font-black text-emerald-700' : 'text-sm font-semibold text-ink-800')}>
+                          {formatPercent(r.v * 100)}
+                        </span>
+                      </div>
+                    )
+                  }
+                  return (
+                    <div key={i} className="flex items-center justify-between">
+                      <div className="flex items-center gap-2.5">
+                        <div className={cn('w-2.5 h-2.5 rounded-full', r.c)} />
+                        <span className={cn('text-sm', r.strong ? 'font-bold text-ink-900' : 'text-ink-700')}>{r.k}</span>
+                      </div>
+                      <span className={cn('num', r.strong ? 'text-sm font-black text-rose-700' : 'text-sm font-semibold text-ink-800')}>
+                        {formatCurrency(r.v)}
+                      </span>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+            <div className="pt-3 mt-2 border-t border-ink-100 text-[11px] text-ink-500 leading-relaxed">
+              Fórmula canônica do lucro:<br />
+              <code className="text-ink-700">
+                lucro = total_customer − CMV − rateio − taxa − embalagem − extras
+              </code>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* ============================================================
+          BLOCO III · ESTOQUE (atual)
+          ============================================================ */}
+      <section>
+        <div className="flex items-center gap-2 mb-2 px-0.5">
+          <div className="w-1.5 h-5 rounded-full bg-blue-600" />
+          <h2 className="font-black text-ink-900 tracking-tight">III · Estoque atual</h2>
+          <span className="chip bg-blue-50 text-blue-700 text-[10px] font-bold uppercase tracking-[0.14em]">
+            independente de período
+          </span>
+        </div>
+        <div className="card p-5">
+          <div className="flex items-center justify-between mb-4">
+            <div className="flex items-center gap-2">
+              <h3 className="font-bold text-ink-800">Resumo de estoque</h3>
+              {loadingStock && (
+                <span className="chip bg-ink-100 text-ink-500 animate-pulse">Atualizando…</span>
+              )}
+            </div>
+            <Link to="/estoque" className="text-xs font-semibold text-brand-700 hover:underline">Ver tudo →</Link>
+          </div>
+
+          {stockError && (
+            <div className="mb-4 p-3 rounded-xl border border-rose-200 bg-rose-50 text-rose-800 text-xs">
+              <div className="font-bold flex items-center gap-1.5"><AlertCircle className="w-3.5 h-3.5" /> Erro ao carregar estoque</div>
+              <div className="mt-0.5 opacity-90 break-words">{stockError}</div>
             </div>
           )}
-        </div>
 
+          {loadingStock ? (
+            <div className="space-y-2.5 mb-4">
+              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2.5">
+                {Array.from({ length: 6 }).map((_, i) => (
+                  <div key={i} className="p-3 rounded-lg bg-ink-50 border border-ink-100">
+                    <div className="h-2.5 w-24 bg-ink-200 rounded animate-pulse" />
+                    <div className="h-5 w-16 bg-ink-200 rounded mt-1 animate-pulse" />
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : stockError ? null : (
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2.5 mb-4">
+              <MiniKpi label="Peças disponíveis" value={String(stock?.total_units ?? 0)} />
+              <MiniKpi label="Custo do estoque (unit_cost + rateio)" value={formatCurrency(stock?.total_stock_cost ?? 0)} />
+              <MiniKpi label="Potencial de venda (preço × qtd)" value={formatCurrency(stock?.total_sales_potential ?? 0)} />
+              <MiniKpi label="SKUs cadastrados" value={String(stock?.total_skus ?? 0)} />
+              <MiniKpi label="Com estoque" value={String(stock?.in_stock_skus ?? 0)} />
+              <MiniKpi label="Sem estoque" value={String(stock?.out_of_stock_skus ?? 0)} />
+            </div>
+          )}
+
+          {!loadingStock && !stockError && stock && Number(stock?.total_units ?? 0) > 0 && (
+            <div className="mb-3 p-3 rounded-xl border border-amber-200 bg-amber-50 text-amber-900 text-xs">
+              <div className="font-bold flex items-center gap-1.5 mb-0.5"><AlertTriangle className="w-3.5 h-3.5" /> Conferência física (referência 21/09/2026)</div>
+              <div className="opacity-90 leading-relaxed">
+                A loja reportou <b>7 unidades/conjuntos físicos</b> em estoque. O sistema está mostrando <b>{stock?.total_units ?? 0} unidades</b>. Se esses números forem diferentes, use a tela <b>Ajuste de Estoque</b> para reconciliar. Não ajuste automaticamente — confira item por item.
+              </div>
+            </div>
+          )}
+
+          {!loadingStock && !stockError && stock && (
+            <>
+              {stock.out_of_stock_skus > 0 ? (
+                <div className="space-y-2.5">
+                  <AlertBlock
+                    icon={<AlertTriangle className="w-4 h-4" />}
+                    tone="rose"
+                    title={`${stock.out_of_stock_skus} ${pluralize(stock.out_of_stock_skus, 'produto', 'produtos')} sem estoque · ${stock.in_stock_skus ?? 0} ${pluralize(Number(stock.in_stock_skus ?? 0), 'com', 'com')}`}
+                    items={[]}
+                  />
+                </div>
+              ) : <EmptyStateSmall text="Estoque saudável, sem alertas." />}
+            </>
+          )}
+        </div>
+      </section>
+
+      {/* ============================================================
+          BLOCO IV · OBRIGAÇÕES / VALORES A RESTITUIR
+          ============================================================ */}
+      <section>
+        <div className="flex items-center justify-between gap-2 mb-2 px-0.5">
+          <div className="flex items-center gap-2">
+            <div className="w-1.5 h-5 rounded-full bg-violet-600" />
+            <h2 className="font-black text-ink-900 tracking-tight">IV · Obrigações / Valores a restituir</h2>
+            <span className="chip bg-violet-50 text-violet-700 text-[10px] font-bold uppercase tracking-[0.14em]">
+              Não reduz caixa enquanto PENDENTE
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={openPayModal}
+            disabled={obrigacoes.linhas.length === 0 || loadingOblig}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-violet-600 hover:bg-violet-700 disabled:bg-violet-300 disabled:cursor-not-allowed text-white text-[12px] font-bold transition-colors shadow-sm"
+          >
+            <Check className="w-3.5 h-3.5" />
+            Pagar obrigação
+          </button>
+        </div>
+        <div className="card p-5 space-y-3">
+          {obligError && (
+            <div className="mb-2 p-3 rounded-xl border border-rose-200 bg-rose-50 text-rose-800 text-xs">
+              <div className="font-bold flex items-center gap-1.5"><AlertCircle className="w-3.5 h-3.5" /> Erro ao carregar obrigações</div>
+              <div className="mt-0.5 opacity-90 break-words">{obligError}</div>
+            </div>
+          )}
+          {loadingOblig ? (
+            <div className="space-y-2.5">
+              {Array.from({ length: 3 }).map((_, i) => (
+                <div key={i} className="h-9 bg-ink-100 rounded animate-pulse w-full" />
+              ))}
+            </div>
+          ) : obrigacoes.linhas.length === 0 ? (
+            <EmptyStateSmall text="Sem obrigações pendentes conhecidas." />
+          ) : (
+            <>
+              <div className="space-y-2.5">
+                {obrigacoes.linhas.map(l => {
+                  const pct = obrigacoes.total ? (l.total / obrigacoes.total) * 100 : 0
+                  return (
+                    <div key={l.creditor}>
+                      <div className="flex justify-between items-baseline text-sm mb-1">
+                        <span className="font-semibold text-ink-800 truncate flex items-center gap-1.5">
+                          <Wallet className="w-3.5 h-3.5 text-violet-500" />
+                          <span className="max-w-[200px] truncate">{l.creditor}</span>
+                        </span>
+                        <span className="num text-xs text-ink-500">{pluralize(l.count, 'lançamento')} · {formatPercent(pct, 0)}</span>
+                      </div>
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="flex-1 h-2 rounded-full bg-violet-100 overflow-hidden">
+                          <div className="h-full bg-violet-600 rounded-full" style={{ width: `${Math.min(pct, 100)}%` }} />
+                        </div>
+                        <span className="text-sm font-bold text-ink-900 num min-w-[80px] text-right">{formatCurrency(l.total)}</span>
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+              <div className="pt-3 mt-1 border-t border-ink-100">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-bold uppercase tracking-[0.1em] text-violet-700">Total obrigações pendentes</span>
+                  <span className="text-lg font-black num text-ink-900">{formatCurrency(obrigacoes.total)}</span>
+                </div>
+              </div>
+            </>
+          )}
+          <p className="text-[11px] text-ink-500 leading-relaxed pt-1">
+            Quando forem efetivamente pagas → registrar SAÍDA financeira CONFIRMADA <b>naquele momento</b>.
+            Não compõem caixa atual, NÃO reduzem lucro da mercadoria (custo já contabilizado no estoque/CMV).
+          </p>
+        </div>
+      </section>
+
+      {/* ============================================================
+          BLOCO V · PENDÊNCIAS DE CLASSIFICAÇÃO
+          ============================================================ */}
+      <section>
+        <div className="flex items-center gap-2 mb-2 px-0.5">
+          <div className="w-1.5 h-5 rounded-full bg-rose-500" />
+          <h2 className="font-black text-ink-900 tracking-tight">V · Movimentações a classificar</h2>
+          <span className="chip bg-rose-50 text-rose-700 text-[10px] font-bold uppercase tracking-[0.14em]">
+            payment_source vazio / NAO_INFORMADO
+          </span>
+        </div>
         <div className="card p-5 space-y-4">
-          <h3 className="font-bold text-ink-800">Caixa no período</h3>
           {finError && (
             <div className="p-3 rounded-xl border border-rose-200 bg-rose-50 text-rose-800 text-xs">
-              <div className="font-bold flex items-center gap-1.5"><AlertCircle className="w-3.5 h-3.5" /> Erro ao carregar caixa</div>
+              <div className="font-bold flex items-center gap-1.5"><AlertCircle className="w-3.5 h-3.5" /> Erro ao carregar financeiro</div>
               <div className="mt-0.5 opacity-90 break-words">{finError}</div>
             </div>
           )}
-          <div className="space-y-3">
-            <div className="flex items-center justify-between p-3 rounded-lg bg-emerald-50 border border-emerald-100">
-              <div className="flex items-center gap-2.5">
-                <div className="w-8 h-8 rounded-full bg-emerald-500/10 flex items-center justify-center text-emerald-700">
-                  <ArrowUpRight className="w-4 h-4" />
+          {!finError && (() => {
+            const rows = naoInformado
+            const entradas = rows.filter(r => r.trans_type === 'ENTRADA').reduce((s, r) => s + Number(r.amount ?? 0), 0)
+            const saidas = rows.filter(r => r.trans_type === 'SAIDA').reduce((s, r) => s + Number(r.amount ?? 0), 0)
+            return (
+              <>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  <div className="flex items-center justify-between p-3 rounded-lg bg-rose-50 border border-rose-100">
+                    <div>
+                      <div className="text-xs text-rose-700 font-semibold">Movimentações pendentes</div>
+                      <div className="text-xs text-rose-600/80 mt-0.5">NÃO entram no saldo oficial</div>
+                    </div>
+                    <div className="text-lg font-black text-rose-800 num">{rows.length}</div>
+                  </div>
+                  <div className="flex items-center justify-between p-3 rounded-lg bg-emerald-50 border border-emerald-100">
+                    <div>
+                      <div className="text-xs text-emerald-700 font-semibold">Entradas não classificadas</div>
+                      <div className="text-xs text-emerald-600/80 mt-0.5">precisam de origem</div>
+                    </div>
+                    <div className="text-lg font-black text-emerald-800 num">{formatCurrency(entradas)}</div>
+                  </div>
+                  <div className="flex items-center justify-between p-3 rounded-lg bg-orange-50 border border-orange-100">
+                    <div>
+                      <div className="text-xs text-orange-700 font-semibold">Saídas não classificadas</div>
+                      <div className="text-xs text-orange-600/80 mt-0.5">precisam de origem</div>
+                    </div>
+                    <div className="text-lg font-black text-orange-800 num">{formatCurrency(saidas)}</div>
+                  </div>
                 </div>
-                <div>
-                  <div className="text-xs text-emerald-700 font-semibold">Entradas</div>
-                  <div className="text-xs text-emerald-600/80">recebimentos confirmados</div>
-                </div>
-              </div>
-              <div className="text-lg font-black text-emerald-800 num">
-                {finError ? '—' : formatCurrency(receitas)}
-              </div>
-            </div>
-            <div className="flex items-center justify-between p-3 rounded-lg bg-rose-50 border border-rose-100">
-              <div className="flex items-center gap-2.5">
-                <div className="w-8 h-8 rounded-full bg-rose-500/10 flex items-center justify-center text-rose-700">
-                  <ArrowDownRight className="w-4 h-4" />
-                </div>
-                <div>
-                  <div className="text-xs text-rose-700 font-semibold">Saídas</div>
-                  <div className="text-xs text-rose-600/80">pagamentos, compras, despesas</div>
-                </div>
-              </div>
-              <div className="text-lg font-black text-rose-800 num">
-                {finError ? '—' : formatCurrency(despesas)}
-              </div>
-            </div>
-            <div className="flex items-center justify-between p-4 rounded-xl bg-gradient-to-r from-ink-900 to-brand-900 text-white">
-              <div>
-                <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-white/70">Saldo do período</div>
-                <div className="text-[11px] text-white/50 mt-0.5">apenas confirmados</div>
-              </div>
-              <div className="text-2xl font-black num">{finError ? '—' : formatCurrency(saldoCaixa)}</div>
-            </div>
-            <p className="text-[11px] text-ink-500 leading-relaxed">
-              Obs: saldo de caixa ≠ lucro. Compras de mercadoria são saída hoje, mas só viram custo na venda.
-              Movimentações PENDENTES não entram no caixa.
-            </p>
-          </div>
-        </div>
-      </div>
 
-      {/* Pagamentos + Descontos + Estoque */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
-        <div className="card p-5">
+                {rows.length === 0 ? (
+                  <EmptyStateSmall text="Nenhuma movimentação pendente. Tudo classificado corretamente." />
+                ) : (
+                  <div className="table-wrap -mx-1">
+                    <table className="table-base">
+                      <thead>
+                        <tr>
+                          <th>Data</th>
+                          <th>Tipo</th>
+                          <th>Categoria</th>
+                          <th>Descrição</th>
+                          <th className="text-right">Valor</th>
+                          <th>Vínculo</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {rows.map((r) => {
+                          const rowId = (r as any).id ?? r.financial_transaction_id ?? String(r.trans_date) + String(r.amount) + String(r.description ?? '')
+                          const amt = Number(r.amount ?? 0)
+                          const vinculo: string[] = []
+                          if ((r as any).related_sale_id) vinculo.push(`Venda: ${String((r as any).related_sale_id).slice(0, 8)}…`)
+                          if ((r as any).related_purchase_id) vinculo.push(`Compra: ${String((r as any).related_purchase_id).slice(0, 8)}…`)
+                          if ((r as any).related_obligation_id) vinculo.push(`Obrigação: ${String((r as any).related_obligation_id).slice(0, 8)}…`)
+                          return (
+                            <tr key={rowId} className="hover:bg-ink-50/50">
+                              <td className="text-ink-700 num">{formatDate(r.trans_date, true)}</td>
+                              <td>
+                                {r.trans_type === 'ENTRADA' ? (
+                                  <span className="chip bg-emerald-100 text-emerald-800">ENTRADA</span>
+                                ) : (
+                                  <span className="chip bg-rose-100 text-rose-800">SAÍDA</span>
+                                )}
+                              </td>
+                              <td className="text-ink-700 text-sm">{String(r.category ?? '—')}</td>
+                              <td className="text-ink-700 text-sm max-w-[260px] truncate">{String(r.description ?? 'Sem descrição')}</td>
+                              <td className={cn('text-right num font-bold', r.trans_type === 'ENTRADA' ? 'text-emerald-700' : 'text-rose-700')}>
+                                {formatCurrency(amt)}
+                              </td>
+                              <td className="text-xs text-ink-500">
+                                {vinculo.length ? vinculo.join(', ') : '—'}
+                              </td>
+                            </tr>
+                          )
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+
+                <p className="text-[11px] text-ink-500 leading-relaxed pt-1">
+                  Estas movimentações <b>NÃO estão</b> sendo consideradas no Saldo em Caixa (Bloco I). Para classificar uma delas, edite o registro no SQL Editor Supabase e defina <code>payment_source</code> como <code>CAIXA_EVELINE</code>, <code>FABIANA</code>, <code>DONA</code> ou <code>OUTRO</code>.
+                </p>
+              </>
+            )
+          })()}
+        </div>
+      </section>
+
+      {/* Pagamentos por método */}
+      <section className="grid grid-cols-1 lg:grid-cols-3 gap-3">
+        <div className="card p-5 lg:col-span-1">
           <div className="flex items-center justify-between mb-3">
             <div className="flex items-center gap-2">
               <h3 className="font-bold text-ink-800">Vendas por pagamento</h3>
@@ -434,97 +970,8 @@ export default function DashboardPage() {
           )}
         </div>
 
-        <div className="card p-5">
-          <h3 className="font-bold text-ink-800 mb-3">Descontos & Taxas</h3>
-          {loadingSales ? (
-            <div className="space-y-2.5">
-              {Array.from({ length: 4 }).map((_, i) => (
-                <div key={i} className="h-4 bg-ink-100 rounded animate-pulse w-full" />
-              ))}
-            </div>
-          ) : kpis.descontos === 0 && kpis.custoTaxas === 0 && kpis.custoEmbalagens === 0 && kpis.custoFrete === 0 ? (
-            <EmptyStateSmall />
-          ) : (
-            <div className="space-y-3">
-              {[
-                kpis.descontos > 0 ? { k: 'Descontos concedidos', v: kpis.descontos, c: 'bg-rose-600', strong: true } : null,
-                kpis.custoTaxas > 0 ? { k: 'Taxas de pagamento', v: kpis.custoTaxas, c: 'bg-orange-600', strong: false } : null,
-                kpis.custoEmbalagens > 0 ? { k: 'Embalagens (rateadas)', v: kpis.custoEmbalagens, c: 'bg-violet-600', strong: false } : null,
-                kpis.custoFrete > 0 ? { k: 'Frete / extras', v: kpis.custoFrete, c: 'bg-sky-600', strong: false } : null,
-              ].filter(Boolean).map((r: any) => (
-                <div key={r.k} className="flex items-center justify-between">
-                  <div className="flex items-center gap-2.5">
-                    <div className={cn('w-2.5 h-2.5 rounded-full', r.c)} />
-                    <span className={cn('text-sm', r.strong ? 'font-bold text-ink-900' : 'text-ink-700')}>{r.k}</span>
-                  </div>
-                  <span className={cn('num', r.strong ? 'text-sm font-black text-rose-700' : 'text-sm font-semibold text-ink-800')}>
-                    {formatCurrency(r.v)}
-                  </span>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-
-        <div className="card p-5">
-          <div className="flex items-center justify-between mb-3">
-            <div className="flex items-center gap-2">
-              <h3 className="font-bold text-ink-800">Resumo de estoque</h3>
-              {loadingStock && (
-                <span className="chip bg-ink-100 text-ink-500 animate-pulse">Atualizando…</span>
-              )}
-            </div>
-            <Link to="/estoque" className="text-xs font-semibold text-brand-700 hover:underline">Ver tudo →</Link>
-          </div>
-
-          {stockError && (
-            <div className="mb-4 p-3 rounded-xl border border-rose-200 bg-rose-50 text-rose-800 text-xs">
-              <div className="font-bold flex items-center gap-1.5"><AlertCircle className="w-3.5 h-3.5" /> Erro ao carregar estoque</div>
-              <div className="mt-0.5 opacity-90 break-words">{stockError}</div>
-            </div>
-          )}
-
-          {loadingStock ? (
-            <div className="space-y-2.5 mb-4">
-              <div className="grid grid-cols-2 gap-2.5">
-                {Array.from({ length: 6 }).map((_, i) => (
-                  <div key={i} className="p-3 rounded-lg bg-ink-50 border border-ink-100">
-                    <div className="h-2.5 w-24 bg-ink-200 rounded animate-pulse" />
-                    <div className="h-5 w-16 bg-ink-200 rounded mt-1 animate-pulse" />
-                  </div>
-                ))}
-              </div>
-            </div>
-          ) : stockError ? null : (
-            <div className="grid grid-cols-2 gap-2.5 mb-4">
-              <MiniKpi label="Peças disponíveis" value={String(stock?.total_units ?? 0)} />
-              <MiniKpi label="Custo do estoque" value={formatCurrency(stock?.total_stock_cost ?? 0)} />
-              <MiniKpi label="Potencial de venda" value={formatCurrency(stock?.total_sales_potential ?? 0)} />
-              <MiniKpi label="SKUs cadastrados" value={String(stock?.total_skus ?? 0)} />
-              <MiniKpi label="Com estoque" value={String(stock?.in_stock_skus ?? 0)} />
-              <MiniKpi label="Sem estoque" value={String(stock?.out_of_stock_skus ?? 0)} />
-            </div>
-          )}
-
-          {!loadingStock && !stockError && stock && (
-            <>
-              {stock.out_of_stock_skus > 0 ? (
-                <div className="space-y-2.5">
-                  <AlertBlock
-                    icon={<AlertTriangle className="w-4 h-4" />}
-                    tone="rose"
-                    title={`${stock.out_of_stock_skus} ${pluralize(stock.out_of_stock_skus, 'produto', 'produtos')} sem estoque · ${stock.in_stock_skus ?? 0} ${pluralize(Number(stock.in_stock_skus ?? 0), 'com', 'com')}`}
-                    items={[]}
-                  />
-                </div>
-              ) : <EmptyStateSmall text="Estoque saudável, sem alertas." />}
-            </>
-          )}
-        </div>
-      </div>
-
-      {/* Vendas recentes */}
-      <div className="card p-5">
+        {/* Vendas recentes */}
+        <div className="card p-5 lg:col-span-2">
         <div className="flex items-center justify-between mb-4">
           <div>
             <h3 className="font-bold text-ink-800">Vendas recentes</h3>
@@ -607,7 +1054,7 @@ export default function DashboardPage() {
                           .filter(Boolean).join(' · ') || (Number(r.amount_received ?? 0) > 0 ? 'Recebido' : '-')}
                       </td>
                       <td className="text-right num font-semibold">{String(Number(r.pieces_sold ?? 0))}</td>
-                      <td className="text-right num font-bold text-ink-900">{formatCurrency(r.revenue)}</td>
+                      <td className="text-right num font-bold text-ink-900">{formatCurrency((r as any).total_customer ?? r.revenue)}</td>
                       <td className="text-right num text-emerald-700 font-semibold">{formatCurrency(r.amount_received)}</td>
                       <td className={cn('text-right num font-semibold', Number(r.amount_receivable ?? 0) > 0 ? 'text-amber-700' : 'text-ink-400')}>
                         {formatCurrency(r.amount_receivable ?? 0)}
@@ -621,6 +1068,199 @@ export default function DashboardPage() {
           </div>
         )}
       </div>
+      </section>
+
+      {showPayModal && (
+        <div
+          className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4 bg-black/40 backdrop-blur-sm"
+          onClick={() => !payLoading && setShowPayModal(false)}
+        >
+          <div
+            className="w-full sm:max-w-lg bg-white rounded-t-2xl sm:rounded-2xl shadow-2xl overflow-hidden max-h-[92vh] overflow-y-auto"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between gap-3 px-5 py-4 border-b border-ink-100 bg-violet-50">
+              <div className="flex items-center gap-2.5 min-w-0">
+                <div className="w-9 h-9 rounded-xl bg-violet-600 flex items-center justify-center flex-shrink-0">
+                  <Check className="w-5 h-5 text-white" />
+                </div>
+                <div className="min-w-0">
+                  <h3 className="font-black text-ink-900 tracking-tight leading-none">Registrar pagamento de obrigação</h3>
+                  <p className="text-[11px] text-violet-700 mt-1">
+                    O valor será lançado como SAÍDA / PAGAMENTO_OBRIGACAO no caixa Eveline.
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => !payLoading && setShowPayModal(false)}
+                disabled={payLoading}
+                className="w-9 h-9 rounded-xl flex items-center justify-center text-ink-500 hover:text-ink-800 hover:bg-white/70 disabled:opacity-50 transition-colors flex-shrink-0"
+              >
+                <X className="w-4.5 h-4.5" />
+              </button>
+            </div>
+
+            <form onSubmit={handleSubmitPay} className="p-5 space-y-4">
+              <div>
+                <label className="block text-xs font-bold text-ink-700 mb-1.5 uppercase tracking-[0.08em]">Obrigação a pagar</label>
+                <select
+                  value={paySelectedObligationId}
+                  onChange={(e) => onSelectObligationChange(e.target.value)}
+                  disabled={payLoading}
+                  className="w-full h-12 px-3.5 rounded-xl border border-ink-200 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-violet-400 disabled:bg-ink-50 disabled:text-ink-500"
+                >
+                  <option value="">Selecione uma obrigação…</option>
+                  {obligationsRows
+                    .filter(o => o.status !== 'PAGO' && o.status !== 'CANCELADO')
+                    .map(o => {
+                      const remaining = Number(o.remaining_balance ?? o.amount ?? 0)
+                      const original = Number(o.amount ?? 0)
+                      const pctPaid = original > 0 ? Math.min(100, (Number(o.amount_paid ?? 0) / original) * 100) : 0
+                      return (
+                        <option key={String(o.id)} value={String(o.id)}>
+                          {o.creditor_name} — {formatCurrency(remaining)} restante
+                          {pctPaid > 0 ? ` (${pctPaid.toFixed(0)}% pago)` : ''}
+                          {' '}· {o.status}
+                        </option>
+                      )
+                    })
+                  }
+                </select>
+                {paySelectedObligationId && (() => {
+                  const obl = obligationsRows.find(o => String(o.id) === paySelectedObligationId)
+                  if (!obl) return null
+                  const paid = Number(obl.amount_paid ?? 0)
+                  const total = Number(obl.amount ?? 0)
+                  return (
+                    <div className="mt-2 p-3 rounded-xl bg-violet-50/60 border border-violet-100 text-[11px] text-violet-900 space-y-1">
+                      {obl.description && <div><span className="font-semibold">Motivo:</span> {obl.description}</div>}
+                      <div><span className="font-semibold">Valor original:</span> {formatCurrency(total)}</div>
+                      <div><span className="font-semibold">Já pago:</span> {formatCurrency(paid)}</div>
+                      <div><span className="font-semibold">Saldo restante:</span> {formatCurrency(Number(obl.remaining_balance ?? total - paid))}</div>
+                    </div>
+                  )
+                })()}
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-bold text-ink-700 mb-1.5 uppercase tracking-[0.08em]">Valor a pagar (R$)</label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    min="0.01"
+                    placeholder="0,00"
+                    value={payAmount}
+                    onChange={(e) => setPayAmount(e.target.value)}
+                    disabled={payLoading}
+                    className="w-full h-12 px-3.5 rounded-xl border border-ink-200 bg-white text-sm num focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-violet-400 disabled:bg-ink-50"
+                  />
+                  <p className="mt-1 text-[10px] text-ink-500">
+                    Use ponto ou vírgula para decimais. Pagamento parcial permitido.
+                  </p>
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-ink-700 mb-1.5 uppercase tracking-[0.08em]">Data do pagamento</label>
+                  <input
+                    type="date"
+                    value={payDate}
+                    onChange={(e) => setPayDate(e.target.value)}
+                    disabled={payLoading}
+                    className="w-full h-12 px-3.5 rounded-xl border border-ink-200 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-violet-400 disabled:bg-ink-50"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-bold text-ink-700 mb-1.5 uppercase tracking-[0.08em]">Forma de pagamento</label>
+                  <select
+                    value={payMethod}
+                    onChange={(e) => setPayMethod(e.target.value)}
+                    disabled={payLoading}
+                    className="w-full h-12 px-3.5 rounded-xl border border-ink-200 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-violet-400 disabled:bg-ink-50"
+                  >
+                    {['PIX','DINHEIRO','DEBITO','CREDITO','BOLETO','TRANSFERENCIA','OUTRO'].map(m => (
+                      <option key={m} value={m}>{paymentMethodLabel(m)}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-ink-700 mb-1.5 uppercase tracking-[0.08em]">
+                    Nº comprovante (opcional)
+                  </label>
+                  <input
+                    type="text"
+                    value={payRef}
+                    onChange={(e) => setPayRef(e.target.value)}
+                    disabled={payLoading}
+                    placeholder="ex: TXID do PIX, nº boleto"
+                    className="w-full h-12 px-3.5 rounded-xl border border-ink-200 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-violet-400 disabled:bg-ink-50"
+                  />
+                  <p className="mt-1 text-[10px] text-ink-500">
+                    Usado para idempotência: mesmo comprovante 2x → NÃO duplica saída.
+                  </p>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-ink-700 mb-1.5 uppercase tracking-[0.08em]">Observações (opcional)</label>
+                <textarea
+                  rows={2}
+                  value={payNotes}
+                  onChange={(e) => setPayNotes(e.target.value)}
+                  disabled={payLoading}
+                  placeholder="Ex: pagamento em dinheiro, segunda parcela, etc."
+                  className="w-full px-3.5 py-3 rounded-xl border border-ink-200 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-violet-400 disabled:bg-ink-50 resize-none"
+                />
+              </div>
+
+              {payActionError && (
+                <div className="p-3 rounded-xl border border-rose-200 bg-rose-50 text-rose-800 text-xs">
+                  <div className="font-bold flex items-center gap-1.5"><AlertCircle className="w-3.5 h-3.5" /> Não foi possível registrar</div>
+                  <div className="mt-0.5 opacity-90 break-words">{payActionError}</div>
+                </div>
+              )}
+
+              {paySuccessMsg && (
+                <div className="p-3 rounded-xl border border-emerald-200 bg-emerald-50 text-emerald-800 text-xs">
+                  <div className="font-bold flex items-center gap-1.5"><Check className="w-3.5 h-3.5" /> Sucesso</div>
+                  <div className="mt-0.5 opacity-90 break-words">{paySuccessMsg}</div>
+                </div>
+              )}
+
+              <div className="pt-1 flex items-center gap-2.5">
+                <button
+                  type="button"
+                  onClick={() => !payLoading && setShowPayModal(false)}
+                  disabled={payLoading}
+                  className="flex-1 h-12 rounded-xl border border-ink-200 bg-white text-sm font-bold text-ink-700 hover:bg-ink-50 disabled:opacity-60 transition-colors"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  disabled={payLoading || !paySelectedObligationId}
+                  className="flex-[1.5] h-12 px-4 rounded-xl bg-violet-600 hover:bg-violet-700 disabled:bg-violet-300 disabled:cursor-not-allowed text-white text-sm font-bold shadow-sm transition-colors flex items-center justify-center gap-2"
+                >
+                  {payLoading ? (
+                    <>
+                      <span className="w-4 h-4 rounded-full border-2 border-white/40 border-t-white animate-spin" />
+                      Registrando…
+                    </>
+                  ) : (
+                    <>
+                      <Check className="w-4.5 h-4.5" />
+                      Confirmar pagamento
+                    </>
+                  )}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

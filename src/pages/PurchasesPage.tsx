@@ -1,16 +1,16 @@
 import { useEffect, useMemo, useState } from 'react'
 import {
   Plus, Truck, ChevronDown, X, Trash2, Package, Calendar,
-  Building2, MapPin, Filter, DollarSign, Calculator
+  Building2, MapPin, Filter, DollarSign, Calculator, Check
 } from 'lucide-react'
 import {
   formatCurrency, cn, parseBrl, formatDate, toInputDate, formatFriendlyNumber, pluralize
 } from '@/lib/format'
 import {
   listPurchases, listAllProducts, createPurchase, getPurchaseDetail,
-  onInvalidate, dispatchInvalidate
+  onInvalidate, dispatchInvalidate, dispatchInvalidateAll
 } from '@/services'
-import type { PurchaseEntry, Product } from '@/types/supabase'
+import type { PurchaseEntry, Product, PurchaseFundingSource } from '@/types/supabase'
 import type { CreatePurchaseParams } from '@/services'
 
 type Step = 1 | 2
@@ -169,6 +169,8 @@ function NewPurchaseModal({
   const [entryDate, setEntryDate] = useState(toInputDate())
   const [origin, setOrigin] = useState('')
   const [notes, setNotes] = useState('')
+  const [fundingSource, setFundingSource] = useState<PurchaseFundingSource | string>('CAIXA_EVELINE')
+  const [creditorName, setCreditorName] = useState('')
   const [items, setItems] = useState<PurchaseItem[]>([{
     product_id: undefined, product_name: '', quantity: '1', unit_cost: '0,00'
   }])
@@ -176,6 +178,12 @@ function NewPurchaseModal({
   const [otherCosts, setOtherCosts] = useState<OtherCost[]>([])
   const [allocation, setAllocation] = useState<AllocationMethod>('quantity')
   const [saving, setSaving] = useState(false)
+  const [toast, setToast] = useState<{ type: 'ok' | 'err' | 'warn' | 'info'; msg: string } | null>(null)
+  const showFeedback = (type: 'ok' | 'err' | 'warn' | 'info', msg: string, ms = 4800) => {
+    setToast({ type, msg })
+    window.clearTimeout((showFeedback as any)._t)
+    ;(showFeedback as any)._t = window.setTimeout(() => setToast(null), ms)
+  }
 
   const itemsCalc = useMemo(() => {
     return items.map(it => {
@@ -241,7 +249,11 @@ function NewPurchaseModal({
   const submit = async () => {
     const validos = itemsCalc.filter(i => i.product_name.trim() && i.qtyNum > 0)
     if (validos.length === 0) {
-      alert('Adicione pelo menos um item válido.')
+      showFeedback('err', 'Adicione pelo menos um item válido (nome e quantidade).')
+      return
+    }
+    if (fundingSource === 'OUTRO' && !creditorName.trim()) {
+      showFeedback('err', 'Informe o nome do credor (origem "Outro").')
       return
     }
     setSaving(true)
@@ -266,16 +278,34 @@ function NewPurchaseModal({
             amount: parseBrl(c.amount),
           })),
         notes: notes.trim() || undefined,
+        funding_source: fundingSource,
+        creditor_name: (fundingSource === 'FABIANA') ? 'Fabiana'
+          : (fundingSource === 'DONA') ? 'Dona da Loja'
+          : (fundingSource === 'OUTRO') ? creditorName.trim()
+          : undefined,
       }
-      await createPurchase(params)
-      alert('Entrada registrada com sucesso!')
+      const result: any = await createPurchase(params)
       dispatchInvalidate('purchases')
       dispatchInvalidate('inventory')
       dispatchInvalidate('products')
-      onSaved()
-    } catch (e) {
+      dispatchInvalidateAll()
+
+      const total = Number(result?.total_cost ?? totalGeral)
+      if (result?.obligation_id) {
+        const cred = (fundingSource === 'FABIANA') ? 'Fabiana'
+          : (fundingSource === 'DONA') ? 'Dona da Loja'
+          : creditorName.trim() || 'credor'
+        showFeedback('warn', `Entrada registrada. Compra financiada por ${cred} (R$ ${formatCurrency(total).replace('R$ ', '')}). Obrigação pendente criada (não saiu do caixa).`)
+      } else if (result?.financial_created) {
+        showFeedback('ok', `Entrada registrada com sucesso. Saídas financeiras lançadas no caixa da Eveline (R$ ${formatCurrency(total).replace('R$ ', '')}).`)
+      } else {
+        showFeedback('info', `Entrada de estoque registrada (R$ ${formatCurrency(total).replace('R$ ', '')}).`)
+      }
+
+      setTimeout(() => onSaved(), 500)
+    } catch (e: any) {
       console.error(e)
-      alert('Erro ao registrar entrada.')
+      showFeedback('err', `Erro ao registrar entrada: ${e?.message ?? String(e)}`)
     } finally {
       setSaving(false)
     }
@@ -315,6 +345,41 @@ function NewPurchaseModal({
         </div>
 
         <div className="flex-1 overflow-y-auto p-5 space-y-4">
+          {toast && (
+            <div
+              role="status"
+              className={cn(
+                'rounded-xl border shadow-sm px-4 py-3 flex items-start gap-3 animate-in fade-in slide-in-from-top-2',
+                toast.type === 'ok'
+                  ? 'bg-emerald-50 border-emerald-200 text-emerald-900'
+                  : toast.type === 'warn'
+                  ? 'bg-amber-50 border-amber-200 text-amber-900'
+                  : toast.type === 'info'
+                  ? 'bg-sky-50 border-sky-200 text-sky-900'
+                  : 'bg-rose-50 border-rose-200 text-rose-900'
+              )}
+            >
+              <Check className={cn('w-5 h-5 flex-shrink-0 mt-0.5',
+                toast.type === 'ok' ? 'text-emerald-600'
+                  : toast.type === 'warn' ? 'text-amber-600'
+                  : toast.type === 'info' ? 'text-sky-600'
+                  : 'text-rose-600')} />
+              <div className="min-w-0 flex-1">
+                <div className="text-sm font-bold leading-snug">
+                  {toast.type === 'ok' ? 'Sucesso' : toast.type === 'warn' ? 'Atenção' : toast.type === 'info' ? 'Informação' : 'Ops'}
+                </div>
+                <div className="text-sm mt-0.5 break-words">{toast.msg}</div>
+              </div>
+              <button
+                onClick={() => setToast(null)}
+                className="btn-ghost !p-1.5 flex-shrink-0"
+                aria-label="Fechar aviso"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          )}
+
           {step === 1 && (
             <div className="space-y-4 max-w-xl mx-auto py-4">
               <div>
@@ -339,6 +404,76 @@ function NewPurchaseModal({
                     placeholder="Ex: São Paulo / SP" />
                 </div>
               </div>
+
+              <div className="card !p-4 space-y-3 bg-gradient-to-br from-ink-50/60 to-white">
+                <h4 className="font-bold text-ink-900 flex items-center gap-2">
+                  <DollarSign className="w-4 h-4 text-brand-700" />
+                  Quem pagou esta compra? (Origem do dinheiro)
+                </h4>
+                <p className="text-xs text-ink-500 -mt-1.5">
+                  Controla se esta compra reduz o caixa da Eveline hoje ou se gera uma obrigação a restituir depois.
+                  Estoques, FIFO, CMV e lucro funcionam IGUAL em qualquer opção.
+                </p>
+                <div className="space-y-2">
+                  {([
+                    { k: 'CAIXA_EVELINE' as const, title: '💰 Caixa Operacional da Eveline', desc: 'Dinheiro da conta operacional. SAÍDA real do caixa hoje.' },
+                    { k: 'FABIANA' as const, title: 'Fabiana (💰 dinheiro dela)', desc: 'NÃO sai do caixa hoje. Vira obrigação pendente a restituir.' },
+                    { k: 'DONA' as const, title: 'Dona da Loja (💰 dinheiro da sócia)', desc: 'NÃO sai do caixa hoje. Vira obrigação pendente.' },
+                    { k: 'OUTRO' as const, title: 'Outro credor / terceiro', desc: 'Informar o nome abaixo. NÃO sai do caixa hoje. Vira obrigação.' },
+                  ]).map(opt => (
+                    <label key={opt.k} className={cn(
+                      'flex items-start gap-3 p-3 rounded-lg border cursor-pointer transition',
+                      fundingSource === opt.k
+                        ? 'border-brand-500 bg-brand-50/50 ring-1 ring-brand-200'
+                        : 'border-ink-200 hover:bg-ink-50'
+                    )}>
+                      <input type="radio" className="mt-1 accent-brand-900"
+                        checked={fundingSource === opt.k}
+                        onChange={() => setFundingSource(opt.k)} />
+                      <div className="flex-1 min-w-0">
+                        <div className="text-sm font-bold text-ink-900">{opt.title}</div>
+                        <div className="text-xs text-ink-500 mt-0.5">{opt.desc}</div>
+                      </div>
+                    </label>
+                  ))}
+                </div>
+
+                {fundingSource === 'OUTRO' && (
+                  <div>
+                    <label className="label text-sm">Nome do credor *</label>
+                    <input
+                      className="input"
+                      value={creditorName}
+                      onChange={e => setCreditorName(e.target.value)}
+                      placeholder="Ex: Carlos (fornecedor emprestou o valor) / Família etc."
+                    />
+                  </div>
+                )}
+
+                {fundingSource === 'CAIXA_EVELINE' ? (
+                  <div className="rounded-lg border border-sky-200 bg-sky-50/70 px-3.5 py-2.5 text-xs text-sky-900 space-y-0.5">
+                    <div className="font-bold">ℹ️ Efeito financeiro imediato</div>
+                    <div>Esta compra irá gerar automaticamente <b>saídas reais</b> de caixa em financeiro (estoque + frete + outros), reduzindo o saldo da conta operacional hoje.</div>
+                  </div>
+                ) : fundingSource === 'OUTRO' ? (
+                  <div className="rounded-lg border border-amber-200 bg-amber-50/70 px-3.5 py-2.5 text-xs text-amber-900 space-y-0.5">
+                    <div className="font-bold">⚠️ Compra financiada por terceiro</div>
+                    <div>
+                      NÃO será lançada como saída do caixa agora. Irá aparecer automaticamente no <b>Dashboard · Bloco Obrigações Pendentes</b> no valor total de <b>{formatCurrency(totalGeral)}</b>.
+                    </div>
+                    <div>Quando devolver o dinheiro, execute <b>“Pagar obrigação”</b> para lançar a saída NAQUELE MOMENTO.</div>
+                  </div>
+                ) : (
+                  <div className="rounded-lg border border-amber-200 bg-amber-50/70 px-3.5 py-2.5 text-xs text-amber-900 space-y-0.5">
+                    <div className="font-bold">⚠️ Compra financiada por <b>{fundingSource === 'FABIANA' ? 'Fabiana' : 'Dona da Loja'}</b></div>
+                    <div>
+                      NÃO será lançada como saída do caixa agora. Irá aparecer automaticamente no <b>Dashboard · Bloco Obrigações Pendentes</b> no valor total de <b>{formatCurrency(totalGeral)}</b>.
+                    </div>
+                    <div>Quando devolver o dinheiro, execute <b>“Pagar obrigação”</b> para lançar a saída NAQUELE MOMENTO.</div>
+                  </div>
+                )}
+              </div>
+
               <div>
                 <label className="label">Observações (opcional)</label>
                 <textarea className="input min-h-[80px]" value={notes} onChange={e => setNotes(e.target.value)}
