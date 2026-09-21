@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import React, { useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import {
   Plus, Search, ChevronDown, Calendar, Filter, X, AlertTriangle, Check, ShoppingBag, Trash2, UserCircle, Edit3, Phone, Clock
@@ -224,6 +224,22 @@ export default function SalesHistoryPage() {
   const totalCliente = filtered.reduce((s, v) => s + (v.status !== 'CANCELADA' ? Number(v.total_customer ?? 0) : 0), 0)
   const totalLucro = filtered.reduce((s, v) => s + (v.status !== 'CANCELADA' ? Number(v.real_profit ?? 0) : 0), 0)
   const totalPecas = filtered.reduce((s, v) => s + pecasBySale(v.id), 0)
+
+  const valorRecebido = (s: Sale): number => {
+    const list = joins.pagsMap.get(String(s.id)) ?? []
+    if (list.length > 0) {
+      return list.reduce((soma, p) => soma + Number(p.amount ?? 0), 0)
+    }
+    const fallback = Number((s as any).amount_received ?? (s as any).valor_recebido ?? 0)
+    return isFinite(fallback) ? fallback : 0
+  }
+
+  const valorAReceber = (s: Sale): number => {
+    if (s.status === 'CANCELADA') return 0
+    const tot = Number(s.total_customer ?? 0)
+    const rec = valorRecebido(s)
+    return +Math.max(0, tot - rec).toFixed(2)
+  }
 
   const openCancel = (sale: Sale) => {
     if (sale.status === 'CANCELADA') { alert('Esta venda já está cancelada.'); return }
@@ -499,72 +515,85 @@ export default function SalesHistoryPage() {
               - actions com botões compactos (sem "Ver detalhe" enorme).
             */}
             <div className="hidden sm:block min-w-0">
-              <div className="table-wrap overflow-x-auto w-full">
-                <table className="table-base w-full border-collapse min-w-0" style={{ tableLayout: 'fixed' }}>
-                  <colgroup>
-                    <col style={{ width: '120px' }} />
-                    <col style={{ width: '104px' }} />
-                    <col style={{ width: 'auto', minWidth: '180px' }} />
-                    <col style={{ width: '140px' }} />
-                    <col style={{ width: '72px' }} />
-                    <col style={{ width: '108px' }} />
-                    <col style={{ width: '108px' }} />
-                    <col style={{ width: '104px' }} />
-                    <col style={{ width: '150px' }} />
-                  </colgroup>
-                  <thead>
-                    <tr>
-                      <th className="!px-3 !py-2.5">Venda / Data</th>
-                      <th className="!px-3 !py-2.5">Origem</th>
-                      <th className="!px-3 !py-2.5">Cliente</th>
-                      <th className="!px-3 !py-2.5">Pagamento</th>
-                      <th className="text-center !px-3 !py-2.5">Peças</th>
-                      <th className="text-right !px-3 !py-2.5">Total</th>
-                      <th className="text-right !px-3 !py-2.5">Lucro</th>
-                      <th className="!px-3 !py-2.5">Status</th>
-                      <th className="text-right !px-3 !py-2.5">Ações</th>
-                    </tr>
-                  </thead>
-                  <tbody>
+              <div className="overflow-x-auto w-full border border-ink-100 rounded-card bg-white">
+                <div
+                  className="min-w-[1120px] w-full"
+                  style={{
+                    display: 'grid',
+                    gridTemplateColumns:
+                      '105px 120px minmax(180px, 1.4fr) minmax(180px, 1.5fr) 110px 110px 110px 105px 100px',
+                    gap: '0 12px'
+                  }}
+                >
+                  {/* Cabeçalho */}
+                  <div className="contents">
+                    {[
+                      { t: 'Nº / Data', cls: 'px-4 py-3 text-[11px] font-bold uppercase tracking-wider text-ink-500 border-b border-ink-200 bg-ink-50/80', a: 'text-left' },
+                      { t: 'Canal', cls: 'px-0 py-3 text-[11px] font-bold uppercase tracking-wider text-ink-500 border-b border-ink-200 bg-ink-50/80', a: 'text-left' },
+                      { t: 'Cliente', cls: 'px-0 py-3 text-[11px] font-bold uppercase tracking-wider text-ink-500 border-b border-ink-200 bg-ink-50/80', a: 'text-left' },
+                      { t: 'Pagamento', cls: 'px-0 py-3 text-[11px] font-bold uppercase tracking-wider text-ink-500 border-b border-ink-200 bg-ink-50/80', a: 'text-left' },
+                      { t: 'Total', cls: 'pr-4 py-3 text-[11px] font-bold uppercase tracking-wider text-ink-500 border-b border-ink-200 bg-ink-50/80', a: 'text-right' },
+                      { t: 'Recebido', cls: 'pr-4 py-3 text-[11px] font-bold uppercase tracking-wider text-ink-500 border-b border-ink-200 bg-ink-50/80', a: 'text-right' },
+                      { t: 'A receber', cls: 'pr-4 py-3 text-[11px] font-bold uppercase tracking-wider text-ink-500 border-b border-ink-200 bg-ink-50/80', a: 'text-right' },
+                      { t: 'Status', cls: 'px-0 py-3 text-[11px] font-bold uppercase tracking-wider text-ink-500 border-b border-ink-200 bg-ink-50/80', a: 'text-left' },
+                      { t: 'Ações', cls: 'pr-4 py-3 text-[11px] font-bold uppercase tracking-wider text-ink-500 border-b border-ink-200 bg-ink-50/80', a: 'text-right' },
+                    ].map((h, i) => (
+                      <div key={i} className={cn(h.cls, h.a)}>{h.t}</div>
+                    ))}
+                  </div>
+                  {/* Linhas */}
+                  <div className="contents">
                     {filtered.map(s => {
                       const st = statusLabel(s.status)
+                      const tot = Number(s.total_customer ?? 0)
+                      const rec = valorRecebido(s)
+                      const arec = valorAReceber(s)
+                      const pagLabel = pagamentoLabel(s) || '-'
+                      const rowClick = (e: React.MouseEvent) => {
+                        const tgt = (e.target as HTMLElement | null)
+                        if (tgt && (tgt.closest('button') || tgt.closest('a'))) return
+                        navigate(`/vendas/${s.id}`)
+                      }
                       return (
-                        <tr
-                          key={s.id}
-                          className="hover:bg-ink-50/50 transition cursor-pointer"
-                          onClick={(e) => {
-                            // Clique na linha (exceto botões) abre o detalhe
-                            const tgt = (e.target as HTMLElement | null)
-                            if (tgt && (tgt.closest('button') || tgt.closest('a'))) return
-                            navigate(`/vendas/${s.id}`)
-                          }}
-                        >
-                          <td className="!px-3 !py-2.5 align-top align-middle">
-                            <div className="flex flex-col items-start gap-0.5">
-                              <button
-                                onClick={(e) => { e.stopPropagation(); navigate(`/vendas/${s.id}`) }}
-                                className="text-brand-800 hover:underline font-black num text-sm whitespace-nowrap"
-                              >
-                                #{String(s.friendly_number ?? '')}
-                              </button>
-                              <div className="num text-[11px] text-ink-500 whitespace-nowrap leading-tight">
-                                {formatDate(s.sale_date ?? s.created_at)}
-                              </div>
-                              <div className="num text-[11px] text-ink-400 whitespace-nowrap leading-tight">
-                                {formatTime(s.sale_date ?? s.created_at)}
-                              </div>
-                            </div>
-                          </td>
-                          <td className="!px-3 !py-2.5 align-top align-middle">
-                            <span className="chip bg-ink-100 text-ink-700 !text-[11px] !py-0 leading-tight">
+                        <React.Fragment key={String(s.id)}>
+                          {/* Nº / Data Hora */}
+                          <div
+                            className="px-4 py-3 border-b border-ink-100 flex flex-col gap-0.5 items-start cursor-pointer min-h-[72px] hover:bg-ink-50/60"
+                            onClick={rowClick}
+                          >
+                            <button
+                              onClick={(e) => { e.stopPropagation(); navigate(`/vendas/${s.id}`) }}
+                              className="text-brand-800 hover:underline font-black num text-sm whitespace-nowrap leading-tight"
+                            >
+                              #{String(s.friendly_number ?? '')}
+                            </button>
+                            <span className="num text-[11px] text-ink-500 whitespace-nowrap leading-tight">
+                              {formatDate(s.sale_date ?? s.created_at)}
+                            </span>
+                            <span className="num text-[11px] text-ink-400 whitespace-nowrap leading-tight">
+                              {formatTime(s.sale_date ?? s.created_at)}
+                            </span>
+                          </div>
+
+                          {/* Canal */}
+                          <div
+                            className="px-0 py-3 border-b border-ink-100 flex items-start cursor-pointer min-h-[72px] hover:bg-ink-50/60"
+                            onClick={rowClick}
+                          >
+                            <span className="chip bg-ink-100 text-ink-700 !text-[11px] !py-0 leading-tight whitespace-nowrap">
                               {sourceLabel(s.source)}
                             </span>
-                          </td>
-                          <td className="!px-3 !py-2.5 align-top align-middle min-w-0">
+                          </div>
+
+                          {/* Cliente */}
+                          <div
+                            className="px-0 py-3 border-b border-ink-100 flex items-start cursor-pointer min-h-[72px] min-w-0 hover:bg-ink-50/60"
+                            onClick={rowClick}
+                          >
                             {s.customer_name ? (
-                              <div className="flex items-start gap-2 min-w-0">
+                              <div className="flex items-start gap-2 min-w-0 w-full">
                                 <UserCircle className="w-4 h-4 text-ink-400 mt-0.5 flex-shrink-0" />
-                                <div className="min-w-0">
+                                <div className="min-w-0 w-full">
                                   <div
                                     className="font-semibold text-ink-900 truncate text-sm leading-tight"
                                     title={s.customer_name}
@@ -584,31 +613,74 @@ export default function SalesHistoryPage() {
                             ) : (
                               <span className="text-ink-400 text-sm italic">Não identificado</span>
                             )}
-                          </td>
-                          <td className="!px-3 !py-2.5 align-top align-middle">
-                            <span className="text-ink-700 text-xs whitespace-nowrap leading-tight">
-                              {pagamentoLabel(s) || '-'}
-                            </span>
-                          </td>
-                          <td className="text-center num font-semibold !px-3 !py-2.5 align-top align-middle">
-                            {String(pecasBySale(s.id))}
-                          </td>
-                          <td className="text-right num font-bold text-ink-900 whitespace-nowrap !px-3 !py-2.5 align-top align-middle">
-                            {formatCurrency(s.total_customer)}
-                          </td>
-                          <td className={cn(
-                            'text-right num font-bold whitespace-nowrap !px-3 !py-2.5 align-top align-middle',
-                            s.status === 'CANCELADA' ? 'text-ink-400 line-through' :
-                            Number(s.real_profit ?? 0) >= 0 ? 'text-emerald-700' : 'text-rose-700')}
+                          </div>
+
+                          {/* Pagamento */}
+                          <div
+                            className="px-0 py-3 border-b border-ink-100 flex items-start cursor-pointer min-h-[72px] min-w-0 hover:bg-ink-50/60"
+                            onClick={rowClick}
+                            title={pagLabel}
                           >
-                            {s.status === 'CANCELADA' ? formatCurrency(0) : formatCurrency(s.real_profit)}
-                          </td>
-                          <td className="!px-3 !py-2.5 align-top align-middle">
-                            <span className={st.class + ' !text-[11px] !py-0.5 whitespace-nowrap'}>
+                            <span className="text-ink-700 text-xs whitespace-nowrap text-ellipsis overflow-hidden max-w-full leading-tight">
+                              {pagLabel}
+                            </span>
+                          </div>
+
+                          {/* Total */}
+                          <div
+                            className="pr-4 py-3 border-b border-ink-100 flex items-start justify-end cursor-pointer min-h-[72px] text-right hover:bg-ink-50/60"
+                            onClick={rowClick}
+                          >
+                            <div className={cn(
+                              'num font-bold whitespace-nowrap text-ink-900 text-sm leading-tight',
+                              s.status === 'CANCELADA' && 'text-ink-400 line-through'
+                            )}>
+                              {formatCurrency(tot)}
+                            </div>
+                          </div>
+
+                          {/* Recebido */}
+                          <div
+                            className="pr-4 py-3 border-b border-ink-100 flex items-start justify-end cursor-pointer min-h-[72px] text-right hover:bg-ink-50/60"
+                            onClick={rowClick}
+                          >
+                            <div className={cn(
+                              'num font-semibold whitespace-nowrap text-sm leading-tight',
+                              s.status === 'CANCELADA'
+                                ? 'text-ink-400 line-through'
+                                : rec > 0 ? 'text-emerald-700' : 'text-ink-400'
+                            )}>
+                              {formatCurrency(s.status === 'CANCELADA' ? 0 : rec)}
+                            </div>
+                          </div>
+
+                          {/* A receber */}
+                          <div
+                            className="pr-4 py-3 border-b border-ink-100 flex items-start justify-end cursor-pointer min-h-[72px] text-right hover:bg-ink-50/60"
+                            onClick={rowClick}
+                          >
+                            <div className={cn(
+                              'num font-semibold whitespace-nowrap text-sm leading-tight',
+                              s.status === 'CANCELADA'
+                                ? 'text-ink-400 line-through'
+                                : arec > 0 ? 'text-amber-700' : 'text-emerald-700'
+                            )}>
+                              {formatCurrency(arec)}
+                            </div>
+                          </div>
+
+                          {/* Status */}
+                          <div
+                            className="px-0 py-3 border-b border-ink-100 flex items-start cursor-pointer min-h-[72px] hover:bg-ink-50/60"
+                            onClick={rowClick}
+                          >
+                            <span className={st.class + ' !text-[11px] !py-0.5 whitespace-nowrap leading-tight'}>
                               {st.label}
                             </span>
-                          </td>
-                          <td className="text-right !px-3 !py-2.5 align-top align-middle">
+                          </div>
+
+                          {/* Ações */}
+                          <div className="pr-4 py-3 border-b border-ink-100 flex items-start justify-end min-h-[72px]">
                             <div className="flex items-center justify-end gap-1.5 flex-wrap">
                               <button
                                 onClick={(e) => { e.stopPropagation(); navigate(`/vendas/${s.id}#editar`) }}
@@ -638,12 +710,12 @@ export default function SalesHistoryPage() {
                                 Cancelar
                               </button>
                             </div>
-                          </td>
-                        </tr>
+                          </div>
+                        </React.Fragment>
                       )
                     })}
-                  </tbody>
-                </table>
+                  </div>
+                </div>
               </div>
             </div>
 

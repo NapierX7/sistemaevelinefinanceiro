@@ -26,6 +26,8 @@ import type {
   DashboardStockRow,
   DashboardSaleRow,
   DashboardFinancialRow,
+  DashboardCashSummary,
+  DashboardReceivablesTotal,
   ObligationRow,
 } from '@/types/supabase'
 
@@ -1175,6 +1177,56 @@ export function demoListObligationsPendentes(): ObligationRow[] {
     })
   }
   return out
+}
+
+/**
+ * Resumo do caixa ATUAL acumulado — NUNCA filtrar por data.
+ * Equivalente à view v_cash_eveline_summary do Supabase.
+ */
+export function demoDashboardCashEvelineSummary(): DashboardCashSummary {
+  const s = loadStore()
+  let entradas = 0
+  let saidas = 0
+  let naoClass = 0
+  for (const t of s.financial_transactions) {
+    if (t.status !== 'CONFIRMADO') continue
+    const psRaw = String((t as any).payment_source ?? '').trim()
+    const ps = psRaw.toUpperCase()
+    const amt = Number(t.amount ?? 0)
+    if (ps === 'CAIXA_EVELINE') {
+      if (t.trans_type === 'ENTRADA' && amt > 0) entradas += amt
+      if (t.trans_type === 'SAIDA') saidas += Math.max(0, Math.abs(amt))
+    } else if (ps === '' || ps === 'NAO_INFORMADO' || psRaw === null || psRaw === undefined) {
+      naoClass += 1
+    }
+  }
+  return {
+    entradas: +entradas.toFixed(2),
+    saidas: +saidas.toFixed(2),
+    movimento_liquido: +(entradas - saidas).toFixed(2),
+    movimentos_nao_classificados: naoClass
+  }
+}
+
+/**
+ * Total de contas a receber GLOBAL (todas as vendas pendentes/parciais).
+ * Equivalente à soma da view v_dashboard_receivables.
+ */
+export function demoDashboardReceivablesTotal(): DashboardReceivablesTotal {
+  const s = loadStore()
+  let total = 0
+  let qtd = 0
+  for (const v of s.sales) {
+    if (v.status === 'CANCELADA') continue
+    const tot = Number(v.total_customer ?? 0)
+    const rec = Number((v as any).amount_received ?? 0)
+    const aReceber = +(tot - rec).toFixed(2)
+    if (aReceber > 0.009) {
+      total += aReceber
+      qtd += 1
+    }
+  }
+  return { total_a_receber: +total.toFixed(2), vendas_pendentes_qtd: qtd }
 }
 
 // ========== RPC: pay_obligation ==========

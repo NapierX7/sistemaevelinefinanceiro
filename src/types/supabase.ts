@@ -528,3 +528,23 @@ export interface ObligationRow {
   paid_at?: string | null
   last_payment_at?: string | null
 }
+
+/**
+ * Posição ATUAL do caixa Eveline (resumo ACUMULADO).
+ * Usa a view `v_cash_eveline_summary` no Supabase.
+ *
+ * NUNCA aplicar filtro de data aqui — esta é a posição financeira REAL,
+ * não o resultado do período. Inclui AJUSTE_CONCILIACAO.
+ */
+export interface DashboardCashSummary {
+  entradas: number
+  saidas: number
+  movimento_liquido: number
+  movimentos_nao_classificados: number
+}
+
+/** Total a receber global (não filtrado por período). */
+export interface DashboardReceivablesTotal {
+  total_a_receber: number
+  vendas_pendentes_qtd: number
+}

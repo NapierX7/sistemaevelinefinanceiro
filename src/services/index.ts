@@ -2,7 +2,7 @@ import {
   isSupabaseConfigured, supabase, getCurrentUserId,
 } from '@/lib/supabase'
 import * as Demo from './demo-storage'
-import type { UUID, Product, Category, Sale, SaleItem, SalePayment, SalePackaging, SaleCost, PurchaseEntry, PurchaseFundingSource, FinancialTransaction, InventoryMovement, InventoryBatch, PaymentFeeRule, PackagingType, Coupon, Setting, PaymentProvider, PaymentModality, DashboardStockSummary, DashboardStockRow, DashboardSaleRow, DashboardFinancialRow, ObligationRow } from '@/types/supabase'
+import type { UUID, Product, Category, Sale, SaleItem, SalePayment, SalePackaging, SaleCost, PurchaseEntry, PurchaseFundingSource, FinancialTransaction, InventoryMovement, InventoryBatch, PaymentFeeRule, PackagingType, Coupon, Setting, PaymentProvider, PaymentModality, DashboardStockSummary, DashboardStockRow, DashboardSaleRow, DashboardFinancialRow, ObligationRow, DashboardCashSummary, DashboardReceivablesTotal } from '@/types/supabase'
 
 // ================================================================
 // CAMADA UNIFICADA DE DADOS
@@ -723,6 +723,76 @@ export async function dashboardFinancial(range: DashboardDateRange): Promise<Das
     throw new Error(`Dashboard Financeiro: ${error.message || String(error)}`)
   }
   return (data ?? []) as DashboardFinancialRow[]
+}
+
+/**
+ * Resumo ATUAL do caixa operacional — NUNCA aplica filtro de data.
+ * Consulta a view v_cash_eveline_summary (posição acumulada, inclui ajuste conciliação).
+ */
+export async function dashboardCashEvelineSummary(): Promise<DashboardCashSummary> {
+  if (!usingSupabase) return Demo.demoDashboardCashEvelineSummary()
+  const sup: any = supabase
+  const { data, error } = await sup
+    .from('v_cash_eveline_summary')
+    .select('entradas, saidas, movimento_liquido, movimentos_nao_classificados')
+    .limit(1)
+    .maybeSingle()
+  if (error) {
+    console.error('[services.dashboardCashEvelineSummary] erro:', error)
+    throw new Error(`Caixa Eveline: ${error.message || String(error)}`)
+  }
+  const d: any = data ?? {}
+  return {
+    entradas: Number(d.entradas ?? 0),
+    saidas: Number(d.saidas ?? 0),
+    movimento_liquido: Number(d.movimento_liquido ?? 0),
+    movimentos_nao_classificados: Number(d.movimentos_nao_classificados ?? 0),
+  }
+}
+
+/**
+ * Total de contas a receber GLOBAL (não filtrado por período).
+ * Usa view v_dashboard_receivables se existir, senão faz soma via sales.
+ */
+export async function dashboardReceivablesTotal(): Promise<DashboardReceivablesTotal> {
+  if (!usingSupabase) return Demo.demoDashboardReceivablesTotal()
+  const sup: any = supabase
+  try {
+    const { data, error } = await sup
+      .from('v_dashboard_receivables')
+      .select('*')
+    if (error) throw error
+    const arr = (data ?? []) as any[]
+    if (arr.length > 0 && arr[0].total_a_receber !== undefined) {
+      const d: any = arr[0]
+      return {
+        total_a_receber: Number(d.total_a_receber ?? 0),
+        vendas_pendentes_qtd: Number(d.vendas_pendentes_qtd ?? d.qtde ?? 0),
+      }
+    }
+    const total = arr.reduce((s, r) => s + Number(r.amount_receivable ?? r.a_receber ?? 0), 0)
+    return { total_a_receber: +total.toFixed(2), vendas_pendentes_qtd: arr.length || 0 }
+  } catch (e: any) {
+    console.warn('[services.dashboardReceivablesTotal] view v_dashboard_receivables falhou, usando fallback:', e?.message)
+    const fallBack = await sup
+      .from('sales')
+      .select('total_customer, amount_received, status')
+      .not('status', 'eq', 'CANCELADA' as any)
+    if (fallBack.error) throw e ?? fallBack.error
+    const rows: any[] = (fallBack.data ?? []) as any[]
+    let total = 0
+    let qtd = 0
+    for (const r of rows) {
+      const tot = Number(r.total_customer ?? 0)
+      const rec = Number(r.amount_received ?? 0)
+      const aReceber = +(tot - rec).toFixed(2)
+      if (aReceber > 0.009) {
+        total += aReceber
+        qtd += 1
+      }
+    }
+    return { total_a_receber: +total.toFixed(2), vendas_pendentes_qtd: qtd }
+  }
 }
 
 export async function listSalePaymentsBySaleIds(saleIds: UUID[]): Promise<SalePayment[]> {

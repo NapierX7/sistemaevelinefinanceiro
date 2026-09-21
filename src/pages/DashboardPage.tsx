@@ -10,11 +10,12 @@ import {
 } from '@/lib/format'
 import {
   dashboardStockSummary, dashboardSales, dashboardFinancial,
-  listSalePaymentsBySaleIds, listObligationsPendentes, payObligation, dispatchInvalidateAll
+  listSalePaymentsBySaleIds, listObligationsPendentes, payObligation, dispatchInvalidateAll,
+  dashboardCashEvelineSummary, dashboardReceivablesTotal
 } from '@/services'
 import type {
   DashboardStockSummary, DashboardSaleRow, DashboardFinancialRow,
-  SalePayment, UUID, ObligationRow
+  SalePayment, UUID, ObligationRow, DashboardCashSummary, DashboardReceivablesTotal
 } from '@/types/supabase'
 import { Link } from 'react-router-dom'
 
@@ -31,18 +32,24 @@ export default function DashboardPage() {
   const [finRows, setFinRows] = useState<DashboardFinancialRow[]>([])
   const [salePayments, setSalePayments] = useState<SalePayment[]>([])
   const [obligationsRows, setObligationsRows] = useState<ObligationRow[]>([])
+  const [cashSummary, setCashSummary] = useState<DashboardCashSummary | null>(null)
+  const [receivablesTotal, setReceivablesTotal] = useState<DashboardReceivablesTotal | null>(null)
 
   const [loadingStock, setLoadingStock] = useState(true)
   const [loadingSales, setLoadingSales] = useState(true)
   const [loadingFin, setLoadingFin] = useState(true)
   const [loadingPayments, setLoadingPayments] = useState(false)
   const [loadingOblig, setLoadingOblig] = useState(true)
+  const [loadingCash, setLoadingCash] = useState(true)
+  const [loadingReceiv, setLoadingReceiv] = useState(true)
 
   const [stockError, setStockError] = useState<string | null>(null)
   const [salesError, setSalesError] = useState<string | null>(null)
   const [finError, setFinError] = useState<string | null>(null)
   const [paymentsError, setPaymentsError] = useState<string | null>(null)
   const [obligError, setObligError] = useState<string | null>(null)
+  const [cashError, setCashError] = useState<string | null>(null)
+  const [receivError, setReceivError] = useState<string | null>(null)
 
   const [showPayModal, setShowPayModal] = useState(false)
   const [paySelectedObligationId, setPaySelectedObligationId] = useState<string>('')
@@ -117,6 +124,32 @@ export default function DashboardPage() {
         if (!cancelled) setObligError(err?.message ?? String(err))
       })
       .finally(() => { if (!cancelled) setLoadingOblig(false) })
+    return () => { cancelled = true }
+  }, [loadTick])
+
+  useEffect(() => {
+    let cancelled = false
+    setLoadingCash(true); setCashError(null)
+    dashboardCashEvelineSummary()
+      .then(d => { if (!cancelled) setCashSummary(d) })
+      .catch(err => {
+        console.error('[Dashboard] cash summary falhou:', err)
+        if (!cancelled) setCashError(err?.message ?? String(err))
+      })
+      .finally(() => { if (!cancelled) setLoadingCash(false) })
+    return () => { cancelled = true }
+  }, [loadTick])
+
+  useEffect(() => {
+    let cancelled = false
+    setLoadingReceiv(true); setReceivError(null)
+    dashboardReceivablesTotal()
+      .then(d => { if (!cancelled) setReceivablesTotal(d) })
+      .catch(err => {
+        console.error('[Dashboard] receivables total falhou:', err)
+        if (!cancelled) setReceivError(err?.message ?? String(err))
+      })
+      .finally(() => { if (!cancelled) setLoadingReceiv(false) })
     return () => { cancelled = true }
   }, [loadTick])
 
@@ -250,28 +283,37 @@ export default function DashboardPage() {
   //   - NULL, vazio ou NAO_INFORMADO NÃO são considerados Caixa Eveline.
   //   - Estes aparecem no Bloco V (Pendências de classificação).
   // ============================================================================
-  const { receitas, despesas, saldoCaixa, movimentosEvelineCount, naoInformado } = useMemo(() => {
-    let r = 0, d = 0
-    let cnt = 0
+  // ============================================================================
+  // BLOCO V — Movimentações a classificar (do período filtrado).
+  // IMPORTANTE: saldo do caixa NÃO usa este filtro de data.
+  // ============================================================================
+  const naoInformado = useMemo(() => {
     const niList: DashboardFinancialRow[] = []
     for (const t of finRows) {
       if (t.status !== 'CONFIRMADO') continue
       const psRaw = String(t.payment_source ?? '').trim()
       const ps = psRaw.toUpperCase()
-      if (ps === 'CAIXA_EVELINE') {
-        const amt = Number(t.amount ?? 0)
-        if (t.trans_type === 'ENTRADA' && amt > 0) r += amt
-        if (t.trans_type === 'SAIDA') d += Math.max(0, Math.abs(amt))
-        cnt += 1
-      } else if (ps === '' || ps === 'NAO_INFORMADO' || psRaw === null || psRaw === undefined) {
+      if (ps === '' || ps === 'NAO_INFORMADO' || psRaw === null || psRaw === undefined) {
         niList.push(t)
       }
     }
-    const saldo = r - d
-    return { receitas: r, despesas: d, saldoCaixa: saldo, movimentosEvelineCount: cnt, naoInformado: niList }
+    return niList
   }, [finRows])
 
-  const caixaProjetado = Number(saldoCaixa ?? 0) + Number(kpis.aReceber ?? 0)
+  // ============================================================================
+  // SALDO DO CAIXA ATUAL (posição acumulada, NÃO filtrado por período).
+  // Usa a view v_cash_eveline_summary (cashSummary). Inclui AJUSTE_CONCILIACAO.
+  // ============================================================================
+  const receitas = Number(cashSummary?.entradas ?? 0)
+  const despesas = Number(cashSummary?.saidas ?? 0)
+  const saldoCaixa = Number(cashSummary?.movimento_liquido ?? 0)
+
+  // ============================================================================
+  // A RECEBER TOTAL (todas vendas, não só período). Usa dashboardReceivablesTotal.
+  // CAIXA PROJETADO = saldo caixa atual + a receber GLOBAL.
+  // ============================================================================
+  const aReceberGlobal = Number(receivablesTotal?.total_a_receber ?? 0)
+  const caixaProjetado = saldoCaixa + aReceberGlobal
   const potencialFinanceiroTotal = caixaProjetado + Number(stock?.total_sales_potential ?? 0)
 
   const obrigacoes = useMemo(() => {
@@ -294,7 +336,7 @@ export default function DashboardPage() {
   }, [obligationsRows])
 
   const recentSales = [...salesRows].slice(0, 8)
-  const loadingAny = loadingStock || loadingSales || loadingFin || loadingPayments || loadingOblig
+  const loadingAny = loadingStock || loadingSales || loadingFin || loadingPayments || loadingOblig || loadingCash || loadingReceiv
 
   function openPayModal() {
     const first = obligationsRows.filter(o => o.status !== 'PAGO' && o.status !== 'CANCELADO')[0]
@@ -433,16 +475,17 @@ export default function DashboardPage() {
                 </div>
                 <div>
                   <div className="text-[11px] font-bold uppercase tracking-[0.12em] text-white/75">Saldo em caixa</div>
-                  <div className="text-[10px] text-white/60 mt-0.5">CAIXA_EVELINE · CONFIRMADO</div>
+                  <div className="text-[10px] text-white/60 mt-0.5">CAIXA_EVELINE · CONFIRMADO · Posição atual</div>
                 </div>
               </div>
+              {loadingCash && <div className="text-[10px] text-white/60 animate-pulse">Carregando…</div>}
             </div>
             <div className="text-2xl sm:text-3xl font-black num tracking-tight">
-              {finError ? '—' : formatCurrency(saldoCaixa)}
+              {(loadingCash || cashError) ? '—' : formatCurrency(saldoCaixa)}
             </div>
             <div className="mt-2 text-[10px] text-white/70 flex items-center justify-between">
-              <span>Entradas {finError ? '—' : formatCurrency(receitas)}</span>
-              <span>Saídas {finError ? '—' : formatCurrency(despesas)}</span>
+              <span>Entradas {(loadingCash || cashError) ? '—' : formatCurrency(receitas)}</span>
+              <span>Saídas {(loadingCash || cashError) ? '—' : formatCurrency(despesas)}</span>
             </div>
           </div>
           <div className="flex flex-col justify-between p-4 rounded-card bg-white border border-ink-200 shadow-sm">
@@ -452,14 +495,17 @@ export default function DashboardPage() {
               </div>
               <div>
                 <div className="text-[11px] font-bold uppercase tracking-[0.12em] text-ink-500">A receber</div>
-                <div className="text-[10px] text-ink-400 mt-0.5">vendas realizadas</div>
+                <div className="text-[10px] text-ink-400 mt-0.5">Todas vendas · não só período</div>
               </div>
+              {loadingReceiv && <div className="ml-auto text-[10px] text-ink-400 animate-pulse">Carregando…</div>}
             </div>
             <div className="text-2xl sm:text-3xl font-black num tracking-tight text-amber-700">
-              {salesError ? '—' : formatCurrency(kpis.aReceber)}
+              {(loadingReceiv || receivError) ? '—' : formatCurrency(aReceberGlobal)}
             </div>
             <div className="mt-2 text-[10px] text-ink-400">
-              Não entrou no caixa ainda. Contabiliza no resultado.
+              {receivablesTotal && !receivError
+                ? `${receivablesTotal.vendas_pendentes_qtd ?? 0} venda(s) pendente(s). Entra no caixa quando recebido.`
+                : 'Não entrou no caixa ainda. Contabiliza no resultado.'}
             </div>
           </div>
           <div className="flex flex-col justify-between p-4 rounded-card bg-gradient-to-br from-sky-500 to-brand-600 text-white shadow-sm">
@@ -469,14 +515,14 @@ export default function DashboardPage() {
               </div>
               <div>
                 <div className="text-[11px] font-bold uppercase tracking-[0.12em] text-white/75">Caixa projetado</div>
-                <div className="text-[10px] text-white/60 mt-0.5">caixa + a receber</div>
+                <div className="text-[10px] text-white/60 mt-0.5">saldo atual + a receber total</div>
               </div>
             </div>
             <div className="text-2xl sm:text-3xl font-black num tracking-tight">
-              {(finError || salesError) ? '—' : formatCurrency(caixaProjetado)}
+              {((loadingCash || loadingReceiv) || cashError || receivError) ? '—' : formatCurrency(caixaProjetado)}
             </div>
             <div className="mt-2 text-[10px] text-white/70">
-              Projeção — não é saldo bancário.
+              Projeção — não é saldo bancário atual.
             </div>
           </div>
           <div className="flex flex-col justify-between p-4 rounded-card bg-white border border-ink-200 shadow-sm">
@@ -490,10 +536,10 @@ export default function DashboardPage() {
               </div>
             </div>
             <div className="text-2xl sm:text-3xl font-black num tracking-tight text-violet-700">
-              {(finError || salesError) ? '—' : formatCurrency(potencialFinanceiroTotal)}
+              {((loadingCash || loadingReceiv || loadingStock) || cashError || receivError || stockError) ? '—' : formatCurrency(potencialFinanceiroTotal)}
             </div>
             <div className="mt-2 text-[10px] text-ink-400">
-              Projeção: caixa + receber + potencial estoque.
+              Projeção máxima: caixa + receber + potencial estoque.
             </div>
           </div>
         </div>
