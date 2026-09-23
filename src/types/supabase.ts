@@ -58,6 +58,11 @@ export interface Product {
   reserved_stock?: number;
 }
 
+export interface ProductWithStock extends Product {
+  available_quantity: number;
+  has_active_batches: boolean;
+}
+
 export interface ProductVariant {
   id: UUID;
   product_id: UUID;

@@ -1,16 +1,17 @@
 import { useEffect, useMemo, useState } from 'react'
 import {
   Plus, Truck, ChevronDown, X, Trash2, Package, Calendar,
-  Building2, MapPin, Filter, DollarSign, Calculator, Check
+  Building2, MapPin, Filter, DollarSign, Calculator, Check, PackageCheck
 } from 'lucide-react'
 import {
   formatCurrency, cn, parseBrl, formatDate, toInputDate, formatFriendlyNumber, pluralize
 } from '@/lib/format'
 import {
   listPurchases, listAllProducts, createPurchase, getPurchaseDetail,
-  onInvalidate, dispatchInvalidate, dispatchInvalidateAll
+  onInvalidate, dispatchInvalidate, dispatchInvalidateAll, listInventoryBatches,
+  receivePurchase,
 } from '@/services'
-import type { PurchaseEntry, Product, PurchaseFundingSource } from '@/types/supabase'
+import type { PurchaseEntry, Product, PurchaseFundingSource, InventoryBatch } from '@/types/supabase'
 import type { CreatePurchaseParams } from '@/services'
 
 type Step = 1 | 2
@@ -32,6 +33,7 @@ interface OtherCost {
 export default function PurchasesPage() {
   const [purchases, setPurchases] = useState<PurchaseEntry[]>([])
   const [products, setProducts] = useState<Product[]>([])
+  const [batches, setBatches] = useState<InventoryBatch[]>([])
   const [loading, setLoading] = useState(true)
   const [modalOpen, setModalOpen] = useState(false)
   const [detailId, setDetailId] = useState<string | null>(null)
@@ -41,9 +43,14 @@ export default function PurchasesPage() {
   const load = async () => {
     setLoading(true)
     try {
-      const [p, pr] = await Promise.all([listPurchases(), listAllProducts(true)])
+      const [p, pr, bat] = await Promise.all([
+        listPurchases(),
+        listAllProducts(true),
+        listInventoryBatches(),
+      ])
       setPurchases(p)
       setProducts(pr)
+      setBatches(bat)
     } catch (e) {
       console.error(e)
       alert('Erro ao carregar compras.')
@@ -77,6 +84,34 @@ export default function PurchasesPage() {
     }
   }
 
+  const purchaseIdReceived = useMemo(() => {
+    const s = new Set<string>()
+    for (const b of batches) {
+      if (b.purchase_entry_id) s.add(String(b.purchase_entry_id))
+    }
+    return s
+  }, [batches])
+
+  const handleReceivePurchase = async (p: PurchaseEntry) => {
+    const confirmMsg =
+      'Receber mercadoria: os lotes serão criados no estoque agora (valores já lançados no financeiro não serão duplicados). Deseja continuar?'
+    if (!window.confirm(confirmMsg)) return
+    try {
+      const r = await receivePurchase(p.id)
+      if (r.idempotent) {
+        alert('Essa compra já havia sido recebida anteriormente (operação bloqueada para não duplicar estoque).')
+      } else if (r.batches_created === 0) {
+        alert('Nenhum item de estoque encontrado nessa compra para receber.')
+      } else {
+        alert('Mercadoria recebida. Estoque atualizado.')
+      }
+      await load()
+    } catch (e: any) {
+      console.error(e)
+      alert('Erro ao receber mercadoria: ' + (e?.message ?? String(e)))
+    }
+  }
+
   return (
     <div className="space-y-5 pb-4 sm:pb-6">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
@@ -100,38 +135,74 @@ export default function PurchasesPage() {
                 <th>Origem</th>
                 <th className="text-right">Itens</th>
                 <th className="text-right">Total custo</th>
+                <th>Recebimento</th>
                 <th>Status</th>
-                <th className="w-32 text-right">Ações</th>
+                <th className="w-40 text-right">Ações</th>
               </tr>
             </thead>
             <tbody>
               {loading ? (
-                <tr><td colSpan={8} className="text-center py-10 text-ink-500">Carregando...</td></tr>
+                <tr><td colSpan={9} className="text-center py-10 text-ink-500">Carregando...</td></tr>
               ) : purchases.length === 0 ? (
-                <tr><td colSpan={8} className="text-center py-10 text-ink-500">
+                <tr><td colSpan={9} className="text-center py-10 text-ink-500">
                   <Filter className="w-8 h-8 text-ink-300 mx-auto mb-2" />
                   Nenhuma entrada registrada. Clique em "Nova Entrada" para começar.
                 </td></tr>
-              ) : purchases.map((p, i) => (
-                <tr key={p.id} className="hover:bg-ink-50/50 transition">
-                  <td className="font-bold num">#{String(purchases.length - i)}</td>
-                  <td className="num text-ink-700">{formatDate(p.entry_date)}</td>
-                  <td className="font-medium text-ink-800">{p.supplier || '—'}</td>
-                  <td className="text-ink-600 text-sm">{p.origin || '—'}</td>
-                  <td className="text-right num">{(p as any).items_count || '—'}</td>
-                  <td className="text-right num font-bold text-ink-900">{formatCurrency(p.total_cost)}</td>
-                  <td>
+              ) : purchases.map((p, i) => {
+                const inTransit = (p.origin ?? '').toUpperCase() === 'COMPRA_EM_TRANSITO'
+                const received = purchaseIdReceived.has(String(p.id))
+                let statusChip: any = null
+                let recChip: any = null
+                if (inTransit) {
+                  if (received) {
+                    recChip =
+                      <span className="chip bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200">
+                        <Check className="w-3.5 h-3.5 mr-1 inline align-sub" /> Recebida
+                      </span>
+                    statusChip =
+                      <span className="chip bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200">Confirmada</span>
+                  } else {
+                    recChip =
+                      <span className="chip bg-amber-50 text-amber-700 ring-1 ring-amber-200">
+                        <Truck className="w-3.5 h-3.5 mr-1 inline align-sub" /> Em trânsito
+                      </span>
+                    statusChip =
+                      <span className="chip bg-amber-50 text-amber-700 ring-1 ring-amber-200">Aguardando recebimento</span>
+                  }
+                } else {
+                  recChip = received ?
                     <span className="chip bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200">
-                      Confirmada
+                      <PackageCheck className="w-3.5 h-3.5 mr-1 inline align-sub" /> Lotes criados
                     </span>
-                  </td>
-                  <td className="text-right">
-                    <button onClick={() => loadDetail(p.id)} className="btn-secondary !py-2 text-xs">
-                      Ver detalhe
-                    </button>
-                  </td>
-                </tr>
-              ))}
+                    :
+                    <span className="chip bg-ink-50 text-ink-600 ring-1 ring-ink-200">—</span>
+                  statusChip =
+                    <span className="chip bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200">Confirmada</span>
+                }
+                return (
+                  <tr key={p.id} className="hover:bg-ink-50/50 transition">
+                    <td className="font-bold num">#{String(purchases.length - i)}</td>
+                    <td className="num text-ink-700">{formatDate(p.entry_date)}</td>
+                    <td className="font-medium text-ink-800">{p.supplier || '—'}</td>
+                    <td className="text-ink-600 text-sm">{p.origin || '—'}</td>
+                    <td className="text-right num">{(p as any).items_count || '—'}</td>
+                    <td className="text-right num font-bold text-ink-900">{formatCurrency(p.total_cost)}</td>
+                    <td>{recChip}</td>
+                    <td>{statusChip}</td>
+                    <td className="text-right space-x-2">
+                      {inTransit && !received ? (
+                        <button onClick={() => handleReceivePurchase(p)}
+                          className="btn-primary !py-2 text-xs inline-flex items-center gap-1">
+                          <PackageCheck className="w-4 h-4" /> Receber mercadoria
+                        </button>
+                      ) : null}
+                      <button onClick={() => loadDetail(p.id)} className="btn-secondary !py-2 text-xs">
+                        Ver detalhe
+                      </button>
+                    </td>
+                  </tr>
+                )
+              })}
             </tbody>
           </table>
         </div>

@@ -466,6 +466,7 @@ export function demoCreatePurchaseEntry(args: {
     }
   }
   const totalShared = entry.shipping_cost + othersTotal
+  const isInTransit = (args.origin ?? '').toUpperCase() === 'COMPRA_EM_TRANSITO'
   for (const pei of peItems) {
     let share = 0
     if (method !== 'none' && allocBase > 0) {
@@ -475,8 +476,9 @@ export function demoCreatePurchaseEntry(args: {
     }
     pei.allocated_share = share
     pei.effective_cost = +(pei.unit_cost + (pei.quantity > 0 ? share / pei.quantity : 0)).toFixed(4)
-    // cria lote
-    if (pei.quantity > 0) {
+    // cria lote SOMENTE se não for mercadoria em trânsito.
+    // Para COMPRA_EM_TRANSITO: recebimento posterior cria os lotes via demoReceivePurchaseEntry().
+    if (pei.quantity > 0 && !isInTransit) {
       s.inventory_batches.push({
         id: uid(), product_id: pei.product_id!, variant_id: null,
         purchase_entry_id: entry.id, purchase_item_id: pei.id,
@@ -559,7 +561,54 @@ export function demoCreatePurchaseEntry(args: {
     ok: true, purchase_entry_id: entry.id, total_cost: entry.total_cost,
     funding_source: fs, creditor_name: creditor ?? null, obligation_id,
     financial_created,
+    in_transit: isInTransit,
   }
+}
+
+// ========== RPC: receive_purchase_entry (receber mercadoria em trânsito) ==========
+// Idempotente: se purchase_entry_id JÁ TEM inventory_batches vinculados → retorna sem criar nada.
+// Cria 1 inventory_batch por purchase_entry_item (product_id, quantity) + ENTRADA movement.
+// NÃO cria novas saídas financeiras (não duplica pagamento).
+export function demoReceivePurchaseEntry(purchase_entry_id: UUID, args: { user_id?: UUID } = {}): {
+  ok: boolean, idempotent: boolean, batches_created: number, purchase_entry_id: UUID
+} {
+  const s = loadStore()
+  const entry = s.purchases.find(p => p.id === purchase_entry_id)
+  if (!entry) {
+    throw new Error('Compra não encontrada: ' + purchase_entry_id)
+  }
+  // Proteção IDEMPOTÊNCIA: já recebeu? não criar lotes duas vezes.
+  const alreadyBatches = s.inventory_batches.filter(b => b.purchase_entry_id === purchase_entry_id)
+  if (alreadyBatches.length > 0) {
+    return { ok: true, idempotent: true, batches_created: 0, purchase_entry_id }
+  }
+  const items = s.purchase_items.filter(pi => pi.purchase_entry_id === purchase_entry_id)
+  const now = todayISO()
+  let createdCount = 0
+  for (const pei of items) {
+    if (!pei.product_id) continue
+    const qty = Math.max(0, Number(pei.quantity ?? 0))
+    if (qty <= 0) continue
+    const share = Number(pei.allocated_share ?? 0)
+    const uc = Number(pei.unit_cost ?? 0)
+    s.inventory_batches.push({
+      id: uid(), product_id: pei.product_id, variant_id: null,
+      purchase_entry_id: entry.id, purchase_item_id: pei.id,
+      unit_cost: uc,
+      allocated_purchase_cost: +(qty > 0 ? share / qty : 0).toFixed(4),
+      quantity_received: qty, quantity_available: qty,
+      received_at: now, created_at: now,
+    })
+    s.inventory_movements.push({
+      id: uid(), product_id: pei.product_id, variant_id: null, batch_id: null,
+      movement_type: 'ENTRADA', reason: 'RECEBIMENTO_COMPRA_EM_TRANSITO', quantity: qty,
+      unit_cost: uc, related_purchase_id: entry.id,
+      created_by: args.user_id ?? null, created_at: now,
+    })
+    createdCount += 1
+  }
+  saveStore(s)
+  return { ok: true, idempotent: false, batches_created: createdCount, purchase_entry_id }
 }
 
 // ========== RPC: finalize_sale ==========

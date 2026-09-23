@@ -2,7 +2,7 @@ import {
   isSupabaseConfigured, supabase, getCurrentUserId,
 } from '@/lib/supabase'
 import * as Demo from './demo-storage'
-import type { UUID, Product, Category, Sale, SaleItem, SalePayment, SalePackaging, SaleCost, PurchaseEntry, PurchaseFundingSource, FinancialTransaction, InventoryMovement, InventoryBatch, PaymentFeeRule, PackagingType, Coupon, Setting, PaymentProvider, PaymentModality, DashboardStockSummary, DashboardStockRow, DashboardSaleRow, DashboardFinancialRow, ObligationRow, DashboardCashSummary, DashboardReceivablesTotal } from '@/types/supabase'
+import type { UUID, Product, Category, Sale, SaleItem, SalePayment, SalePackaging, SaleCost, PurchaseEntry, PurchaseFundingSource, FinancialTransaction, InventoryMovement, InventoryBatch, PaymentFeeRule, PackagingType, Coupon, Setting, PaymentProvider, PaymentModality, DashboardStockSummary, DashboardStockRow, DashboardSaleRow, DashboardFinancialRow, ObligationRow, DashboardCashSummary, DashboardReceivablesTotal, ProductWithStock } from '@/types/supabase'
 
 // ================================================================
 // CAMADA UNIFICADA DE DADOS
@@ -57,6 +57,37 @@ export async function listAllProducts(includeInactive = false): Promise<Product[
   const { data, error } = await q.order('name')
   if (error) { console.error('[services] listAllProducts error:', error); throw error }
   return (data as Product[]) ?? []
+}
+
+// ================================================================
+// listProductsWithStock: FONTE ÚNICA DE VERDADE do estoque disponível
+//   Junta listAllProducts + listInventoryBatches
+//   Calcula available_quantity = SUM(inventory_batches.quantity_available)
+//   por product_id.
+// ================================================================
+export async function listProductsWithStock(includeInactive = false): Promise<ProductWithStock[]> {
+  const [products, batches] = await Promise.all([
+    listAllProducts(includeInactive),
+    listInventoryBatches(),
+  ])
+  const qtyPerProduct = new Map<string, number>()
+  for (const b of batches) {
+    const pid = b.product_id
+    const add = Number(b.quantity_available ?? 0)
+    if (add <= 0 && !qtyPerProduct.has(pid)) { qtyPerProduct.set(pid, 0); continue }
+    qtyPerProduct.set(pid, (qtyPerProduct.get(pid) ?? 0) + add)
+  }
+  return products.map(p => {
+    const q = qtyPerProduct.get(p.id) ?? 0
+    return {
+      ...p,
+      available_quantity: q,
+      total_stock: q,
+      available_stock: q,
+      stock_quantity: q,
+      has_active_batches: q > 0,
+    }
+  })
 }
 
 export async function getProduct(id: UUID): Promise<Product | null> {
@@ -445,8 +476,97 @@ export async function createPurchase(p: CreatePurchaseParams) {
     if (error) throw error
     ret = data
   }
-  setTimeout(__reloadDashboard, 50)
+  // 2026-09-22: Invalida TODOS os estados (purchases/inventory/products/dashboard/financial)
+  // para propagar os novos inventory_batches imediatamente.
+  dispatchInvalidateAll()
   return ret
+}
+
+// ================================================================
+// receivePurchase: Recebe mercadoria de uma COMPRA_EM_TRANSITO.
+//   Idempotente: se já existirem inventory_batches vinculados, não duplica.
+//   Cria lotes e movimentos de ENTRADA em batch.
+//   NÃO CRIA NOVOS LANÇAMENTOS FINANCEIROS (não duplica o pagamento).
+// ================================================================
+export async function receivePurchase(purchase_entry_id: UUID): Promise<{
+  ok: boolean; idempotent: boolean; batches_created: number; purchase_entry_id: UUID;
+}> {
+  const userId = getCurrentUserId()
+  if (!usingSupabase) {
+    return Demo.demoReceivePurchaseEntry(purchase_entry_id, { user_id: userId ?? undefined })
+  }
+  const sup: any = supabase
+  // 1) Proteção idempotente: compra JÁ tem lotes? retorna sem criar.
+  const existBatch = await sup
+    .from('inventory_batches')
+    .select('id', { count: 'exact', head: true })
+    .eq('purchase_entry_id', purchase_entry_id)
+  if (existBatch.error) throw existBatch.error
+  if (existBatch.count && existBatch.count > 0) {
+    return { ok: true, idempotent: true, batches_created: 0, purchase_entry_id }
+  }
+  // 2) Busca compra + itens associados (allocated_share / unit_cost / quantity)
+  const [{ data: entryData, error: errEntry }, { data: items, error: errItems }] = await Promise.all([
+    sup.from('purchase_entries').select('id, origin, entry_date, shipping_cost, funding_source').eq('id', purchase_entry_id).maybeSingle(),
+    sup.from('purchase_entry_items').select('id, product_id, quantity, unit_cost, allocated_share, effective_cost, product_snapshot').eq('purchase_entry_id', purchase_entry_id),
+  ])
+  if (errEntry) throw errEntry
+  if (errItems) throw errItems
+  if (!entryData) {
+    throw new Error('Compra não encontrada.')
+  }
+  if (!items || items.length === 0) {
+    return { ok: true, idempotent: false, batches_created: 0, purchase_entry_id }
+  }
+  const nowIso = new Date().toISOString()
+  const nowDate = new Date().toISOString().slice(0, 10)
+  // 3) Cria 1 inventory_batch por item + 1 movement ENTRADA (RECEBIMENTO_COMPRA_EM_TRANSITO)
+  //    NÃO cria nenhum registro em financial_transactions aqui. Pagamento já foi feito.
+  const createdBatches: any[] = []
+  const createdMovements: any[] = []
+  for (const it of items) {
+    const qty = Math.max(0, Number(it.quantity ?? 0))
+    if (qty <= 0 || !it.product_id) continue
+    const share = Number(it.allocated_share ?? 0)
+    const uc = Number(it.unit_cost ?? 0)
+    const allocPerUnit = qty > 0 ? +(share / qty).toFixed(4) : 0
+    createdBatches.push({
+      product_id: it.product_id,
+      variant_id: null,
+      purchase_entry_id,
+      purchase_item_id: it.id,
+      received_at: nowDate,
+      quantity_received: qty,
+      quantity_available: qty,
+      unit_cost: uc,
+      allocated_purchase_cost: allocPerUnit,
+      supplier_id: null,
+      notes: 'Recebimento automático - ' + (entryData?.entry_date ?? nowDate),
+      created_at: nowIso,
+      updated_at: nowIso,
+    })
+    createdMovements.push({
+      product_id: it.product_id,
+      variant_id: null,
+      batch_id: null,
+      movement_type: 'ENTRADA',
+      reason: 'RECEBIMENTO_COMPRA_EM_TRANSITO',
+      quantity: qty,
+      unit_cost: uc,
+      related_purchase_id: purchase_entry_id,
+      created_by: userId ?? null,
+      created_at: nowIso,
+    })
+  }
+  if (createdBatches.length > 0) {
+    const { error: errBat } = await sup.from('inventory_batches').insert(createdBatches)
+    if (errBat) throw errBat
+    const { error: errMov } = await sup.from('inventory_movements').insert(createdMovements)
+    if (errMov) throw errMov
+  }
+  // 4) Propagada atualização global de estoque/produtos/dashboard.
+  dispatchInvalidateAll()
+  return { ok: true, idempotent: false, batches_created: createdBatches.length, purchase_entry_id }
 }
 
 export interface PayObligationParams {

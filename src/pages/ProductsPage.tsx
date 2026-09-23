@@ -7,13 +7,14 @@ import {
   formatCurrency, formatPercent, cn, parseBrl, slugify
 } from '@/lib/format'
 import {
-  listAllProducts, listCategories, listPackagingTypes,
-  createProduct, updateProduct, onInvalidate, dispatchInvalidate
+  listCategories, listPackagingTypes,
+  createProduct, updateProduct, onInvalidate, dispatchInvalidate, listProductsWithStock
 } from '@/services'
 import type { Product, Category, PackagingType } from '@/types/supabase'
+import type { ProductWithStock } from '@/types/supabase'
 
 export default function ProductsPage() {
-  const [products, setProducts] = useState<Product[]>([])
+  const [products, setProducts] = useState<ProductWithStock[]>([])
   const [categories, setCategories] = useState<Category[]>([])
   const [packaging, setPackaging] = useState<PackagingType[]>([])
   const [loading, setLoading] = useState(true)
@@ -27,9 +28,9 @@ export default function ProductsPage() {
     setLoading(true)
     try {
       const [p, c, pk] = await Promise.all([
-        listAllProducts(true), listCategories(), listPackagingTypes()
+        listProductsWithStock(true), listCategories(), listPackagingTypes()
       ])
-      setProducts(p)
+      setProducts(p as ProductWithStock[])
       setCategories(c)
       setPackaging(pk)
     } catch (e) {
@@ -139,7 +140,7 @@ export default function ProductsPage() {
                 </td></tr>
               ) : filtered.map(p => {
                 const cat = categories.find(c => c.id === p.category_id)
-                const stock = Number(p.total_stock ?? 0)
+                const stock = Number(p.available_quantity ?? p.total_stock ?? 0)
                 const min = Number(p.min_stock ?? 0)
                 const custo = Number(p.current_cost ?? 0)
                 const venda = Number(p.sale_price ?? 0)
