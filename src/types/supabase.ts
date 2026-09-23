@@ -52,8 +52,8 @@ export interface Product {
   // campos da VIEW products_with_stock (aliases para compatibilidade)
   total_stock?: number;
   stock_quantity?: number;
-  weighted_cost?: Money;
-  weighted_average_cost?: Money;
+  weighted_cost?: Money | null;
+  weighted_average_cost?: Money | null;
   available_stock?: number;
   reserved_stock?: number;
 }
@@ -61,11 +61,6 @@ export interface Product {
 export interface ProductWithStock extends Product {
   available_quantity: number;
   has_active_batches: boolean;
-  total_stock?: number;
-  available_stock?: number;
-  stock_quantity?: number;
-  weighted_cost?: number | null;
-  weighted_average_cost?: number | null;
 }
 
 export interface ProductVariant {

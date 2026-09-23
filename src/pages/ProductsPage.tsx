@@ -229,7 +229,7 @@ function ProductModal({
   editingId, products, categories, packaging, onClose, onSaved
 }: {
   editingId: string | null
-  products: Product[]
+  products: Product[] | ProductWithStock[]
   categories: Category[]
   packaging: PackagingType[]
   onClose: () => void

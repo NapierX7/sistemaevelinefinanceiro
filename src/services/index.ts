@@ -94,8 +94,8 @@ export async function listProductsWithStock(includeInactive = false): Promise<Pr
           total_stock: Number(row.total_stock ?? 0),
           available_stock: Number(row.total_stock ?? 0),
           stock_quantity: Number(row.total_stock ?? 0),
-          weighted_cost: Number(row.weighted_cost ?? 0),
-          weighted_average_cost: Number(row.weighted_average_cost ?? 0),
+          weighted_cost: row.weighted_cost == null ? null : Number(row.weighted_cost),
+          weighted_average_cost: row.weighted_average_cost == null ? null : Number(row.weighted_average_cost),
           has_active_batches: Number(row.total_stock ?? 0) > 0,
         })) as ProductWithStock[]
       }
