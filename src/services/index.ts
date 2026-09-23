@@ -2,7 +2,7 @@ import {
   isSupabaseConfigured, supabase, getCurrentUserId,
 } from '@/lib/supabase'
 import * as Demo from './demo-storage'
-import type { UUID, Product, Category, Sale, SaleItem, SalePayment, SalePackaging, SaleCost, PurchaseEntry, PurchaseFundingSource, FinancialTransaction, InventoryMovement, InventoryBatch, PaymentFeeRule, PackagingType, Coupon, Setting, PaymentProvider, PaymentModality, DashboardStockSummary, DashboardStockRow, DashboardSaleRow, DashboardFinancialRow, ObligationRow, DashboardCashSummary, DashboardReceivablesTotal, ProductWithStock } from '@/types/supabase'
+import type { UUID, Product, Category, Sale, SaleItem, SalePayment, SalePackaging, SaleCost, PurchaseEntry, PurchaseFundingSource, FinancialTransaction, InventoryMovement, InventoryBatch, PaymentFeeRule, PackagingType, Coupon, Setting, PaymentProvider, PaymentModality, DashboardStockSummary, DashboardStockRow, DashboardSaleRow, DashboardFinancialRow, ObligationRow, DashboardCashSummary, DashboardReceivablesTotal, ProductWithStock, InfinitePayReceivable } from '@/types/supabase'
 
 // ================================================================
 // CAMADA UNIFICADA DE DADOS
@@ -1030,4 +1030,150 @@ export async function dashboardStock(): Promise<DashboardStockRow[]> {
     active: d.active ?? true,
   }))
   return rows
+}
+
+// ================================================================
+// INFINITEPAY — REPASSES
+// ================================================================
+
+export async function listAllInfinitePayReceivables(): Promise<InfinitePayReceivable[]> {
+  if (!usingSupabase) return (Demo as any).demoListInfinitePayReceivables?.() ?? []
+  const sup: any = supabase
+
+  const { data: ft, error: errFt } = await sup
+    .from('financial_transactions')
+    .select('id, related_sale_id, amount, trans_date, category, status, payment_source')
+    .eq('category', 'REPASSE_INFINITEPAY')
+    .eq('status', 'CONFIRMADO')
+    .eq('payment_source', 'CAIXA_EVELINE')
+  if (errFt) console.warn('[services.listAllInfinitePayReceivables] REPASSE query falhou:', errFt?.message ?? errFt)
+  const repassesBySale = new Map<string, any>()
+  if (Array.isArray(ft)) {
+    for (const r of ft) {
+      if (!r.related_sale_id) continue
+      const prev = repassesBySale.get(String(r.related_sale_id))
+      if (!prev || (r.amount ?? 0) > (prev.amount ?? 0)) repassesBySale.set(String(r.related_sale_id), r)
+    }
+  }
+
+  const { data: payments, error: errSp } = await sup
+    .from('sale_payments')
+    .select('*')
+  if (errSp) {
+    console.error('[services.listAllInfinitePayReceivables] sale_payments query falhou:', errSp?.message ?? errSp)
+    throw errSp
+  }
+
+  const allPayments: any[] = Array.isArray(payments) ? payments : []
+  const ipPayments = allPayments.filter(sp => {
+    const prov = String((sp as any).provider_snapshot ?? sp.provider ?? '').trim().toLowerCase()
+    return prov.includes('infinite')
+  })
+
+  const saleIds = Array.from(new Set(ipPayments.map(sp => String(sp.sale_id)).filter(Boolean))) as UUID[]
+  const salesMap = new Map<string, any>()
+  if (saleIds.length > 0) {
+    const { data: sales, error: errSl } = await sup
+      .from('sales')
+      .select('id, friendly_number, sale_date, customer_name, status, total_customer')
+      .in('id', saleIds)
+    if (errSl) console.warn('[services.listAllInfinitePayReceivables] sales query falhou:', errSl?.message ?? errSl)
+    if (Array.isArray(sales)) for (const s of sales) salesMap.set(String(s.id), s)
+  }
+
+  const out: InfinitePayReceivable[] = []
+  for (const sp of ipPayments) {
+    const sale: any | undefined = salesMap.get(String(sp.sale_id))
+    const bruto = Number(sp.amount ?? 0)
+    const taxa = Number((sp as any).fee_real_snapshot ?? (sp as any).fee_actual_snapshot ?? (sp as any).fee_expected_snapshot ?? 0)
+    const liquido = Math.max(0, bruto - taxa)
+    const rep = repassesBySale.get(String(sp.sale_id))
+    out.push({
+      sale_payment_id: sp.id,
+      sale_id: sp.sale_id,
+      sale_friendly_number: sale?.friendly_number ?? null,
+      sale_date: sale?.sale_date ?? sp.trans_date ?? sp.created_at ?? null,
+      customer_name: sale?.customer_name ?? null,
+      provider_snapshot: (sp as any).provider_snapshot ?? null,
+      method: sp.method ?? (sp as any).payment_method_snapshot ?? null,
+      installments: Number((sp as any).installments_snapshot ?? sp.installments ?? 1),
+      bruto,
+      taxa_real: taxa,
+      liquido,
+      payment_created_at: sp.created_at ?? new Date().toISOString(),
+      repasse_confirmado: !!rep,
+      repasse_trans_id: rep?.id ?? null,
+      repasse_amount: rep?.amount ?? null,
+      repasse_date: rep?.trans_date ?? null,
+    })
+  }
+  return out.sort((a, b) => new Date(b.payment_created_at).getTime() - new Date(a.payment_created_at).getTime())
+}
+
+export interface ConfirmRepasseParams {
+  sale_payment_id: UUID;
+  sale_id: UUID;
+  amount_received: number;
+  liquido_esperado: number;
+  trans_date?: string;
+  notes?: string;
+}
+
+export async function confirmRepasseInfinitePay(p: ConfirmRepasseParams): Promise<{ ok: boolean; idempotent?: boolean; message: string; transacao_id?: UUID }> {
+  if (!p || !(Number(p.amount_received) > 0)) return { ok: false, message: 'Valor recebido inválido.' }
+  const amt = Number(p.amount_received)
+  const dateStr = p.trans_date?.slice(0, 10) ?? new Date().toISOString().slice(0, 10)
+  const iso = `${dateStr}T12:00:00.000Z`
+
+  if (!usingSupabase) {
+    return ((Demo as any).demoConfirmRepasseInfinitePay?.(p) ?? { ok: true, message: 'Repasse confirmado (modo demo).' })
+  }
+
+  const sup: any = supabase
+
+  const { data: existing, error: errEx } = await sup
+    .from('financial_transactions')
+    .select('*')
+    .eq('category', 'REPASSE_INFINITEPAY')
+    .eq('related_sale_id', p.sale_id)
+    .eq('status', 'CONFIRMADO')
+    .eq('payment_source', 'CAIXA_EVELINE')
+    .limit(1)
+    .maybeSingle()
+  if (errEx) console.warn('[services.confirmRepasseInfinitePay] checagem idempotência avisou:', errEx?.message ?? errEx)
+  if (existing) return { ok: true, idempotent: true, message: 'Repasse já confirmado anteriormente (idempotente). Nenhuma duplicidade criada.', transacao_id: existing.id }
+
+  const descArr = []
+  descArr.push('Repasse InfinitePay')
+  if (p.sale_id) descArr.push(`venda ${p.sale_id?.slice(0, 8)}`)
+  if (p.liquido_esperado > 0 && Math.abs(amt - Number(p.liquido_esperado)) > 0.001) {
+    descArr.push(`(diferença recebido ${amt.toFixed(2)} vs esperado ${Number(p.liquido_esperado).toFixed(2)})`)
+  }
+  const description = descArr.join(' · ')
+
+  const payload: any = {
+    trans_date: iso,
+    trans_type: 'ENTRADA',
+    category: 'REPASSE_INFINITEPAY',
+    description,
+    amount: amt,
+    related_sale_id: p.sale_id,
+    payment_source: 'CAIXA_EVELINE',
+    status: 'CONFIRMADO',
+    payment_method: 'TRANSFERENCIA',
+    notes: p.notes?.trim() || null,
+  }
+
+  const { data: inserted, error: errIns } = await sup
+    .from('financial_transactions')
+    .insert(payload)
+    .select('*')
+    .single()
+  if (errIns) {
+    console.error('[services.confirmRepasseInfinitePay] insert falhou:', errIns)
+    return { ok: false, message: `Erro ao registrar repasse: ${errIns?.message ?? String(errIns)}` }
+  }
+
+  setTimeout(__reloadDashboard, 50)
+  return { ok: true, message: `Repasse de ${new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(amt)} registrado com sucesso.`, transacao_id: inserted?.id }
 }

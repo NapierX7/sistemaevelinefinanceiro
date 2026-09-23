@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import {
   Calendar, DollarSign, TrendingUp, Package, ShoppingCart, Receipt,
   ArrowUpRight, ArrowDownRight, Filter, AlertTriangle, ChevronDown, AlertCircle,
-  CreditCard, Wallet, Clock, Check, X
+  CreditCard, Wallet, Clock, Check, X, CheckCircle2
 } from 'lucide-react'
 import {
   formatCurrency, formatPercent, formatDate, rangePresets,
@@ -11,11 +11,13 @@ import {
 import {
   dashboardStockSummary, dashboardSales, dashboardFinancial,
   listSalePaymentsBySaleIds, listObligationsPendentes, payObligation, dispatchInvalidateAll,
-  dashboardCashEvelineSummary, dashboardReceivablesTotal
+  dashboardCashEvelineSummary, dashboardReceivablesTotal,
+  listAllInfinitePayReceivables, confirmRepasseInfinitePay
 } from '@/services'
 import type {
   DashboardStockSummary, DashboardSaleRow, DashboardFinancialRow,
-  SalePayment, UUID, ObligationRow, DashboardCashSummary, DashboardReceivablesTotal
+  SalePayment, UUID, ObligationRow, DashboardCashSummary, DashboardReceivablesTotal,
+  InfinitePayReceivable
 } from '@/types/supabase'
 import { Link } from 'react-router-dom'
 
@@ -61,6 +63,19 @@ export default function DashboardPage() {
   const [payLoading, setPayLoading] = useState(false)
   const [payActionError, setPayActionError] = useState<string | null>(null)
   const [paySuccessMsg, setPaySuccessMsg] = useState<string | null>(null)
+
+  const [ipReceivables, setIpReceivables] = useState<InfinitePayReceivable[]>([])
+  const [loadingIp, setLoadingIp] = useState(true)
+  const [ipError, setIpError] = useState<string | null>(null)
+
+  const [showIpConfirmModal, setShowIpConfirmModal] = useState(false)
+  const [ipSelected, setIpSelected] = useState<InfinitePayReceivable | null>(null)
+  const [ipFormAmount, setIpFormAmount] = useState<string>('')
+  const [ipFormDate, setIpFormDate] = useState<string>('')
+  const [ipFormNotes, setIpFormNotes] = useState<string>('')
+  const [ipLoading, setIpLoading] = useState(false)
+  const [ipActionError, setIpActionError] = useState<string | null>(null)
+  const [ipSuccessMsg, setIpSuccessMsg] = useState<string | null>(null)
 
   const [loadTick, setLoadTick] = useState(0)
 
@@ -150,6 +165,19 @@ export default function DashboardPage() {
         if (!cancelled) setReceivError(err?.message ?? String(err))
       })
       .finally(() => { if (!cancelled) setLoadingReceiv(false) })
+    return () => { cancelled = true }
+  }, [loadTick])
+
+  useEffect(() => {
+    let cancelled = false
+    setLoadingIp(true); setIpError(null)
+    listAllInfinitePayReceivables()
+      .then(arr => { if (!cancelled) setIpReceivables(arr) })
+      .catch(err => {
+        console.error('[Dashboard] InfinitePay recebíveis falhou:', err)
+        if (!cancelled) setIpError(err?.message ?? String(err))
+      })
+      .finally(() => { if (!cancelled) setLoadingIp(false) })
     return () => { cancelled = true }
   }, [loadTick])
 
@@ -309,36 +337,44 @@ export default function DashboardPage() {
   const saldoCaixa = Number(cashSummary?.movimento_liquido ?? 0)
 
   // ============================================================================
-  // INFINITEPAY LÍQUIDO (valor que vai efetivamente cair na conta Eveline).
-  // Fórmula: BRUTO (amount) - TAXA REAL (fee_actual_snapshot || fee_actual || fee_expected)
-  // Considera apenas vendas com provider=InfinitePay.
-  // Venda #43: Bruto 529,70 - Taxa 28,55 = Líquido 501,15
+  // INFINITEPAY — A REPASSAR (GLOBAL, não filtrado por período).
+  // Service: listAllInfinitePayReceivables()
+  //   - Busca TODAS vendas InfinitePay (sale_payments + inner sales global.
+  //   - fee_real_snapshot (campo real da tabela sale_payments).
+  //   - EXCLUI vendas que já possuem REPASSE_INFINITEPAY CONFIRMADO no financial_transactions.
+  //   - líquido = bruto (amount) - taxa_real (fee_real_snapshot ?? fee_expected_snapshot)
+  // Venda #43: 529,70 - 28,55 = 501,15
   // ============================================================================
-  const infinitePayLiquido = useMemo(() => {
-    let total = 0
-    for (const sp of salePayments) {
-      const prov = String((sp as any).provider_snapshot ?? (sp as any).provider ?? '').trim().toLowerCase()
-      if (!prov.includes('infinite')) continue
-      const bruto = Number(sp.amount ?? 0)
-      const taxa = Number(
-        (sp as any).fee_actual_snapshot
-        ?? (sp as any).fee_actual
-        ?? (sp as any).fee_expected
-        ?? 0
-      )
-      const liquido = Math.max(0, bruto - taxa)
-      total += liquido
+  const { aRepassarInfinitePay, totalRepassadoInfinitePay, ipLinhasARepassar, ipLinhasRepassadas } = useMemo(() => {
+    let rep = 0
+    let repassado = 0
+    const arepassar: InfinitePayReceivable[] = []
+    const repassadas: InfinitePayReceivable[] = []
+    for (const r of ipReceivables) {
+      if (r.repasse_confirmado) {
+        repassado += Number(r.repasse_amount ?? r.liquido)
+        repassadas.push(r)
+      } else {
+        rep += Number(r.liquido)
+        arepassar.push(r)
+      }
     }
-    return total
-  }, [salePayments])
+    return {
+      aRepassarInfinitePay: rep,
+      totalRepassadoInfinitePay: repassado,
+      ipLinhasARepassar: arepassar,
+      ipLinhasRepassadas: repassadas,
+    }
+  }, [ipReceivables])
+  const aposCreditoIp = saldoCaixa + aRepassarInfinitePay
 
   // ============================================================================
   // A RECEBER TOTAL (todas vendas, não só período). Usa dashboardReceivablesTotal.
-  // CAIXA PROJETADO = saldo caixa atual + InfinitePay líquido (recebíveis de intermediário já pago).
-  // A receber de clientes (Day/Cristina/Evelyn = 439,90) NÃO entra no projetado neste card.
+  // PROJETADO (após crédito) = saldo + InfinitePay líquido (recebíveis intermediário já pago).
+  // A receber clientes (Day/Cristina/Evelyn = 439,90) fica no card 4 separado.
   // ============================================================================
   const aReceberGlobal = Number(receivablesTotal?.total_a_receber ?? 0)
-  const caixaProjetado = saldoCaixa + infinitePayLiquido
+  const caixaProjetado = aposCreditoIp
   const potencialFinanceiroTotal = caixaProjetado + aReceberGlobal + Number(stock?.total_sales_potential ?? 0)
 
   const obrigacoes = useMemo(() => {
@@ -456,6 +492,47 @@ export default function DashboardPage() {
     }
   }
 
+  async function handleSubmitIpRepasse(e: React.FormEvent) {
+    e.preventDefault()
+    if (!ipSelected) {
+      setIpActionError('Nenhum recebível selecionado.')
+      return
+    }
+    const amtRaw = Number(ipFormAmount.replace(',', '.'))
+    if (!(amtRaw > 0)) {
+      setIpActionError('Valor recebido inválido.')
+      return
+    }
+    setIpLoading(true)
+    setIpActionError(null)
+    setIpSuccessMsg(null)
+    try {
+      const res = await confirmRepasseInfinitePay({
+        sale_payment_id: ipSelected.sale_payment_id,
+        sale_id: ipSelected.sale_id,
+        amount_received: amtRaw,
+        liquido_esperado: Number(ipSelected.liquido ?? 0),
+        trans_date: ipFormDate || undefined,
+        notes: ipFormNotes || undefined,
+      })
+      if (!res?.ok) {
+        setIpActionError(res?.message ?? 'Erro ao confirmar repasse.')
+        setIpLoading(false)
+        return
+      }
+      setIpSuccessMsg(res.message ?? 'Repasse confirmado com sucesso.')
+      dispatchInvalidateAll()
+      setTimeout(() => {
+        setShowIpConfirmModal(false)
+        setIpSelected(null)
+      }, 1500)
+    } catch (err: any) {
+      setIpActionError(err?.message ?? String(err ?? 'Erro desconhecido ao confirmar repasse.'))
+    } finally {
+      setIpLoading(false)
+    }
+  }
+
   return (
     <div className="space-y-5 pb-4 sm:pb-6">
       {/* Cabeçalho + filtro período */}
@@ -525,25 +602,86 @@ export default function DashboardPage() {
               <span>Saídas {(loadingCash || cashError) ? '—' : formatCurrency(despesas)}</span>
             </div>
           </div>
-          <div className="flex flex-col justify-between p-4 rounded-card bg-white border border-ink-200 shadow-sm">
+          <div className="flex flex-col p-4 rounded-card bg-white border border-sky-200 shadow-sm lg:col-span-2">
             <div className="flex items-center justify-between mb-3">
               <div className="flex items-center gap-2">
                 <div className="w-9 h-9 rounded-xl bg-sky-500/10 flex items-center justify-center text-sky-700">
                   <CreditCard className="w-4.5 h-4.5" />
                 </div>
                 <div>
-                  <div className="text-[11px] font-bold uppercase tracking-[0.12em] text-ink-500">Líquido InfinitePay</div>
-                  <div className="text-[10px] text-ink-400 mt-0.5">Bruto − taxa real · crédito futuro</div>
+                  <div className="text-[11px] font-bold uppercase tracking-[0.12em] text-ink-500">A repassar InfinitePay</div>
+                  <div className="text-[10px] text-ink-400 mt-0.5">Bruto − taxa real · soma líquida sem filtro de data</div>
                 </div>
               </div>
-              {loadingPayments && <div className="text-[10px] text-ink-400 animate-pulse">Carregando…</div>}
+              {loadingIp && <div className="text-[10px] text-ink-400 animate-pulse">Carregando…</div>}
             </div>
-            <div className="text-2xl sm:text-3xl font-black num tracking-tight text-sky-700">
-              {loadingPayments ? '—' : formatCurrency(infinitePayLiquido)}
+            <div className="flex items-baseline gap-2 flex-wrap">
+              <div className="text-2xl sm:text-3xl font-black num tracking-tight text-sky-700">
+                {(loadingIp || ipError) ? '—' : formatCurrency(aRepassarInfinitePay)}
+              </div>
+              {!loadingIp && !ipError && ipLinhasARepassar.length > 0 && (
+                <span className="chip bg-sky-50 text-sky-700 text-[10px] font-bold">
+                  {ipLinhasARepassar.length} {pluralize(ipLinhasARepassar.length, 'venda', 'vendas')}
+                </span>
+              )}
+              {!loadingIp && totalRepassadoInfinitePay > 0 && (
+                <span className="chip bg-emerald-50 text-emerald-700 text-[10px]">
+                  +{formatCurrency(totalRepassadoInfinitePay)} já repassado(s)
+                </span>
+              )}
             </div>
             <div className="mt-2 text-[10px] text-ink-400">
-              Entra no caixa quando for creditado pela operadora.
+              Entra no caixa quando confirmar o recebimento (operadora de cartão).
             </div>
+            {ipError && (
+              <div className="mt-3 p-3 rounded-xl border border-rose-200 bg-rose-50 text-rose-800 text-xs">
+                Não foi possível carregar recebíveis InfinitePay.
+              </div>
+            )}
+            {!loadingIp && !ipError && ipLinhasARepassar.length === 0 && (
+              <div className="mt-4 p-4 rounded-xl border border-dashed border-ink-200 text-center text-ink-400 text-sm">
+                Nenhum valor a repassar no momento.
+              </div>
+            )}
+            {!loadingIp && !ipError && ipLinhasARepassar.length > 0 && (
+              <div className="mt-4 space-y-2 max-h-[320px] overflow-auto pr-1">
+                {ipLinhasARepassar.map(r => (
+                  <div key={r.sale_payment_id} className="p-3 rounded-xl border border-sky-100 bg-sky-50/40 flex flex-col sm:flex-row sm:items-center gap-3">
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        {r.sale_friendly_number ? (
+                          <span className="chip bg-white text-sky-700 border border-sky-200 text-[10px] font-bold">#{String(r.sale_friendly_number).padStart(4, '0')}</span>
+                        ) : null}
+                        <span className="text-[11px] text-ink-500">{formatDate(r.sale_date ?? r.payment_created_at)}</span>
+                        {r.installments > 1 && (
+                          <span className="chip bg-white text-ink-500 text-[10px] border border-ink-200">{r.installments}x</span>
+                        )}
+                      </div>
+                      <div className="mt-1 text-sm font-semibold text-ink-900 truncate">
+                        {r.customer_name ?? 'Cliente não identificado'}
+                      </div>
+                      <div className="mt-1 text-[11px] text-ink-500 num">
+                        Bruto {formatCurrency(r.bruto)} · Taxa real {formatCurrency(r.taxa_real)} · <span className="font-bold text-sky-700">Líquido {formatCurrency(r.liquido)}</span>
+                      </div>
+                    </div>
+                    <button
+                      onClick={() => {
+                        setIpSelected(r)
+                        setIpFormAmount(r.liquido.toFixed(2).replace('.', ','))
+                        setIpFormDate(new Date().toISOString().slice(0, 10))
+                        setIpFormNotes('')
+                        setIpActionError(null)
+                        setIpSuccessMsg(null)
+                        setShowIpConfirmModal(true)
+                      }}
+                      className="btn-primary !py-2 !px-3 text-xs whitespace-nowrap min-w-fit self-start sm:self-center flex items-center gap-1.5"
+                    >
+                      <CheckCircle2 className="w-3.5 h-3.5" /> Confirmar recebimento
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
           <div className="flex flex-col justify-between p-4 rounded-card bg-gradient-to-br from-sky-500 to-brand-600 text-white shadow-sm">
             <div className="flex items-center gap-2 mb-3">
@@ -552,11 +690,11 @@ export default function DashboardPage() {
               </div>
               <div>
                 <div className="text-[11px] font-bold uppercase tracking-[0.12em] text-white/75">Disponível / Após crédito</div>
-                <div className="text-[10px] text-white/60 mt-0.5">saldo atual + InfinitePay líquido</div>
+                <div className="text-[10px] text-white/60 mt-0.5">saldo atual + recebíveis InfinitePay</div>
               </div>
             </div>
             <div className="text-2xl sm:text-3xl font-black num tracking-tight">
-              {((loadingCash || loadingPayments) || cashError) ? '—' : formatCurrency(caixaProjetado)}
+              {((loadingCash || loadingIp) || cashError || ipError) ? '—' : formatCurrency(aposCreditoIp)}
             </div>
             <div className="mt-2 text-[10px] text-white/70">
               Projeção após crédito da operadora de cartão.
@@ -1166,6 +1304,158 @@ export default function DashboardPage() {
         )}
       </div>
       </section>
+
+      {showIpConfirmModal && ipSelected && (
+        <div
+          className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4 bg-black/40 backdrop-blur-sm"
+          onClick={() => !ipLoading && setShowIpConfirmModal(false)}
+        >
+          <div
+            className="w-full sm:max-w-lg bg-white rounded-t-2xl sm:rounded-2xl shadow-2xl overflow-hidden max-h-[92vh] overflow-y-auto"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between gap-3 px-5 py-4 border-b border-ink-100 bg-sky-50">
+              <div className="flex items-center gap-2.5 min-w-0">
+                <div className="w-9 h-9 rounded-xl bg-sky-600 flex items-center justify-center flex-shrink-0">
+                  <CreditCard className="w-5 h-5 text-white" />
+                </div>
+                <div className="min-w-0">
+                  <h3 className="font-black text-ink-900 tracking-tight leading-none">Confirmar recebimento InfinitePay</h3>
+                  <p className="text-[11px] text-sky-700 mt-1">
+                    Cria ENTRADA / REPASSE_INFINITEPAY no caixa Eveline.
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => !ipLoading && setShowIpConfirmModal(false)}
+                disabled={ipLoading}
+                className="w-9 h-9 rounded-xl flex items-center justify-center text-ink-500 hover:text-ink-800 hover:bg-white/70 disabled:opacity-50 transition-colors flex-shrink-0"
+              >
+                <X className="w-4.5 h-4.5" />
+              </button>
+            </div>
+
+            <form onSubmit={handleSubmitIpRepasse} className="p-5 space-y-4">
+              <div className="p-4 rounded-xl border border-sky-100 bg-sky-50/40 space-y-2 text-sm">
+                <div className="flex items-center justify-between gap-2 flex-wrap">
+                  <span className="text-ink-500 text-xs uppercase tracking-[0.08em] font-bold">Venda</span>
+                  <span className="num font-bold text-sky-800">
+                    #{String(ipSelected.sale_friendly_number ?? '').padStart(4, '0') || 'Sem número'}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-ink-500">Cliente</span>
+                  <span className="font-semibold text-ink-900 truncate max-w-[220px] text-right">{ipSelected.customer_name ?? 'Não identificado'}</span>
+                </div>
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-ink-500">Data da venda</span>
+                  <span className="num text-ink-800">{formatDate(ipSelected.sale_date ?? ipSelected.payment_created_at)}</span>
+                </div>
+                {ipSelected.installments > 1 && (
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-ink-500">Parcelamento</span>
+                    <span className="num text-ink-800">{ipSelected.installments}x</span>
+                  </div>
+                )}
+              </div>
+
+              <div className="grid grid-cols-3 gap-3">
+                <div className="p-3 rounded-xl border border-ink-100 bg-white">
+                  <div className="text-[10px] font-bold uppercase text-ink-400 tracking-[0.08em]">Bruto</div>
+                  <div className="mt-1 text-lg font-black num text-ink-800">{formatCurrency(ipSelected.bruto)}</div>
+                </div>
+                <div className="p-3 rounded-xl border border-rose-100 bg-rose-50/40">
+                  <div className="text-[10px] font-bold uppercase text-rose-500 tracking-[0.08em]">Taxa real</div>
+                  <div className="mt-1 text-lg font-black num text-rose-700">−{formatCurrency(ipSelected.taxa_real)}</div>
+                </div>
+                <div className="p-3 rounded-xl border border-emerald-100 bg-emerald-50/50">
+                  <div className="text-[10px] font-bold uppercase text-emerald-600 tracking-[0.08em]">Líquido</div>
+                  <div className="mt-1 text-lg font-black num text-emerald-700">{formatCurrency(ipSelected.liquido)}</div>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-bold text-ink-700 mb-1.5 uppercase tracking-[0.08em]">Valor recebido (R$)</label>
+                  <input
+                    type="text"
+                    value={ipFormAmount}
+                    onChange={(e) => setIpFormAmount(e.target.value)}
+                    disabled={ipLoading}
+                    placeholder="ex: 501,15"
+                    className="w-full h-12 px-3.5 rounded-xl border border-ink-200 bg-white text-sm num focus:outline-none focus:ring-2 focus:ring-sky-500 focus:border-sky-400 disabled:bg-ink-50"
+                  />
+                  <p className="mt-1 text-[10px] text-ink-500">
+                    Preenchido com o líquido esperado. Ajuste se houver diferença real.
+                  </p>
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-ink-700 mb-1.5 uppercase tracking-[0.08em]">Data do crédito</label>
+                  <input
+                    type="date"
+                    value={ipFormDate}
+                    onChange={(e) => setIpFormDate(e.target.value)}
+                    disabled={ipLoading}
+                    className="w-full h-12 px-3.5 rounded-xl border border-ink-200 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-sky-500 focus:border-sky-400 disabled:bg-ink-50"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-ink-700 mb-1.5 uppercase tracking-[0.08em]">Observações (opcional)</label>
+                <textarea
+                  rows={2}
+                  value={ipFormNotes}
+                  onChange={(e) => setIpFormNotes(e.target.value)}
+                  disabled={ipLoading}
+                  placeholder="Ex: comprovante nº 123.456, diferença R$0,15 de tarifário adicional, etc."
+                  className="w-full px-3.5 py-3 rounded-xl border border-ink-200 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-sky-500 focus:border-sky-400 disabled:bg-ink-50 resize-none"
+                />
+              </div>
+
+              {ipActionError && (
+                <div className="p-3 rounded-xl border border-rose-200 bg-rose-50 text-rose-800 text-xs">
+                  <div className="font-bold flex items-center gap-1.5">
+                    <AlertCircle className="w-3.5 h-3.5" /> Não foi possível confirmar o repasse
+                  </div>
+                  <div className="mt-0.5 opacity-90">{ipActionError}</div>
+                </div>
+              )}
+
+              {ipSuccessMsg && (
+                <div className="p-3 rounded-xl border border-emerald-200 bg-emerald-50 text-emerald-800 text-xs">
+                  <div className="font-bold flex items-center gap-1.5">
+                    <CheckCircle2 className="w-3.5 h-3.5" /> Repasse registrado
+                  </div>
+                  <div className="mt-0.5 opacity-90">{ipSuccessMsg}</div>
+                </div>
+              )}
+
+              <div className="pt-2 flex flex-col-reverse sm:flex-row sm:justify-end gap-2">
+                <button
+                  type="button"
+                  disabled={ipLoading}
+                  onClick={() => !ipLoading && setShowIpConfirmModal(false)}
+                  className="btn-secondary !py-3"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  disabled={ipLoading}
+                  className="btn-primary !py-3 flex items-center justify-center gap-2"
+                >
+                  {ipLoading
+                    ? <span className="animate-pulse">Registrando…</span>
+                    : <><CheckCircle2 className="w-4 h-4" /> Confirmar recebimento</>
+                  }
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
 
       {showPayModal && (
         <div

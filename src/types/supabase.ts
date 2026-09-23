@@ -356,6 +356,25 @@ export interface FinancialTransaction {
   updated_at?: string;
 }
 
+export interface InfinitePayReceivable {
+  sale_payment_id: UUID;
+  sale_id: UUID;
+  sale_friendly_number?: number | null;
+  sale_date?: string | null;
+  customer_name?: string | null;
+  provider_snapshot?: string | null;
+  method?: string | null;
+  installments: number;
+  bruto: number;
+  taxa_real: number;
+  liquido: number;
+  payment_created_at: string;
+  repasse_confirmado: boolean;
+  repasse_trans_id?: UUID | null;
+  repasse_amount?: number | null;
+  repasse_date?: string | null;
+}
+
 export interface Setting {
   id: UUID;
   key: string;
