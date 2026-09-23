@@ -61,6 +61,11 @@ export interface Product {
 export interface ProductWithStock extends Product {
   available_quantity: number;
   has_active_batches: boolean;
+  total_stock?: number;
+  available_stock?: number;
+  stock_quantity?: number;
+  weighted_cost?: number | null;
+  weighted_average_cost?: number | null;
 }
 
 export interface ProductVariant {

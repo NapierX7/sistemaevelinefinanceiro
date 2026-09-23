@@ -37,6 +37,7 @@ export default function ProductsPage() {
         setProducts(rp.value as ProductWithStock[])
       } else {
         console.error('[ProductsPage] listProductsWithStock falhou:', rp.reason)
+        setUiError('Não foi possível carregar os produtos. Tente novamente.')
       }
       if (rc.status === 'fulfilled') {
         setCategories(rc.value)
@@ -47,9 +48,6 @@ export default function ProductsPage() {
         setPackaging(rpk.value)
       } else {
         console.error('[ProductsPage] listPackagingTypes falhou:', rpk.reason)
-      }
-      if (rp.status === 'rejected' && rc.status === 'rejected') {
-        setUiError('Não foi possível carregar os dados. Tente novamente.')
       }
     } finally {
       setLoading(false)

@@ -61,15 +61,58 @@ export async function listAllProducts(includeInactive = false): Promise<Product[
 
 // ================================================================
 // listProductsWithStock: FONTE ÚNICA DE VERDADE do estoque disponível
-//   Junta listAllProducts + listInventoryBatches
-//   Calcula available_quantity = SUM(inventory_batches.quantity_available)
-//   por product_id.
+//   1) Tenta PRIMEIRO a VIEW confirmada public.products_with_stock
+//      (retorna total_stock, weighted_cost etc.)
+//   2) Se a VIEW falhar, faz fallback manual: listAllProducts + batches
+//      usando Promise.allSettled INTERNO — NUNCA throw.
+//      Se batches falhar individualmente, retorna produtos com
+//      estoque 0 mas produtos SEMPRE aparecem.
 // ================================================================
 export async function listProductsWithStock(includeInactive = false): Promise<ProductWithStock[]> {
-  const [products, batches] = await Promise.all([
+  if (usingSupabase) {
+    try {
+      let q = (supabase!).from('products_with_stock').select('*')
+      if (!includeInactive) q = q.eq('active', true)
+      const { data, error } = await q.order('name')
+      if (!error && Array.isArray(data)) {
+        return (data as any[]).map((row: any) => ({
+          id: row.id,
+          sku: row.sku ?? null,
+          name: row.name ?? 'Produto sem nome',
+          slug: row.slug ?? null,
+          category_id: row.category_id ?? null,
+          default_packaging_type_id: row.default_packaging_type_id ?? null,
+          current_cost: Number(row.current_cost ?? 0),
+          sale_price: Number(row.sale_price ?? 0),
+          min_stock: Number(row.min_stock ?? 0),
+          active: Boolean(row.active ?? true),
+          image_url: row.image_url ?? null,
+          notes: row.notes ?? null,
+          created_at: row.created_at ?? new Date().toISOString(),
+          updated_at: row.updated_at ?? new Date().toISOString(),
+          available_quantity: Number(row.total_stock ?? 0),
+          total_stock: Number(row.total_stock ?? 0),
+          available_stock: Number(row.total_stock ?? 0),
+          stock_quantity: Number(row.total_stock ?? 0),
+          weighted_cost: Number(row.weighted_cost ?? 0),
+          weighted_average_cost: Number(row.weighted_average_cost ?? 0),
+          has_active_batches: Number(row.total_stock ?? 0) > 0,
+        })) as ProductWithStock[]
+      }
+      if (error) console.warn('[services] listProductsWithStock view falhou, fallback manual:', error.message ?? error)
+    } catch (e: any) {
+      console.warn('[services] listProductsWithStock view exception, fallback manual:', e?.message ?? e)
+    }
+  }
+
+  const [rp, rb] = await Promise.allSettled([
     listAllProducts(includeInactive),
-    listInventoryBatches(),
+    usingSupabase ? listInventoryBatches() : Promise.resolve([] as any[]),
   ])
+  const products: any[] = rp.status === 'fulfilled' ? (rp.value as any[]) : []
+  const batches: any[] = rb.status === 'fulfilled' ? (rb.value as any[]) : []
+  if (rb.status === 'rejected') console.error('[services] listProductsWithStock batches falhou, usando estoque=0:', (rb as any).reason)
+
   const qtyPerProduct = new Map<string, number>()
   for (const b of batches) {
     const pid = b.product_id
@@ -77,7 +120,7 @@ export async function listProductsWithStock(includeInactive = false): Promise<Pr
     if (add <= 0 && !qtyPerProduct.has(pid)) { qtyPerProduct.set(pid, 0); continue }
     qtyPerProduct.set(pid, (qtyPerProduct.get(pid) ?? 0) + add)
   }
-  return products.map(p => {
+  return products.map((p: any) => {
     const q = qtyPerProduct.get(p.id) ?? 0
     return {
       ...p,
@@ -87,7 +130,7 @@ export async function listProductsWithStock(includeInactive = false): Promise<Pr
       stock_quantity: q,
       has_active_batches: q > 0,
     }
-  })
+  }) as ProductWithStock[]
 }
 
 export async function getProduct(id: UUID): Promise<Product | null> {
