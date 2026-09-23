@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import {
   Plus, Truck, ChevronDown, X, Trash2, Package, Calendar,
-  Building2, MapPin, Filter, DollarSign, Calculator, Check, PackageCheck
+  Building2, MapPin, Filter, DollarSign, Calculator, Check, PackageCheck, AlertTriangle
 } from 'lucide-react'
 import {
   formatCurrency, cn, parseBrl, formatDate, toInputDate, formatFriendlyNumber, pluralize
@@ -39,21 +39,35 @@ export default function PurchasesPage() {
   const [detailId, setDetailId] = useState<string | null>(null)
   const [detail, setDetail] = useState<any>(null)
   const [detailLoading, setDetailLoading] = useState(false)
+  const [uiError, setUiError] = useState<string | null>(null)
 
   const load = async () => {
     setLoading(true)
+    setUiError(null)
     try {
-      const [p, pr, bat] = await Promise.all([
+      const [rp, rpr, rbat] = await Promise.allSettled([
         listPurchases(),
         listAllProducts(true),
         listInventoryBatches(),
       ])
-      setPurchases(p)
-      setProducts(pr)
-      setBatches(bat)
-    } catch (e) {
-      console.error(e)
-      alert('Erro ao carregar compras.')
+      if (rp.status === 'fulfilled') {
+        setPurchases(rp.value)
+      } else {
+        console.error('[PurchasesPage] listPurchases falhou:', rp.reason)
+      }
+      if (rpr.status === 'fulfilled') {
+        setProducts(rpr.value)
+      } else {
+        console.error('[PurchasesPage] listAllProducts falhou:', rpr.reason)
+      }
+      if (rbat.status === 'fulfilled') {
+        setBatches(rbat.value)
+      } else {
+        console.error('[PurchasesPage] listInventoryBatches falhou:', rbat.reason)
+      }
+      if (rp.status === 'rejected') {
+        setUiError('Não foi possível carregar os dados. Tente novamente.')
+      }
     } finally {
       setLoading(false)
     }
@@ -123,6 +137,18 @@ export default function PurchasesPage() {
           <Plus className="w-4 h-4" /> Nova Entrada
         </button>
       </div>
+
+      {uiError && (
+        <div className="p-4 rounded-2xl border border-rose-200 bg-rose-50 text-rose-800 flex items-start gap-3">
+          <AlertTriangle className="w-5 h-5 flex-shrink-0 mt-0.5 text-rose-600" />
+          <div className="min-w-0 flex-1">
+            <div className="font-bold text-sm">{uiError}</div>
+          </div>
+          <button onClick={() => load()} className="btn-danger !py-2 !px-3 text-xs whitespace-nowrap min-w-fit">
+            Tentar novamente
+          </button>
+        </div>
+      )}
 
       <div className="card">
         <div className="table-wrap">
@@ -847,7 +873,7 @@ function DetailModal({
         <div className="bg-white border-b border-ink-100 px-5 py-4 flex items-center justify-between">
           <div>
             <h2 className="text-lg font-black text-ink-900">Detalhe da Entrada</h2>
-            <p className="text-xs text-ink-500 mt-0.5">{loading ? 'Carregando...' : (detail?.purchase?.id || detailId?.slice(0, 8))}</p>
+            <p className="text-xs text-ink-500 mt-0.5">{loading ? 'Carregando...' : formatDate(detail?.purchase?.entry_date)}</p>
           </div>
           <button onClick={onClose} className="btn-ghost !p-2"><X className="w-5 h-5" /></button>
         </div>

@@ -781,31 +781,60 @@ export function demoFinalizeSale(args: {
   sale.real_margin = real_margin
 
   // Financeiro
+  // ============================================================
+  // payment_source: ORIGEM REAL DO DINHEIRO (não confundir com método de pagamento).
+  // Regras:
+  //  · provider = InfinitePay → INFINITEPAY
+  //  · provider = Mercado Pago → MERCADO_PAGO
+  //  · método PIX DIRETO / DINHEIRO / (sem provider) → CAIXA_EVELINE
+  //  · TAXA = mesma origem da venda (é descontada lá); NÃO reduz CAIXA_EVELINE se venda está no intermediador.
+  //  · EMBALAGEM → NÃO gera SAÍDA financeira. Custo gerencial (sales.packaging_cost) para lucro.
+  const psName = ((args.payment?.provider_snapshot ?? '') as string).trim().toLowerCase()
+  const paymMethod = String(args.payment?.method ?? 'OUTRO').toUpperCase()
+  let paymentSrc = 'CAIXA_EVELINE'
+  if (psName.includes('mercado') || psName.startsWith('mp') || psName.includes('mercadopago') || paymMethod === 'MERCADOPAGO') {
+    paymentSrc = 'MERCADO_PAGO'
+  } else if (psName.includes('infinite') || psName.includes('infinitepay') || paymMethod === 'INFINITEPAY') {
+    paymentSrc = 'INFINITEPAY'
+  } else if (paymMethod === 'FABIANA') {
+    paymentSrc = 'FABIANA'
+  } else if (paymMethod === 'DONA') {
+    paymentSrc = 'DONA'
+  }
+  // Venda PENDENTE (sem pagamento informado / valor pago 0) → status PENDENTE + payment_source NULL
+  // CENÁRIO E: NÃO aumenta caixa. Permanece em A RECEBER.
+  const hasPayment = !!args.payment && Number(args.payment.amount ?? total_customer) > 0
+  const txStatus = hasPayment ? 'CONFIRMADO' : 'PENDENTE'
+  const txPaymentSource = hasPayment ? paymentSrc : null
+
   s.financial_transactions.push({
     id: uid(), trans_date: sale.sale_date.slice(0,10), trans_type: 'ENTRADA', category: 'VENDA',
     description: `Venda #${String(friendly_number).padStart(6,'0')}`,
-    amount: total_customer, related_sale_id: sale.id, status: 'CONFIRMADO',
+    amount: total_customer, related_sale_id: sale.id, status: txStatus,
     payment_method: args.payment?.method, created_by: args.user_id ?? null, created_at: todayISO(),
-    payment_source: 'CAIXA_EVELINE',
+    payment_source: txPaymentSource,
   })
   if (fee_actual > 0) {
     s.financial_transactions.push({
       id: uid(), trans_date: sale.sale_date.slice(0,10), trans_type: 'SAIDA', category: 'TAXA',
       description: `Taxa pagamento Venda #${String(friendly_number).padStart(6,'0')}`,
-      amount: +fee_actual.toFixed(2), related_sale_id: sale.id, status: 'CONFIRMADO',
+      amount: +fee_actual.toFixed(2), related_sale_id: sale.id, status: txStatus,
       created_by: args.user_id ?? null, created_at: todayISO(),
-      payment_source: 'CAIXA_EVELINE',
+      payment_source: txPaymentSource,
     })
   }
   if (extra_costs > 0) {
+    // Custos extras (entrega, motoboy, etc) normalmente são pagos diretos da Eveline.
+    // Usa CAIXA_EVELINE por default (seguro, não causa divergência). Cenário B/C: se algum dia taxa for por intermediador → separar.
     s.financial_transactions.push({
       id: uid(), trans_date: sale.sale_date.slice(0,10), trans_type: 'SAIDA', category: 'OUTRA_DESPESA',
       description: `Custos extras Venda #${String(friendly_number).padStart(6,'0')}`,
-      amount: +extra_costs.toFixed(2), related_sale_id: sale.id, status: 'CONFIRMADO',
+      amount: +extra_costs.toFixed(2), related_sale_id: sale.id, status: txStatus,
       created_by: args.user_id ?? null, created_at: todayISO(),
-      payment_source: 'CAIXA_EVELINE',
+      payment_source: hasPayment ? 'CAIXA_EVELINE' : null,
     })
   }
+  // NÃO CRIAR SAÍDA EMBALAGEM (custo gerencial já em sale.packaging_cost deduzido do lucro).
 
   saveStore(s)
   return { ok: true, sale_id: sale.id, friendly_number, total_customer, real_profit, real_margin, items_count }

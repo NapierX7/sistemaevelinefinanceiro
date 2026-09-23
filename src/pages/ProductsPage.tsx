@@ -24,18 +24,33 @@ export default function ProductsPage() {
   const [modalOpen, setModalOpen] = useState(false)
   const [editingId, setEditingId] = useState<string | null>(null)
 
+  const [uiError, setUiError] = useState<string | null>(null)
+
   const loadAll = async () => {
     setLoading(true)
+    setUiError(null)
     try {
-      const [p, c, pk] = await Promise.all([
+      const [rp, rc, rpk] = await Promise.allSettled([
         listProductsWithStock(true), listCategories(), listPackagingTypes()
       ])
-      setProducts(p as ProductWithStock[])
-      setCategories(c)
-      setPackaging(pk)
-    } catch (e) {
-      console.error(e)
-      alert('Erro ao carregar dados.')
+      if (rp.status === 'fulfilled') {
+        setProducts(rp.value as ProductWithStock[])
+      } else {
+        console.error('[ProductsPage] listProductsWithStock falhou:', rp.reason)
+      }
+      if (rc.status === 'fulfilled') {
+        setCategories(rc.value)
+      } else {
+        console.error('[ProductsPage] listCategories falhou:', rc.reason)
+      }
+      if (rpk.status === 'fulfilled') {
+        setPackaging(rpk.value)
+      } else {
+        console.error('[ProductsPage] listPackagingTypes falhou:', rpk.reason)
+      }
+      if (rp.status === 'rejected' && rc.status === 'rejected') {
+        setUiError('Não foi possível carregar os dados. Tente novamente.')
+      }
     } finally {
       setLoading(false)
     }
@@ -81,6 +96,18 @@ export default function ProductsPage() {
           <Plus className="w-4 h-4" /> Novo produto
         </button>
       </div>
+
+      {uiError && (
+        <div className="p-4 rounded-2xl border border-rose-200 bg-rose-50 text-rose-800 flex items-start gap-3">
+          <AlertTriangle className="w-5 h-5 flex-shrink-0 mt-0.5 text-rose-600" />
+          <div className="min-w-0 flex-1">
+            <div className="font-bold text-sm">{uiError}</div>
+          </div>
+          <button onClick={() => loadAll()} className="btn-danger !py-2 !px-3 text-xs whitespace-nowrap min-w-fit">
+            Tentar novamente
+          </button>
+        </div>
+      )}
 
       <div className="card p-4 space-y-3">
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">

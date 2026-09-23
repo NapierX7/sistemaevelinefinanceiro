@@ -152,7 +152,7 @@ export default function InventoryPage() {
               <div className="min-w-0">
                 <div className="font-bold">Não foi possível carregar um ou mais dados de estoque</div>
                 <div className="text-xs mt-1 opacity-90 break-words">
-                  {[summaryError, listError].filter(Boolean).join(' · ')}
+                  Tente novamente. Se o problema persistir, contate o suporte.
                 </div>
               </div>
             </div>
@@ -173,7 +173,7 @@ export default function InventoryPage() {
             value={loadingSummary ? '…' : String(kpis.pecas)}
             icon={<Package className="w-5 h-5" />}
             tone={summaryError ? 'rose' : 'brand'}
-            sub={summaryError ? summaryError.slice(0, 40) : pluralize(Number(summary?.total_skus ?? 0), 'SKU')}
+            sub={loadingSummary ? 'Carregando…' : summaryError ? 'Erro ao carregar. Clique em Atualizar.' : pluralize(Number(summary?.total_skus ?? 0), 'SKU')}
           />
           <KpiCard
             label="Custo do estoque"
@@ -268,7 +268,7 @@ export default function InventoryPage() {
                   <div className="text-center max-w-lg mx-auto">
                     <AlertCircle className="w-10 h-10 text-rose-400 mx-auto mb-2" />
                     <div className="font-bold text-rose-700">Não foi possível carregar os produtos.</div>
-                    <div className="text-xs text-rose-600 mt-1 break-words">{listError}</div>
+                    <div className="text-xs text-rose-600 mt-1 break-words">Tente novamente em instantes.</div>
                     <button
                       onClick={() => setTick(t => t + 1)}
                       className="btn-secondary mt-3 !py-2 text-xs"
@@ -341,7 +341,7 @@ export default function InventoryPage() {
                   <div className="text-center max-w-lg mx-auto">
                     <AlertCircle className="w-10 h-10 text-rose-400 mx-auto mb-2" />
                     <div className="font-bold text-rose-700">Não foi possível carregar movimentações.</div>
-                    <div className="text-xs text-rose-600 mt-1 break-words">{movementsError}</div>
+                    <div className="text-xs text-rose-600 mt-1 break-words">Tente novamente em instantes.</div>
                     <button
                       onClick={() => setTick(t => t + 1)}
                       className="btn-secondary mt-3 !py-2 text-xs"
@@ -415,7 +415,7 @@ export default function InventoryPage() {
                   <div className="text-center max-w-lg mx-auto">
                     <AlertCircle className="w-10 h-10 text-rose-400 mx-auto mb-2" />
                     <div className="font-bold text-rose-700">Não foi possível carregar lotes.</div>
-                    <div className="text-xs text-rose-600 mt-1 break-words">{batchesError}</div>
+                    <div className="text-xs text-rose-600 mt-1 break-words">Tente novamente em instantes.</div>
                     <button
                       onClick={() => setTick(t => t + 1)}
                       className="btn-secondary mt-3 !py-2 text-xs"

@@ -294,9 +294,25 @@ export interface FinalizeSaleParams {
   customer_phone?: string
 }
 
+function __computePaymentSourceHint(payment?: FinalizeSaleParams['payment']): string {
+  if (!payment) return 'CAIXA_EVELINE'
+  const psName = ((payment.provider_snapshot ?? '') as string).trim().toLowerCase()
+  const paymMethod = String(payment.method ?? 'OUTRO').toUpperCase()
+  if (psName.includes('mercado') || psName.startsWith('mp') || psName.includes('mercadopago') || paymMethod === 'MERCADOPAGO') {
+    return 'MERCADO_PAGO'
+  }
+  if (psName.includes('infinite') || psName.includes('infinitepay') || paymMethod === 'INFINITEPAY') {
+    return 'INFINITEPAY'
+  }
+  if (paymMethod === 'FABIANA') return 'FABIANA'
+  if (paymMethod === 'DONA') return 'DONA'
+  return 'CAIXA_EVELINE'
+}
+
 export async function finalizeSale(p: FinalizeSaleParams) {
   const userId = getCurrentUserId()
   let ret: any
+  const paymentSourceHint = __computePaymentSourceHint(p.payment)
   if (!usingSupabase) {
     ret = Demo.demoFinalizeSale({ ...p, user_id: userId ?? undefined } as any)
   } else {
@@ -319,6 +335,7 @@ export async function finalizeSale(p: FinalizeSaleParams) {
         provider_snapshot: p.payment.provider_snapshot ?? null,
         modality_snapshot: p.payment.modality_snapshot ?? null,
         fee_rule_id: p.payment.fee_rule_id ?? null,
+        payment_source_hint: paymentSourceHint,
       } as any) : null,
       p_packaging: p.packaging as any ?? null,
       p_extra_costs: (p.extra_costs ?? []) as any,
@@ -330,6 +347,7 @@ export async function finalizeSale(p: FinalizeSaleParams) {
     ret = data
   }
   setTimeout(__reloadDashboard, 50)
+  try { dispatchInvalidateAll?.() } catch {}
   return ret
 }
 

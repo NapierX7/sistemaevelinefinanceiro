@@ -309,28 +309,65 @@ export default function DashboardPage() {
   const saldoCaixa = Number(cashSummary?.movimento_liquido ?? 0)
 
   // ============================================================================
+  // INFINITEPAY LÍQUIDO (valor que vai efetivamente cair na conta Eveline).
+  // Fórmula: BRUTO (amount) - TAXA REAL (fee_actual_snapshot || fee_actual || fee_expected)
+  // Considera apenas vendas com provider=InfinitePay.
+  // Venda #43: Bruto 529,70 - Taxa 28,55 = Líquido 501,15
+  // ============================================================================
+  const infinitePayLiquido = useMemo(() => {
+    let total = 0
+    for (const sp of salePayments) {
+      const prov = String((sp as any).provider_snapshot ?? (sp as any).provider ?? '').trim().toLowerCase()
+      if (!prov.includes('infinite')) continue
+      const bruto = Number(sp.amount ?? 0)
+      const taxa = Number(
+        (sp as any).fee_actual_snapshot
+        ?? (sp as any).fee_actual
+        ?? (sp as any).fee_expected
+        ?? 0
+      )
+      const liquido = Math.max(0, bruto - taxa)
+      total += liquido
+    }
+    return total
+  }, [salePayments])
+
+  // ============================================================================
   // A RECEBER TOTAL (todas vendas, não só período). Usa dashboardReceivablesTotal.
-  // CAIXA PROJETADO = saldo caixa atual + a receber GLOBAL.
+  // CAIXA PROJETADO = saldo caixa atual + InfinitePay líquido (recebíveis de intermediário já pago).
+  // A receber de clientes (Day/Cristina/Evelyn = 439,90) NÃO entra no projetado neste card.
   // ============================================================================
   const aReceberGlobal = Number(receivablesTotal?.total_a_receber ?? 0)
-  const caixaProjetado = saldoCaixa + aReceberGlobal
-  const potencialFinanceiroTotal = caixaProjetado + Number(stock?.total_sales_potential ?? 0)
+  const caixaProjetado = saldoCaixa + infinitePayLiquido
+  const potencialFinanceiroTotal = caixaProjetado + aReceberGlobal + Number(stock?.total_sales_potential ?? 0)
 
   const obrigacoes = useMemo(() => {
-    const byCredor = new Map<string, { creditor: string; total: number; count: number }>()
+    const byCredor = new Map<string, {
+      creditor: string; total: number; amount_paid: number; remaining: number; count: number
+    }>()
     let total = 0
+    let totalPago = 0
     for (const o of obligationsRows) {
       const amt = Number(o.amount ?? 0)
       if (amt <= 0) continue
+      const paid = Number((o as any).amount_paid ?? 0)
+      const rem = Number((o as any).amount_remaining ?? (o as any).remaining_balance ?? Math.max(0, amt - paid))
       total += amt
+      totalPago += paid
       const name = (o.creditor_name || 'Sem credor').toString().trim()
-      const prev = byCredor.get(name) ?? { creditor: name, total: 0, count: 0 }
+      const prev = byCredor.get(name) ?? {
+        creditor: name, total: 0, amount_paid: 0, remaining: 0, count: 0
+      }
       prev.total += amt
+      prev.amount_paid += paid
+      prev.remaining += rem
       prev.count += 1
       byCredor.set(name, prev)
     }
     return {
       total,
+      totalPago,
+      totalRemaining: Math.max(0, total - totalPago),
       linhas: Array.from(byCredor.values()).sort((a, b) => b.total - a.total)
     }
   }, [obligationsRows])
@@ -474,8 +511,8 @@ export default function DashboardPage() {
                   <Wallet className="w-4.5 h-4.5" />
                 </div>
                 <div>
-                  <div className="text-[11px] font-bold uppercase tracking-[0.12em] text-white/75">Saldo em caixa</div>
-                  <div className="text-[10px] text-white/60 mt-0.5">CAIXA_EVELINE · CONFIRMADO · Posição atual</div>
+                  <div className="text-[11px] font-bold uppercase tracking-[0.12em] text-white/75">Saldo atual da conta</div>
+                  <div className="text-[10px] text-white/60 mt-0.5">CAIXA_EVELINE · posição atual</div>
                 </div>
               </div>
               {loadingCash && <div className="text-[10px] text-white/60 animate-pulse">Carregando…</div>}
@@ -489,23 +526,23 @@ export default function DashboardPage() {
             </div>
           </div>
           <div className="flex flex-col justify-between p-4 rounded-card bg-white border border-ink-200 shadow-sm">
-            <div className="flex items-center gap-2 mb-3">
-              <div className="w-9 h-9 rounded-xl bg-amber-500/10 flex items-center justify-center text-amber-700">
-                <Clock className="w-4.5 h-4.5" />
+            <div className="flex items-center justify-between mb-3">
+              <div className="flex items-center gap-2">
+                <div className="w-9 h-9 rounded-xl bg-sky-500/10 flex items-center justify-center text-sky-700">
+                  <CreditCard className="w-4.5 h-4.5" />
+                </div>
+                <div>
+                  <div className="text-[11px] font-bold uppercase tracking-[0.12em] text-ink-500">Líquido InfinitePay</div>
+                  <div className="text-[10px] text-ink-400 mt-0.5">Bruto − taxa real · crédito futuro</div>
+                </div>
               </div>
-              <div>
-                <div className="text-[11px] font-bold uppercase tracking-[0.12em] text-ink-500">A receber</div>
-                <div className="text-[10px] text-ink-400 mt-0.5">Todas vendas · não só período</div>
-              </div>
-              {loadingReceiv && <div className="ml-auto text-[10px] text-ink-400 animate-pulse">Carregando…</div>}
+              {loadingPayments && <div className="text-[10px] text-ink-400 animate-pulse">Carregando…</div>}
             </div>
-            <div className="text-2xl sm:text-3xl font-black num tracking-tight text-amber-700">
-              {(loadingReceiv || receivError) ? '—' : formatCurrency(aReceberGlobal)}
+            <div className="text-2xl sm:text-3xl font-black num tracking-tight text-sky-700">
+              {loadingPayments ? '—' : formatCurrency(infinitePayLiquido)}
             </div>
             <div className="mt-2 text-[10px] text-ink-400">
-              {receivablesTotal && !receivError
-                ? `${receivablesTotal.vendas_pendentes_qtd ?? 0} venda(s) pendente(s). Entra no caixa quando recebido.`
-                : 'Não entrou no caixa ainda. Contabiliza no resultado.'}
+              Entra no caixa quando for creditado pela operadora.
             </div>
           </div>
           <div className="flex flex-col justify-between p-4 rounded-card bg-gradient-to-br from-sky-500 to-brand-600 text-white shadow-sm">
@@ -514,51 +551,38 @@ export default function DashboardPage() {
                 <TrendingUp className="w-4.5 h-4.5" />
               </div>
               <div>
-                <div className="text-[11px] font-bold uppercase tracking-[0.12em] text-white/75">Caixa projetado</div>
-                <div className="text-[10px] text-white/60 mt-0.5">saldo atual + a receber total</div>
+                <div className="text-[11px] font-bold uppercase tracking-[0.12em] text-white/75">Disponível / Após crédito</div>
+                <div className="text-[10px] text-white/60 mt-0.5">saldo atual + InfinitePay líquido</div>
               </div>
             </div>
             <div className="text-2xl sm:text-3xl font-black num tracking-tight">
-              {((loadingCash || loadingReceiv) || cashError || receivError) ? '—' : formatCurrency(caixaProjetado)}
+              {((loadingCash || loadingPayments) || cashError) ? '—' : formatCurrency(caixaProjetado)}
             </div>
             <div className="mt-2 text-[10px] text-white/70">
-              Projeção — não é saldo bancário atual.
+              Projeção após crédito da operadora de cartão.
             </div>
           </div>
           <div className="flex flex-col justify-between p-4 rounded-card bg-white border border-ink-200 shadow-sm">
-            <div className="flex items-center gap-2 mb-3">
-              <div className="w-9 h-9 rounded-xl bg-violet-500/10 flex items-center justify-center text-violet-700">
-                <Package className="w-4.5 h-4.5" />
+            <div className="flex items-center justify-between mb-3">
+              <div className="flex items-center gap-2">
+                <div className="w-9 h-9 rounded-xl bg-amber-500/10 flex items-center justify-center text-amber-700">
+                  <Clock className="w-4.5 h-4.5" />
+                </div>
+                <div>
+                  <div className="text-[11px] font-bold uppercase tracking-[0.12em] text-ink-500">A receber de clientes</div>
+                  <div className="text-[10px] text-ink-400 mt-0.5">Vendas pendentes · não só período</div>
+                </div>
               </div>
-              <div>
-                <div className="text-[11px] font-bold uppercase tracking-[0.12em] text-ink-500">Potencial financeiro total</div>
-                <div className="text-[10px] text-ink-400 mt-0.5">proj. + estoque</div>
-              </div>
+              {loadingReceiv && <div className="text-[10px] text-ink-400 animate-pulse">Carregando…</div>}
             </div>
-            <div className="text-2xl sm:text-3xl font-black num tracking-tight text-violet-700">
-              {((loadingCash || loadingReceiv || loadingStock) || cashError || receivError || stockError) ? '—' : formatCurrency(potencialFinanceiroTotal)}
+            <div className="text-2xl sm:text-3xl font-black num tracking-tight text-amber-700">
+              {(loadingReceiv || receivError) ? '—' : formatCurrency(aReceberGlobal)}
             </div>
             <div className="mt-2 text-[10px] text-ink-400">
-              Projeção máxima: caixa + receber + potencial estoque.
+              {receivablesTotal && !receivError
+                ? `${receivablesTotal.vendas_pendentes_qtd ?? 0} venda(s) pendente(s). Entra quando receber.`
+                : 'Não entrou no caixa ainda.'}
             </div>
-          </div>
-        </div>
-        <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-          <div className="text-[10px] px-3 py-2 rounded-lg bg-ink-50 text-ink-500 border border-ink-100 leading-relaxed">
-            <b className="text-ink-700">Dinheiro disponível hoje:</b><br />
-            Somente o Saldo em Caixa (1º card). Projeções não são dinheiro real.
-          </div>
-          <div className="text-[10px] px-3 py-2 rounded-lg bg-amber-50 text-amber-800 border border-amber-100 leading-relaxed">
-            <b>Recebíveis:</b><br />
-            Não entram no caixa até aparecerem em <code>financial_transactions</code> CONFIRMADO.
-          </div>
-          <div className="text-[10px] px-3 py-2 rounded-lg bg-sky-50 text-sky-800 border border-sky-100 leading-relaxed">
-            <b>Potencial estoque:</b><br />
-            <code>qtd_disponível × preço_venda</code> em produtos ativos. Não somado ao caixa projetado oficial.
-          </div>
-          <div className="text-[10px] px-3 py-2 rounded-lg bg-rose-50 text-rose-800 border border-rose-100 leading-relaxed">
-            <b>Obrigações pendentes:</b><br />
-            Não subtraem do caixa hoje. Ver Bloco IV. Quando pagas saem no Saldo em Caixa.
           </div>
         </div>
       </section>
@@ -585,8 +609,8 @@ export default function DashboardPage() {
 
             {salesError && (
               <div className="mb-3 p-3 rounded-xl border border-rose-200 bg-rose-50 text-rose-800 text-xs">
-                <div className="font-bold flex items-center gap-1.5"><AlertCircle className="w-3.5 h-3.5" /> Erro ao carregar vendas</div>
-                <div className="mt-0.5 opacity-90 break-words">{salesError}</div>
+                <div className="font-bold flex items-center gap-1.5"><AlertCircle className="w-3.5 h-3.5" /> Não foi possível carregar as vendas do período</div>
+                <div className="mt-0.5 opacity-90 break-words">Tente novamente. Se persistir, contate o suporte.</div>
               </div>
             )}
 
@@ -690,12 +714,7 @@ export default function DashboardPage() {
                 })}
               </div>
             )}
-            <div className="pt-3 mt-2 border-t border-ink-100 text-[11px] text-ink-500 leading-relaxed">
-              Fórmula canônica do lucro:<br />
-              <code className="text-ink-700">
-                lucro = total_customer − CMV − rateio − taxa − embalagem − extras
-              </code>
-            </div>
+
           </div>
         </div>
       </section>
@@ -724,8 +743,8 @@ export default function DashboardPage() {
 
           {stockError && (
             <div className="mb-4 p-3 rounded-xl border border-rose-200 bg-rose-50 text-rose-800 text-xs">
-              <div className="font-bold flex items-center gap-1.5"><AlertCircle className="w-3.5 h-3.5" /> Erro ao carregar estoque</div>
-              <div className="mt-0.5 opacity-90 break-words">{stockError}</div>
+              <div className="font-bold flex items-center gap-1.5"><AlertCircle className="w-3.5 h-3.5" /> Não foi possível carregar o resumo de estoque</div>
+              <div className="mt-0.5 opacity-90 break-words">Tente novamente em instantes.</div>
             </div>
           )}
 
@@ -802,8 +821,8 @@ export default function DashboardPage() {
         <div className="card p-5 space-y-3">
           {obligError && (
             <div className="mb-2 p-3 rounded-xl border border-rose-200 bg-rose-50 text-rose-800 text-xs">
-              <div className="font-bold flex items-center gap-1.5"><AlertCircle className="w-3.5 h-3.5" /> Erro ao carregar obrigações</div>
-              <div className="mt-0.5 opacity-90 break-words">{obligError}</div>
+              <div className="font-bold flex items-center gap-1.5"><AlertCircle className="w-3.5 h-3.5" /> Não foi possível carregar as obrigações</div>
+              <div className="mt-0.5 opacity-90 break-words">Tente novamente em instantes.</div>
             </div>
           )}
           {loadingOblig ? (
@@ -816,23 +835,51 @@ export default function DashboardPage() {
             <EmptyStateSmall text="Sem obrigações pendentes conhecidas." />
           ) : (
             <>
-              <div className="space-y-2.5">
+              <div className="space-y-3">
                 {obrigacoes.linhas.map(l => {
-                  const pct = obrigacoes.total ? (l.total / obrigacoes.total) * 100 : 0
+                  const total = Number(l.total ?? 0)
+                  const pago = Number(l.amount_paid ?? 0)
+                  const restante = Number(l.remaining ?? Math.max(0, total - pago))
+                  const pctRaw = total > 0 ? (pago / total) * 100 : 0
+                  const pct = Math.min(100, Math.max(0, pctRaw))
+                  let statusLabel = 'PENDENTE'
+                  let statusTone = 'bg-rose-50 text-rose-700 ring-rose-200'
+                  if (pago >= total && total > 0) {
+                    statusLabel = 'PAGO'
+                    statusTone = 'bg-emerald-50 text-emerald-700 ring-emerald-200'
+                  } else if (pago > 0) {
+                    statusLabel = 'PARCIAL'
+                    statusTone = 'bg-amber-50 text-amber-700 ring-amber-200'
+                  }
                   return (
-                    <div key={l.creditor}>
-                      <div className="flex justify-between items-baseline text-sm mb-1">
-                        <span className="font-semibold text-ink-800 truncate flex items-center gap-1.5">
-                          <Wallet className="w-3.5 h-3.5 text-violet-500" />
-                          <span className="max-w-[200px] truncate">{l.creditor}</span>
-                        </span>
-                        <span className="num text-xs text-ink-500">{pluralize(l.count, 'lançamento')} · {formatPercent(pct, 0)}</span>
-                      </div>
-                      <div className="flex items-center justify-between gap-2">
-                        <div className="flex-1 h-2 rounded-full bg-violet-100 overflow-hidden">
-                          <div className="h-full bg-violet-600 rounded-full" style={{ width: `${Math.min(pct, 100)}%` }} />
+                    <div key={l.creditor} className="p-3 rounded-xl border border-ink-100 bg-ink-50/30">
+                      <div className="flex justify-between items-center mb-2 gap-2">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <Wallet className="w-4 h-4 text-violet-500 flex-shrink-0" />
+                          <div className="min-w-0">
+                            <div className="font-semibold text-ink-800 truncate">{l.creditor}</div>
+                            <div className="text-[11px] text-ink-500 num">
+                              {pluralize(l.count, 'lançamento')}
+                            </div>
+                          </div>
                         </div>
-                        <span className="text-sm font-bold text-ink-900 num min-w-[80px] text-right">{formatCurrency(l.total)}</span>
+                        <span className={cn('chip ring-1 text-[10px] font-bold uppercase tracking-wider', statusTone)}>
+                          {statusLabel}
+                        </span>
+                      </div>
+                      <div className="flex items-center justify-between gap-2 mb-1.5">
+                        <div className="text-[11px] text-ink-500 num">
+                          Restante <b className="text-ink-800">{formatCurrency(restante)}</b>
+                        </div>
+                        <div className="text-[11px] font-bold text-violet-700 num whitespace-nowrap">
+                          {formatPercent(pct, 2)}
+                        </div>
+                      </div>
+                      <div className="flex-1 h-2 rounded-full bg-violet-100 overflow-hidden mb-2">
+                        <div className="h-full bg-violet-600 rounded-full transition-all" style={{ width: `${pct}%` }} />
+                      </div>
+                      <div className="text-[11px] text-ink-500 num">
+                        {formatCurrency(pago)} pago de {formatCurrency(total)}
                       </div>
                     </div>
                   )
@@ -841,14 +888,18 @@ export default function DashboardPage() {
               <div className="pt-3 mt-1 border-t border-ink-100">
                 <div className="flex items-center justify-between">
                   <span className="text-xs font-bold uppercase tracking-[0.1em] text-violet-700">Total obrigações pendentes</span>
-                  <span className="text-lg font-black num text-ink-900">{formatCurrency(obrigacoes.total)}</span>
+                  <span className="text-lg font-black num text-ink-900">{formatCurrency(obrigacoes.totalRemaining)}</span>
                 </div>
+                {obrigacoes.totalPago > 0 && (
+                  <div className="text-[11px] text-ink-500 mt-1 num">
+                    Já pago/abatido: {formatCurrency(obrigacoes.totalPago)} de {formatCurrency(obrigacoes.total)}
+                  </div>
+                )}
               </div>
             </>
           )}
           <p className="text-[11px] text-ink-500 leading-relaxed pt-1">
-            Quando forem efetivamente pagas → registrar SAÍDA financeira CONFIRMADA <b>naquele momento</b>.
-            Não compõem caixa atual, NÃO reduzem lucro da mercadoria (custo já contabilizado no estoque/CMV).
+            Quando forem efetivamente pagas → saem do caixa naquele momento. Custo já foi contabilizado no estoque/CMV.
           </p>
         </div>
       </section>
@@ -867,8 +918,8 @@ export default function DashboardPage() {
         <div className="card p-5 space-y-4">
           {finError && (
             <div className="p-3 rounded-xl border border-rose-200 bg-rose-50 text-rose-800 text-xs">
-              <div className="font-bold flex items-center gap-1.5"><AlertCircle className="w-3.5 h-3.5" /> Erro ao carregar financeiro</div>
-              <div className="mt-0.5 opacity-90 break-words">{finError}</div>
+              <div className="font-bold flex items-center gap-1.5"><AlertCircle className="w-3.5 h-3.5" /> Não foi possível carregar o financeiro</div>
+              <div className="mt-0.5 opacity-90 break-words">Tente novamente em instantes.</div>
             </div>
           )}
           {!finError && (() => {
@@ -951,7 +1002,7 @@ export default function DashboardPage() {
                 )}
 
                 <p className="text-[11px] text-ink-500 leading-relaxed pt-1">
-                  Estas movimentações <b>NÃO estão</b> sendo consideradas no Saldo em Caixa (Bloco I). Para classificar uma delas, edite o registro no SQL Editor Supabase e defina <code>payment_source</code> como <code>CAIXA_EVELINE</code>, <code>FABIANA</code>, <code>DONA</code> ou <code>OUTRO</code>.
+                  Estas movimentações <b>NÃO estão</b> sendo consideradas no Saldo em Caixa pois ainda não possuem classificação de origem.
                 </p>
               </>
             )
@@ -973,7 +1024,7 @@ export default function DashboardPage() {
           {paymentsError && (
             <div className="mb-3 p-3 rounded-xl border border-rose-200 bg-rose-50 text-rose-800 text-xs">
               <div className="font-bold flex items-center gap-1.5"><AlertCircle className="w-3.5 h-3.5" /> Erro ao detalhar pagamentos</div>
-              <div className="mt-0.5 opacity-90 break-words">{paymentsError}</div>
+              <div className="mt-0.5 opacity-90">Não foi possível carregar os detalhes de pagamentos. Tente novamente.</div>
             </div>
           )}
           {loadingSales || (loadingPayments && salePayments.length === 0 && !paymentsError) ? (
@@ -1031,7 +1082,7 @@ export default function DashboardPage() {
         {salesError && (
           <div className="mb-3 p-3 rounded-xl border border-rose-200 bg-rose-50 text-rose-800 text-xs">
             <div className="font-bold">Erro ao carregar histórico de vendas</div>
-            <div className="mt-0.5 opacity-90 break-words">{salesError}</div>
+            <div className="mt-0.5 opacity-90">Não foi possível carregar o histórico. Tente novamente em instantes.</div>
           </div>
         )}
 
