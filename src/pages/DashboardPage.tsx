@@ -70,6 +70,7 @@ export default function DashboardPage() {
 
   const [showIpConfirmModal, setShowIpConfirmModal] = useState(false)
   const [showIpListModal, setShowIpListModal] = useState(false)
+  const [ipListTab, setIpListTab] = useState<'pendentes' | 'repassadas'>('pendentes')
   const [ipSelected, setIpSelected] = useState<InfinitePayReceivable | null>(null)
   const [ipFormAmount, setIpFormAmount] = useState<string>('')
   const [ipFormDate, setIpFormDate] = useState<string>('')
@@ -618,7 +619,7 @@ export default function DashboardPage() {
             </div>
           </div>
 
-          {/* CARD 2 · INFINITEPAY · RESPONSIVO: compacto mobile + expandido desktop */}
+          {/* CARD 2 · INFINITEPAY — COMPACTO (mobile + desktop iguais). Sem lista inline. */}
           <div className="flex flex-col p-4 rounded-card bg-white border border-sky-200 shadow-sm sm:col-span-2 lg:col-span-2">
             <div className="flex items-center justify-between mb-3">
               <div className="flex items-center gap-2 min-w-0">
@@ -633,19 +634,16 @@ export default function DashboardPage() {
               {loadingIp && <div className="text-[10px] text-ink-400 animate-pulse shrink-0">Carregando…</div>}
             </div>
 
-            {/* Resumo (mobile + desktop sempre visível) */}
             <div className="flex flex-wrap items-baseline gap-2">
               <div className="text-2xl sm:text-3xl font-black num tracking-tight text-sky-700">
                 {(loadingIp || ipError) ? '—' : formatCurrency(aRepassarInfinitePay)}
               </div>
-              {!loadingIp && !ipError && ipLinhasARepassar.length > 0 && (
-                <span className="chip bg-sky-50 text-sky-700 text-[10px] font-bold">
-                  {ipLinhasARepassar.length} {pluralize(ipLinhasARepassar.length, 'venda', 'vendas')}
-                </span>
-              )}
-              {!loadingIp && totalRepassadoInfinitePay > 0 && (
+              <span className="chip bg-sky-50 text-sky-700 text-[10px] font-bold">
+                {(loadingIp || ipError) ? '—' : `${ipLinhasARepassar.length} ${pluralize(ipLinhasARepassar.length, 'venda', 'vendas')} pendentes`}
+              </span>
+              {!loadingIp && !ipError && totalRepassadoInfinitePay > 0 && (
                 <span className="chip bg-emerald-50 text-emerald-700 text-[10px]">
-                  +{formatCurrency(totalRepassadoInfinitePay)} já repassado
+                  +{formatCurrency(totalRepassadoInfinitePay)} repassado
                 </span>
               )}
             </div>
@@ -659,63 +657,17 @@ export default function DashboardPage() {
               </div>
             )}
 
-            {/* MOBILE: botão Ver repasses + modal */}
-            {!loadingIp && !ipError && ipLinhasARepassar.length > 0 && (
-              <div className="mt-3 lg:hidden">
-                <button
-                  onClick={() => setShowIpListModal(true)}
-                  className="btn-secondary btn-block btn-sm flex items-center justify-center gap-1.5"
-                >
-                  <List className="w-4 h-4" /> Ver repasses pendentes
-                </button>
-              </div>
-            )}
-            {!loadingIp && !ipError && ipLinhasARepassar.length === 0 && (
-              <div className="mt-3 p-3 rounded-xl border border-dashed border-ink-200 text-center text-ink-400 text-xs">
-                Nenhum valor a repassar no momento.
-              </div>
-            )}
-
-            {/* DESKTOP: lista expandida */}
-            {!loadingIp && !ipError && ipLinhasARepassar.length > 0 && (
-              <div className="hidden lg:block mt-4 space-y-2 max-h-[340px] overflow-auto pr-1">
-                {ipLinhasARepassar.map(r => (
-                  <div key={r.sale_payment_id} className="p-3 rounded-xl border border-sky-100 bg-sky-50/40 flex flex-col sm:flex-row sm:items-center gap-3">
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-2 flex-wrap">
-                        {r.sale_friendly_number ? (
-                          <span className="chip bg-white text-sky-700 border border-sky-200 text-[10px] font-bold">#{String(r.sale_friendly_number).padStart(4, '0')}</span>
-                        ) : null}
-                        <span className="text-[11px] text-ink-500">{formatDate(r.sale_date ?? r.payment_created_at)}</span>
-                        {r.installments > 1 && (
-                          <span className="chip bg-white text-ink-500 text-[10px] border border-ink-200">{r.installments}x</span>
-                        )}
-                      </div>
-                      <div className="mt-1 text-sm font-semibold text-ink-900 truncate">
-                        {r.customer_name ?? 'Cliente não identificado'}
-                      </div>
-                      <div className="mt-1 text-[11px] text-ink-500 num">
-                        Bruto {formatCurrency(r.bruto)} · Taxa real {formatCurrency(r.taxa_real)} · <span className="font-bold text-sky-700">Líquido {formatCurrency(r.liquido)}</span>
-                      </div>
-                    </div>
-                    <button
-                      onClick={() => {
-                        setIpSelected(r)
-                        setIpFormAmount(r.liquido.toFixed(2).replace('.', ','))
-                        setIpFormDate(new Date().toISOString().slice(0, 10))
-                        setIpFormNotes('')
-                        setIpActionError(null)
-                        setIpSuccessMsg(null)
-                        setShowIpConfirmModal(true)
-                      }}
-                      className="btn-primary !py-2 !px-3 text-xs whitespace-nowrap min-w-fit self-start sm:self-center flex items-center gap-1.5 btn-sm"
-                    >
-                      <CheckCircle2 className="w-3.5 h-3.5" /> Confirmar recebimento
-                    </button>
-                  </div>
-                ))}
-              </div>
-            )}
+            <div className="mt-3">
+              <button
+                onClick={() => {
+                  setIpListTab(ipLinhasARepassar.length > 0 ? 'pendentes' : 'repassadas')
+                  setShowIpListModal(true)
+                }}
+                className="btn-secondary btn-block btn-sm flex items-center justify-center gap-1.5"
+              >
+                <List className="w-4 h-4" /> Ver repasses
+              </button>
+            </div>
           </div>
 
           <div className="flex flex-col justify-between p-4 rounded-card bg-gradient-to-br from-sky-500 to-brand-600 text-white shadow-sm min-h-[140px]">
@@ -761,7 +713,7 @@ export default function DashboardPage() {
         </div>
       </section>
 
-      {/* MODAL LISTA IP (mobile: botão Ver repasses) */}
+      {/* MODAL LISTA IP — 2 ABAS: PENDENTES / REPASSADAS */}
       {showIpListModal && (
         <div className="modal-shell" onClick={() => setShowIpListModal(false)}>
           <div className="modal-backdrop" aria-hidden />
@@ -770,9 +722,13 @@ export default function DashboardPage() {
               <div className="flex items-center gap-2 min-w-0">
                 <CreditCard className="w-5 h-5 text-sky-700 shrink-0" />
                 <div className="min-w-0">
-                  <h3 className="modal-title">Repasses InfinitePay pendentes</h3>
+                  <h3 className="modal-title">Repasses InfinitePay</h3>
                   <p className="text-[11px] text-ink-500 mt-0.5">
-                    {ipLinhasARepassar.length} {pluralize(ipLinhasARepassar.length, 'venda', 'vendas')} · Total <span className="font-bold text-sky-700 num">{formatCurrency(aRepassarInfinitePay)}</span>
+                    <span className="font-bold text-sky-700 num">{formatCurrency(aRepassarInfinitePay)}</span>
+                    {' · '}
+                    {ipLinhasARepassar.length} pendentes
+                    {' · '}
+                    <span className="text-emerald-700 num">{formatCurrency(totalRepassadoInfinitePay)}</span> repassados
                   </p>
                 </div>
               </div>
@@ -784,55 +740,153 @@ export default function DashboardPage() {
                 <X className="w-4.5 h-4.5" />
               </button>
             </div>
+
+            {/* Tabs */}
+            <div className="px-4 sm:px-6 pt-4 grid grid-cols-2 gap-2 border-b border-ink-100">
+              <button
+                onClick={() => setIpListTab('pendentes')}
+                className={
+                  'relative pb-3 text-[12px] font-bold transition-colors ' +
+                  (ipListTab === 'pendentes'
+                    ? 'text-sky-700 '
+                    : 'text-ink-400 hover:text-ink-700')
+                }
+              >
+                Pendentes
+                {ipLinhasARepassar.length > 0 && (
+                  <span className={
+                    'ml-2 inline-flex items-center justify-center h-4 min-w-4 px-1.5 rounded-full text-[10px] font-black ' +
+                    (ipListTab === 'pendentes' ? 'bg-sky-600 text-white' : 'bg-ink-200 text-ink-600')
+                  }>
+                    {ipLinhasARepassar.length}
+                  </span>
+                )}
+                {ipListTab === 'pendentes' && (
+                  <span className="absolute left-0 right-0 bottom-0 h-0.5 bg-sky-600 rounded-t-sm" aria-hidden />
+                )}
+              </button>
+              <button
+                onClick={() => setIpListTab('repassadas')}
+                className={
+                  'relative pb-3 text-[12px] font-bold transition-colors ' +
+                  (ipListTab === 'repassadas'
+                    ? 'text-emerald-700 '
+                    : 'text-ink-400 hover:text-ink-700')
+                }
+              >
+                Repassados
+                {ipLinhasRepassadas.length > 0 && (
+                  <span className={
+                    'ml-2 inline-flex items-center justify-center h-4 min-w-4 px-1.5 rounded-full text-[10px] font-black ' +
+                    (ipListTab === 'repassadas' ? 'bg-emerald-600 text-white' : 'bg-ink-200 text-ink-600')
+                  }>
+                    {ipLinhasRepassadas.length}
+                  </span>
+                )}
+                {ipListTab === 'repassadas' && (
+                  <span className="absolute left-0 right-0 bottom-0 h-0.5 bg-emerald-600 rounded-t-sm" aria-hidden />
+                )}
+              </button>
+            </div>
+
             <div className="modal-body flex flex-col gap-2.5">
-              {ipLinhasARepassar.length === 0 && (
-                <div className="p-6 rounded-xl border border-dashed border-ink-200 text-center text-ink-400 text-sm">
-                  Nenhum valor a repassar.
-                </div>
+              {ipListTab === 'pendentes' && (
+                <>
+                  {ipLinhasARepassar.length === 0 && (
+                    <div className="p-6 rounded-xl border border-dashed border-ink-200 text-center text-ink-400 text-sm">
+                      Nenhum valor a repassar.
+                    </div>
+                  )}
+                  {ipLinhasARepassar.map(r => (
+                    <div key={r.sale_payment_id} className="p-3.5 rounded-xl border border-sky-100 bg-sky-50/30 flex flex-col gap-3">
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            {r.sale_friendly_number ? (
+                              <span className="chip bg-white text-sky-700 border border-sky-200 text-[10px] font-bold">#{String(r.sale_friendly_number).padStart(4, '0')}</span>
+                            ) : null}
+                            <span className="text-[11px] text-ink-500">{formatDate(r.sale_date ?? r.payment_created_at)}</span>
+                            {r.installments > 1 && (
+                              <span className="chip bg-white text-ink-500 text-[10px] border border-ink-200">{r.installments}x</span>
+                            )}
+                          </div>
+                          <div className="mt-1 text-[15px] font-bold text-ink-900 truncate">
+                            {r.customer_name ?? 'Cliente não identificado'}
+                          </div>
+                        </div>
+                        <div className="text-right shrink-0">
+                          <div className="text-[11px] font-bold uppercase tracking-wider text-sky-700">Líquido</div>
+                          <div className="text-lg font-black num text-sky-700">{formatCurrency(r.liquido)}</div>
+                        </div>
+                      </div>
+                      <div className="text-[11px] text-ink-500 num grid grid-cols-2 gap-2 border-t border-sky-100 pt-2">
+                        <div>Bruto: <span className="font-semibold text-ink-700">{formatCurrency(r.bruto)}</span></div>
+                        <div>Taxa real: <span className="font-semibold text-rose-600">-{formatCurrency(r.taxa_real)}</span></div>
+                      </div>
+                      <button
+                        onClick={() => {
+                          setShowIpListModal(false)
+                          setIpSelected(r)
+                          setIpFormAmount(r.liquido.toFixed(2).replace('.', ','))
+                          setIpFormDate(new Date().toISOString().slice(0, 10))
+                          setIpFormNotes('')
+                          setIpActionError(null)
+                          setIpSuccessMsg(null)
+                          setTimeout(() => setShowIpConfirmModal(true), 50)
+                        }}
+                        className="btn-primary btn-sm btn-block flex items-center justify-center gap-1.5"
+                      >
+                        <CheckCircle2 className="w-4 h-4" /> Confirmar recebimento
+                      </button>
+                    </div>
+                  ))}
+                </>
               )}
-              {ipLinhasARepassar.map(r => (
-                <div key={r.sale_payment_id} className="p-3.5 rounded-xl border border-sky-100 bg-sky-50/30 flex flex-col gap-3">
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-2 flex-wrap">
-                        {r.sale_friendly_number ? (
-                          <span className="chip bg-white text-sky-700 border border-sky-200 text-[10px] font-bold">#{String(r.sale_friendly_number).padStart(4, '0')}</span>
-                        ) : null}
-                        <span className="text-[11px] text-ink-500">{formatDate(r.sale_date ?? r.payment_created_at)}</span>
-                        {r.installments > 1 && (
-                          <span className="chip bg-white text-ink-500 text-[10px] border border-ink-200">{r.installments}x</span>
-                        )}
+
+              {ipListTab === 'repassadas' && (
+                <>
+                  {ipLinhasRepassadas.length === 0 && (
+                    <div className="p-6 rounded-xl border border-dashed border-ink-200 text-center text-ink-400 text-sm">
+                      Nenhum repasse confirmado ainda.
+                    </div>
+                  )}
+                  {ipLinhasRepassadas.map(r => (
+                    <div key={r.sale_payment_id} className="p-3.5 rounded-xl border border-emerald-100 bg-emerald-50/40 flex flex-col gap-2">
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            {r.sale_friendly_number ? (
+                              <span className="chip bg-white text-emerald-700 border border-emerald-200 text-[10px] font-bold">#{String(r.sale_friendly_number).padStart(4, '0')}</span>
+                            ) : null}
+                            <span className="chip bg-emerald-600 text-white text-[10px] font-black uppercase tracking-wider">
+                              Repassado
+                            </span>
+                            {r.repasse_date && (
+                              <span className="text-[11px] text-ink-500">Data {formatDate(r.repasse_date)}</span>
+                            )}
+                            {!r.repasse_date && r.sale_date && (
+                              <span className="text-[11px] text-ink-500">Venda {formatDate(r.sale_date ?? r.payment_created_at)}</span>
+                            )}
+                          </div>
+                          <div className="mt-1 text-[14px] font-semibold text-ink-800 truncate">
+                            {r.customer_name ?? 'Cliente não identificado'}
+                          </div>
+                        </div>
+                        <div className="text-right shrink-0">
+                          <div className="text-[11px] font-bold uppercase tracking-wider text-emerald-700">Líquido</div>
+                          <div className="text-lg font-black num text-emerald-700">
+                            {formatCurrency(Number(r.repasse_amount ?? r.liquido))}
+                          </div>
+                        </div>
                       </div>
-                      <div className="mt-1 text-[15px] font-bold text-ink-900 truncate">
-                        {r.customer_name ?? 'Cliente não identificado'}
+                      <div className="text-[11px] text-ink-500 num grid grid-cols-2 gap-2 border-t border-emerald-100 pt-2">
+                        <div>Bruto: <span className="font-semibold text-ink-700">{formatCurrency(r.bruto)}</span></div>
+                        <div>Taxa real: <span className="font-semibold text-rose-600">-{formatCurrency(r.taxa_real)}</span></div>
                       </div>
                     </div>
-                    <div className="text-right shrink-0">
-                      <div className="text-[11px] font-bold uppercase tracking-wider text-sky-700">Líquido</div>
-                      <div className="text-lg font-black num text-sky-700">{formatCurrency(r.liquido)}</div>
-                    </div>
-                  </div>
-                  <div className="text-[11px] text-ink-500 num grid grid-cols-2 gap-2 border-t border-sky-100 pt-2">
-                    <div>Bruto: <span className="font-semibold text-ink-700">{formatCurrency(r.bruto)}</span></div>
-                    <div>Taxa real: <span className="font-semibold text-rose-600">-{formatCurrency(r.taxa_real)}</span></div>
-                  </div>
-                  <button
-                    onClick={() => {
-                      setShowIpListModal(false)
-                      setIpSelected(r)
-                      setIpFormAmount(r.liquido.toFixed(2).replace('.', ','))
-                      setIpFormDate(new Date().toISOString().slice(0, 10))
-                      setIpFormNotes('')
-                      setIpActionError(null)
-                      setIpSuccessMsg(null)
-                      setTimeout(() => setShowIpConfirmModal(true), 50)
-                    }}
-                    className="btn-primary btn-sm btn-block flex items-center justify-center gap-1.5"
-                  >
-                    <CheckCircle2 className="w-4 h-4" /> Confirmar recebimento
-                  </button>
-                </div>
-              ))}
+                  ))}
+                </>
+              )}
             </div>
             <div className="modal-footer">
               <button

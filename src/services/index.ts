@@ -1041,6 +1041,33 @@ export async function listAllInfinitePayReceivables(): Promise<InfinitePayReceiv
   if (!usingSupabase) return (Demo as any).demoListInfinitePayReceivables?.() ?? []
   const sup: any = supabase
 
+  // ============================================================
+  // MARCO DE ELEGIBILIDADE — Venda #43
+  // Controle individual de repasses começa nesta venda.
+  // Vendas anteriores foram incorporadas na conciliação histórica
+  // e não podem reaparecer como "pendentes" só por falta de repasse individual.
+  // ============================================================
+  const SALE_43_ID = '2eec77bc-25a2-49f2-9ba7-e44c2b7d48e9'
+  let marcoCreatedAt: Date | null = null
+  try {
+    const { data: marcoSale, error: errMarco } = await sup
+      .from('sales')
+      .select('id, created_at')
+      .eq('id', SALE_43_ID)
+      .limit(1)
+      .maybeSingle()
+    if (errMarco) {
+      console.warn('[services.listAllInfinitePayReceivables] busca marco Venda #43 avisou:', errMarco?.message ?? errMarco)
+    }
+    if (marcoSale?.created_at) {
+      marcoCreatedAt = new Date(String(marcoSale.created_at))
+      if (Number.isNaN(marcoCreatedAt.getTime())) marcoCreatedAt = null
+    }
+  } catch (e: any) {
+    console.warn('[services.listAllInfinitePayReceivables] busca marco Venda #43 falhou, prossegue sem filtro de marco (seguro, pior caso aparece tudo).', e?.message ?? e)
+    marcoCreatedAt = null
+  }
+
   const { data: ft, error: errFt } = await sup
     .from('financial_transactions')
     .select('id, related_sale_id, amount, trans_date, category, status, payment_source')
@@ -1076,7 +1103,7 @@ export async function listAllInfinitePayReceivables(): Promise<InfinitePayReceiv
   if (saleIds.length > 0) {
     const { data: sales, error: errSl } = await sup
       .from('sales')
-      .select('id, friendly_number, sale_date, customer_name, status, total_customer')
+      .select('id, friendly_number, sale_date, customer_name, status, total_customer, created_at')
       .in('id', saleIds)
     if (errSl) console.warn('[services.listAllInfinitePayReceivables] sales query falhou:', errSl?.message ?? errSl)
     if (Array.isArray(sales)) for (const s of sales) salesMap.set(String(s.id), s)
@@ -1085,6 +1112,31 @@ export async function listAllInfinitePayReceivables(): Promise<InfinitePayReceiv
   const out: InfinitePayReceivable[] = []
   for (const sp of ipPayments) {
     const sale: any | undefined = salesMap.get(String(sp.sale_id))
+    const isSale43 = String(sp.sale_id) === SALE_43_ID
+
+    // ============================================================
+    // REGRA 1 — ELEGIBILIDADE POR MARCO
+    // Mantém fora: vendas LEGADAS anteriores à Venda #43 (conciliação histórica).
+    // Preserva a própria Venda #43 mesmo se created_at dela vier com timezone zootécnico.
+    // ============================================================
+    if (!isSale43 && marcoCreatedAt) {
+      const saleCreatedRaw = sale?.created_at ?? sp.created_at ?? null
+      if (saleCreatedRaw) {
+        const saleCreated = new Date(String(saleCreatedRaw))
+        if (!Number.isNaN(saleCreated.getTime()) && saleCreated.getTime() < marcoCreatedAt.getTime()) {
+          continue
+        }
+      }
+    }
+
+    // ============================================================
+    // REGRA 2 — CLIENTE JÁ PAGOU
+    // amount_received é o snapshot real do que caiu na InfinitePay no momento do pagamento.
+    // Ignora 0 / nulo / pagamentos pendentes de captura.
+    // ============================================================
+    const amountReceived = Number((sp as any).amount_received ?? (sp as any).received_amount ?? (sp as any).amount ?? 0)
+    if (!(amountReceived > 0)) continue
+
     const bruto = Number(sp.amount ?? 0)
     const taxa = Number((sp as any).fee_real_snapshot ?? (sp as any).fee_actual_snapshot ?? (sp as any).fee_expected_snapshot ?? 0)
     const liquido = Math.max(0, bruto - taxa)
