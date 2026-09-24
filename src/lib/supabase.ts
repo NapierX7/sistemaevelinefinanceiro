@@ -26,6 +26,17 @@ export const DEMO_PASSWORD = 'admin123'
 let demoMode = false
 let demoUser: { id: string; email: string; role: string } | null = null
 
+try {
+  const raw = localStorage.getItem('eg_demo')
+  if (raw) {
+    const o = JSON.parse(raw)
+    if (o && o.id && o.email && o.role) {
+      demoMode = true
+      demoUser = { id: o.id, email: o.email, role: o.role }
+    }
+  }
+} catch {}
+
 export function isDemoMode() {
   return demoMode
 }

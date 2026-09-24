@@ -84,16 +84,18 @@ export default function ProductsPage() {
   const openEdit = (id: string) => { setEditingId(id); setModalOpen(true) }
 
   return (
-    <div className="space-y-5 pb-4 sm:pb-6">
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-        <div>
-          <h1 className="text-xl sm:text-2xl font-black tracking-tight text-ink-900">Produtos</h1>
-          <p className="text-sm text-ink-500 mt-0.5">Cadastro e gerenciamento de produtos.</p>
+    <div className="page-wrap pb-4 sm:pb-6">
+      <header className="page-header">
+        <div className="page-header-row">
+          <div>
+            <h1 className="page-title">Produtos</h1>
+            <p className="page-subtitle">Cadastro e gerenciamento de produtos.</p>
+          </div>
+          <button onClick={openNew} className="btn-primary">
+            <Plus className="w-4 h-4" /> Novo produto
+          </button>
         </div>
-        <button onClick={openNew} className="btn-primary">
-          <Plus className="w-4 h-4" /> Novo produto
-        </button>
-      </div>
+      </header>
 
       {uiError && (
         <div className="p-4 rounded-2xl border border-rose-200 bg-rose-50 text-rose-800 flex items-start gap-3">
@@ -138,77 +140,144 @@ export default function ProductsPage() {
         </div>
       </div>
 
-      <div className="card">
-        <div className="table-wrap">
-          <table className="table-base">
-            <thead>
-              <tr>
-                <th className="w-16">Ativo</th>
-                <th>Produto</th>
-                <th>Categoria</th>
-                <th>SKU</th>
-                <th className="text-right">Estoque</th>
-                <th className="text-right">Custo atual</th>
-                <th className="text-right">Preço venda</th>
-                <th className="text-right">Markup</th>
-                <th className="text-right">Margem bruta</th>
-                <th className="w-24 text-right">Ações</th>
-              </tr>
-            </thead>
-            <tbody>
-              {loading ? (
-                <tr><td colSpan={10} className="text-center py-10 text-ink-500">Carregando...</td></tr>
-              ) : filtered.length === 0 ? (
-                <tr><td colSpan={10} className="text-center py-10 text-ink-500">
-                  <Filter className="w-8 h-8 text-ink-300 mx-auto mb-2" />
-                  Nenhum produto encontrado.
-                </td></tr>
-              ) : filtered.map(p => {
-                const cat = categories.find(c => c.id === p.category_id)
-                const stock = Number(p.available_quantity ?? p.total_stock ?? 0)
-                const min = Number(p.min_stock ?? 0)
-                const custo = Number(p.current_cost ?? 0)
-                const venda = Number(p.sale_price ?? 0)
-                const markup = custo > 0 ? ((venda - custo) / custo) * 100 : 0
-                const margem = venda > 0 ? ((venda - custo) / venda) * 100 : 0
-                const stockCls = stock === 0
-                  ? 'bg-rose-50 text-rose-700 ring-rose-200'
-                  : stock <= min
-                  ? 'bg-amber-50 text-amber-700 ring-amber-200'
-                  : 'bg-emerald-50 text-emerald-700 ring-emerald-200'
-                return (
-                  <tr key={p.id} className="hover:bg-ink-50/50 transition">
-                    <td>
-                      <span className={cn('inline-flex w-8 h-8 rounded-lg items-center justify-center ring-1',
-                        p.active ? 'bg-emerald-50 ring-emerald-200 text-emerald-700' : 'bg-ink-100 ring-ink-200 text-ink-400')}>
-                        {p.active ? <Check className="w-4 h-4" /> : <X className="w-4 h-4" />}
-                      </span>
-                    </td>
-                    <td className="font-semibold text-ink-900">{p.name}</td>
-                    <td>{cat?.name || <span className="text-ink-400">—</span>}</td>
-                    <td className="num text-ink-600">{p.sku || '—'}</td>
-                    <td className="text-right">
-                      <span className={cn('chip ring-1 num', stockCls)}>{stock} un</span>
-                    </td>
-                    <td className="text-right num">{formatCurrency(custo)}</td>
-                    <td className="text-right num font-bold text-ink-900">{formatCurrency(venda)}</td>
-                    <td className={cn('text-right num font-semibold', markup >= 0 ? 'text-emerald-700' : 'text-rose-700')}>
-                      {formatPercent(markup)}
-                    </td>
-                    <td className={cn('text-right num font-semibold', margem >= 0 ? 'text-brand-700' : 'text-rose-700')}>
-                      {formatPercent(margem)}
-                    </td>
-                    <td className="text-right">
-                      <button onClick={() => openEdit(p.id)} className="btn-ghost !p-2">
-                        <Edit className="w-4 h-4" />
-                      </button>
-                    </td>
-                  </tr>
-                )
-              })}
-            </tbody>
-          </table>
+      <div className="hidden sm:block">
+        <div className="card">
+          <div className="table-wrap">
+            <table className="table-base">
+              <thead>
+                <tr>
+                  <th className="w-16">Ativo</th>
+                  <th>Produto</th>
+                  <th>Categoria</th>
+                  <th>SKU</th>
+                  <th className="text-right">Estoque</th>
+                  <th className="text-right">Custo atual</th>
+                  <th className="text-right">Preço venda</th>
+                  <th className="text-right">Markup</th>
+                  <th className="text-right">Margem bruta</th>
+                  <th className="w-24 text-right">Ações</th>
+                </tr>
+              </thead>
+              <tbody>
+                {loading ? (
+                  <tr><td colSpan={10} className="text-center py-10 text-ink-500">Carregando...</td></tr>
+                ) : filtered.length === 0 ? (
+                  <tr><td colSpan={10} className="text-center py-10 text-ink-500">
+                    <Filter className="w-8 h-8 text-ink-300 mx-auto mb-2" />
+                    Nenhum produto encontrado.
+                  </td></tr>
+                ) : filtered.map(p => {
+                  const cat = categories.find(c => c.id === p.category_id)
+                  const stock = Number(p.available_quantity ?? p.total_stock ?? 0)
+                  const min = Number(p.min_stock ?? 0)
+                  const custo = Number(p.current_cost ?? 0)
+                  const venda = Number(p.sale_price ?? 0)
+                  const markup = custo > 0 ? ((venda - custo) / custo) * 100 : 0
+                  const margem = venda > 0 ? ((venda - custo) / venda) * 100 : 0
+                  const stockCls = stock === 0
+                    ? 'bg-rose-50 text-rose-700 ring-rose-200'
+                    : stock <= min
+                    ? 'bg-amber-50 text-amber-700 ring-amber-200'
+                    : 'bg-emerald-50 text-emerald-700 ring-emerald-200'
+                  return (
+                    <tr key={p.id} className="hover:bg-ink-50/50 transition">
+                      <td>
+                        <span className={cn('inline-flex w-8 h-8 rounded-lg items-center justify-center ring-1',
+                          p.active ? 'bg-emerald-50 ring-emerald-200 text-emerald-700' : 'bg-ink-100 ring-ink-200 text-ink-400')}>
+                          {p.active ? <Check className="w-4 h-4" /> : <X className="w-4 h-4" />}
+                        </span>
+                      </td>
+                      <td className="font-semibold text-ink-900">{p.name}</td>
+                      <td>{cat?.name || <span className="text-ink-400">—</span>}</td>
+                      <td className="num text-ink-600">{p.sku || '—'}</td>
+                      <td className="text-right">
+                        <span className={cn('chip ring-1 num', stockCls)}>{stock} un</span>
+                      </td>
+                      <td className="text-right num">{formatCurrency(custo)}</td>
+                      <td className="text-right num font-bold text-ink-900">{formatCurrency(venda)}</td>
+                      <td className={cn('text-right num font-semibold', markup >= 0 ? 'text-emerald-700' : 'text-rose-700')}>
+                        {formatPercent(markup)}
+                      </td>
+                      <td className={cn('text-right num font-semibold', margem >= 0 ? 'text-brand-700' : 'text-rose-700')}>
+                        {formatPercent(margem)}
+                      </td>
+                      <td className="text-right">
+                        <button onClick={() => openEdit(p.id)} className="btn-ghost !p-2">
+                          <Edit className="w-4 h-4" />
+                        </button>
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
         </div>
+      </div>
+
+      <div className="sm:hidden flex flex-col gap-3">
+        {loading ? (
+          <div className="mcard justify-center items-center py-8 text-ink-500">Carregando...</div>
+        ) : filtered.length === 0 ? (
+          <div className="mcard justify-center items-center py-8 text-center">
+            <Filter className="w-10 h-10 text-ink-300 mb-2" />
+            <div className="text-ink-500">Nenhum produto encontrado.</div>
+          </div>
+        ) : filtered.map(p => {
+          const cat = categories.find(c => c.id === p.category_id)
+          const stock = Number(p.available_quantity ?? p.total_stock ?? 0)
+          const min = Number(p.min_stock ?? 0)
+          const custo = Number(p.current_cost ?? 0)
+          const venda = Number(p.sale_price ?? 0)
+          const markup = custo > 0 ? ((venda - custo) / custo) * 100 : 0
+          const margem = venda > 0 ? ((venda - custo) / venda) * 100 : 0
+          const stockBadge = stock === 0
+            ? <span className="stock-out">{stock} un · Sem estoque</span>
+            : stock <= min
+            ? <span className="stock-low">{stock} un · Baixo estoque</span>
+            : <span className="stock-ok">{stock} un · Em estoque</span>
+          return (
+            <div key={p.id} className="mcard">
+              <div className="mcard-head">
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-start gap-2">
+                    <span className={cn('inline-flex w-8 h-8 rounded-lg items-center justify-center ring-1 flex-shrink-0 mt-0.5',
+                      p.active ? 'bg-emerald-50 ring-emerald-200 text-emerald-700' : 'bg-ink-100 ring-ink-200 text-ink-400')}>
+                      {p.active ? <Check className="w-4 h-4" /> : <X className="w-4 h-4" />}
+                    </span>
+                    <div className="min-w-0 flex-1">
+                      <div className="mcard-title truncate" title={p.name}>{p.name}</div>
+                      {cat && <div className="mcard-sub mt-0.5">{cat.name}</div>}
+                      {p.sku && <div className="mcard-sub num">SKU: {p.sku}</div>}
+                    </div>
+                  </div>
+                </div>
+                <button onClick={() => openEdit(p.id)} className="btn-icon flex-shrink-0" aria-label="Editar">
+                  <Edit className="w-4 h-4" />
+                </button>
+              </div>
+              <div className="mcard-meta pt-1">{stockBadge}</div>
+              <div className="grid grid-cols-2 gap-2 pt-2 border-t border-ink-100">
+                <div>
+                  <div className="text-[10px] font-bold uppercase tracking-wider text-ink-400">Preço venda</div>
+                  <div className="num font-black text-ink-900 mt-0.5">{formatCurrency(venda)}</div>
+                </div>
+                <div>
+                  <div className="text-[10px] font-bold uppercase tracking-wider text-ink-400">Custo atual</div>
+                  <div className="num font-semibold text-ink-700 mt-0.5">{formatCurrency(custo)}</div>
+                </div>
+                <div>
+                  <div className="text-[10px] font-bold uppercase tracking-wider text-ink-400">Markup</div>
+                  <div className={cn('num font-semibold mt-0.5', markup >= 0 ? 'text-emerald-700' : 'text-rose-700')}>{formatPercent(markup)}</div>
+                </div>
+                <div>
+                  <div className="text-[10px] font-bold uppercase tracking-wider text-ink-400">Margem</div>
+                  <div className={cn('num font-semibold mt-0.5', margem >= 0 ? 'text-brand-700' : 'text-rose-700')}>{formatPercent(margem)}</div>
+                </div>
+              </div>
+            </div>
+          )
+        })}
       </div>
 
       {modalOpen && (
@@ -290,18 +359,18 @@ function ProductModal({
   }
 
   return (
-    <div className="fixed inset-0 z-50 bg-ink-900/50 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4">
-      <div className="bg-white rounded-t-2xl sm:rounded-2xl shadow-xl w-full max-w-2xl max-h-[92vh] overflow-y-auto">
-        <div className="sticky top-0 bg-white border-b border-ink-100 px-5 py-4 flex items-center justify-between z-10">
+    <div className="modal-shell" onClick={(e) => { if (e.target === e.currentTarget) onClose() }}>
+      <div className="modal-content modal-wide">
+        <div className="modal-header">
           <div>
-            <h2 className="text-lg font-black text-ink-900">{existing ? 'Editar produto' : 'Novo produto'}</h2>
+            <h2 className="modal-title">{existing ? 'Editar produto' : 'Novo produto'}</h2>
             <p className="text-xs text-ink-500 mt-0.5">Preencha os campos abaixo.</p>
           </div>
-          <button onClick={onClose} className="btn-ghost !p-2" aria-label="Fechar">
+          <button onClick={onClose} className="btn-icon" aria-label="Fechar">
             <X className="w-5 h-5" />
           </button>
         </div>
-        <div className="p-5 space-y-4">
+        <div className="modal-body space-y-4">
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div className="sm:col-span-2">
               <label className="label">Nome *</label>
@@ -447,7 +516,7 @@ function ProductModal({
             </div>
           )}
         </div>
-        <div className="sticky bottom-0 bg-white border-t border-ink-100 px-5 py-4 flex flex-col-reverse sm:flex-row sm:justify-end gap-2">
+        <div className="modal-footer flex flex-col-reverse sm:flex-row sm:justify-end gap-2">
           <button onClick={onClose} disabled={saving} className="btn-secondary">Cancelar</button>
           <button onClick={submit} disabled={saving} className="btn-primary">
             {saving ? 'Salvando...' : 'Salvar produto'}

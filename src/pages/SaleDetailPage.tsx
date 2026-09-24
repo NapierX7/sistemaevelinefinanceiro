@@ -396,7 +396,7 @@ export default function SaleDetailPage() {
   const isCancelled = s.status === 'CANCELADA' || !!(s as any).cancelled
 
   return (
-    <div className="pb-24 sm:pb-8 space-y-4">
+    <div className="page-wrap pb-24 sm:pb-8">
       {/* Feedback inline (ok/erro) — substitui alert() nativo */}
       {toast && (
         <div

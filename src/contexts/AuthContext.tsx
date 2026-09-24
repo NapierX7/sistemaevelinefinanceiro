@@ -24,6 +24,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [isLoading, setIsLoading] = useState(true)
 
   const syncSession = useCallback(async () => {
+    const demoId = getCurrentUserId()
+    const demoEmail = getCurrentUserEmail()
+    if (demoId) {
+      setUser({ id: demoId, email: demoEmail, role: 'admin' })
+      return
+    }
     if (isSupabaseConfigured && supabase) {
       const { data } = await supabase.auth.getSession()
       const s = data.session
@@ -63,7 +69,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   return (
     <AuthContext.Provider value={{
       user, isLoading, signIn: doSignIn, signOut: doSignOut,
-      isDemo: !isSupabaseConfigured,
+      isDemo: !isSupabaseConfigured || Boolean(getCurrentUserId()),
     }}>
       {children}
     </AuthContext.Provider>

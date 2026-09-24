@@ -1,4 +1,4 @@
-/*    */   /*  */  ::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar { width: 8px; height: 8px; }
 ::-webkit-scrollbar-thumb { background: #c7d0dd; border-radius: 4px; }
 ::-webkit-scrollbar-track { background: transparent; }
 
@@ -14,41 +14,70 @@
     -webkit-tap-highlight-color: transparent;
   }
   * { -webkit-tap-highlight-color: transparent; }
+
+  html {
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
+  }
 }
 
 @layer components {
+  /* Botões — altura toque 44px mínimo mobile */
   .btn {
-    @apply inline-flex items-center justify-center gap-2 rounded-card px-4 py-2.5 text-sm font-semibold transition focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 focus-visible:ring-offset-2 disabled:opacity-60 disabled:cursor-not-allowed active:scale-[0.99];
+    @apply inline-flex items-center justify-center gap-2 rounded-card px-4 text-sm font-semibold transition focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 focus-visible:ring-offset-2 disabled:opacity-60 disabled:cursor-not-allowed active:scale-[0.99];
+    min-height: 44px;
   }
+  .btn-sm { min-height: 36px; @apply px-3 py-1.5 text-xs; }
+  .btn-lg { min-height: 52px; @apply px-5 py-3 text-base; }
   .btn-primary { @apply btn bg-brand-900 text-white hover:bg-brand-800 shadow-sm; }
   .btn-secondary { @apply btn bg-white border border-ink-200 text-ink-800 hover:bg-ink-100; }
   .btn-danger { @apply btn bg-danger text-white hover:bg-red-700 shadow-sm; }
   .btn-success { @apply btn bg-success text-white hover:bg-green-700 shadow-sm; }
   .btn-ghost { @apply btn bg-transparent text-ink-700 hover:bg-ink-100; }
   .btn-block { @apply w-full; }
+  .btn-icon {
+    @apply grid place-items-center rounded-card transition hover:bg-ink-100 text-ink-700;
+    min-width: 44px;
+    min-height: 44px;
+  }
 
   .card {
     @apply rounded-panel bg-white border border-ink-100 shadow-card;
   }
+  .card-pad { @apply p-4 sm:p-5; }
 
   .input {
-    @apply block w-full rounded-card border border-ink-200 bg-white px-3.5 py-2.5 text-sm text-ink-900 placeholder:text-ink-400 focus:border-brand-600 focus:outline-none focus:ring-2 focus:ring-brand-500/20 disabled:bg-ink-50 disabled:text-ink-500;
+    @apply block w-full rounded-card border border-ink-200 bg-white px-3.5 text-sm text-ink-900 placeholder:text-ink-400 focus:border-brand-600 focus:outline-none focus:ring-2 focus:ring-brand-500/20 disabled:bg-ink-50 disabled:text-ink-500;
+    min-height: 44px;
   }
+  .input-sm { min-height: 38px; }
   .label { @apply mb-1.5 block text-sm font-semibold text-ink-700; }
   .select { @apply input pr-9 appearance-none bg-no-repeat bg-right; }
 
+  /* KPI cards — tamanhos de fonte fluidos responsivos */
   .kpi-card {
-    @apply rounded-panel bg-white border border-ink-100 shadow-card px-4 py-4 sm:px-5 sm:py-5 flex flex-col gap-1;
+    @apply rounded-panel bg-white border border-ink-100 shadow-card p-4 flex flex-col gap-1;
   }
-  .kpi-label { @apply text-xs font-semibold uppercase tracking-[0.08em] text-ink-500; }
-  .kpi-value { @apply text-2xl font-extrabold tracking-tight text-ink-900 sm:text-3xl; }
+  @media (min-width: 640px) {
+    .kpi-card { @apply px-5 py-5; }
+  }
+  .kpi-label { @apply text-[11px] font-bold uppercase tracking-[0.08em] text-ink-500; }
+  .kpi-value {
+    font-size: clamp(1.5rem, 3.8vw, 2rem);
+    line-height: 1.1;
+    @apply font-extrabold tracking-tight text-ink-900;
+  }
+  @media (min-width: 1024px) {
+    .kpi-value { font-size: 1.875rem; }
+  }
   .kpi-sub { @apply text-xs text-ink-500 mt-0.5; }
 
   .chip {
     @apply inline-flex items-center gap-1 rounded-pill px-2.5 py-1 text-xs font-semibold;
+    min-height: 26px;
   }
 
-  .mobile-pad-bottom { padding-bottom: calc(5rem + env(safe-area-inset-bottom)); }
+  .mobile-pad-bottom { padding-bottom: calc(5.5rem + env(safe-area-inset-bottom)); }
 
   .step-indicator {
     @apply flex items-center justify-center h-8 w-8 rounded-full text-xs font-bold border-2 transition;
@@ -65,16 +94,140 @@
     @apply h-px flex-1 bg-ink-100;
   }
 
-  .table-wrap { @apply overflow-x-auto -mx-4 sm:mx-0; }
+  /* Tabelas desktop: scroll restrito ao componente */
+  .table-wrap {
+    @apply -mx-4 sm:mx-0 overflow-x-auto;
+    -webkit-overflow-scrolling: touch;
+  }
+  @media (min-width: 640px) {
+    .table-wrap { @apply rounded-panel border border-ink-100; }
+  }
   .table-base { @apply w-full min-w-[720px] text-sm border-collapse; }
-  .table-base th { @apply text-left text-xs font-semibold uppercase tracking-wider text-ink-500 px-4 py-3 border-b border-ink-100 bg-ink-50/50; }
+  .table-base th { @apply text-left text-xs font-semibold uppercase tracking-wider text-ink-500 px-4 py-3 border-b border-ink-100 bg-ink-50/50 whitespace-nowrap; }
   .table-base td { @apply px-4 py-3 border-b border-ink-50 align-middle; }
+
+  /* Page header responsivo */
+  .page-header {
+    @apply mb-4 sm:mb-6 flex flex-col gap-3;
+  }
+  .page-header-row { @apply flex flex-wrap items-start sm:items-center justify-between gap-3; }
+  .page-title {
+    font-size: clamp(1.25rem, 5vw, 1.75rem);
+    line-height: 1.2;
+    @apply font-extrabold tracking-tight text-ink-900;
+  }
+  .page-subtitle { @apply text-sm text-ink-500; }
+
+  /* ====== MODAL / BOTTOM SHEET padrão responsivo ====== */
+  .modal-backdrop {
+    @apply fixed inset-0 z-50 bg-ink-900/50 backdrop-blur-sm animate-in fade-in duration-150;
+  }
+  .modal-shell {
+    @apply fixed inset-0 z-50 flex items-center sm:items-center justify-center p-0 sm:p-4;
+  }
+  .modal-content {
+    @apply relative w-full bg-white shadow-panel border border-ink-100 overflow-hidden flex flex-col;
+    /* MOBILE: bottom sheet */
+    border-radius: 1.25rem 1.25rem 0 0;
+    max-height: calc(100dvh - 0px);
+    animation: slideUp 0.2s ease-out;
+  }
+  @media (min-width: 640px) {
+    .modal-content {
+      border-radius: 1rem;
+      max-width: 560px;
+      max-height: 92vh;
+      animation: popIn 0.18s ease-out;
+    }
+  }
+  .modal-wide { max-width: 880px !important; }
+  .modal-header {
+    @apply flex items-center justify-between gap-3 px-4 sm:px-5 py-4 border-b border-ink-100 shrink-0;
+  }
+  .modal-title {
+    font-size: clamp(1rem, 4vw, 1.125rem);
+    @apply font-extrabold tracking-tight text-ink-900;
+  }
+  .modal-body {
+    @apply px-4 sm:px-5 py-4 overflow-y-auto flex-1 min-h-0;
+  }
+  .modal-footer {
+    @apply px-4 sm:px-5 py-3 sm:py-4 border-t border-ink-100 shrink-0 bg-ink-50/40;
+    padding-bottom: calc(0.75rem + env(safe-area-inset-bottom));
+  }
+
+  /* Filtro sheet (mobile) */
+  .filter-row {
+    @apply flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-end gap-y-3;
+  }
+  .filter-row > * { @apply min-w-0; }
+
+  /* Sticky bottom action (Nova Venda) */
+  .sticky-bottom-panel {
+    @apply sticky bottom-0 z-20 border-t border-ink-100 bg-white/95 backdrop-blur;
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+
+  /* Mobile card rows (usado em listas que são tabelas no desktop) */
+  .mcard {
+    @apply rounded-panel bg-white border border-ink-100 shadow-card p-3.5 sm:p-4 flex flex-col gap-2.5;
+  }
+  .mcard-row { @apply flex items-center justify-between gap-3; }
+  .mcard-head { @apply flex items-start justify-between gap-3; }
+  .mcard-title { @apply font-bold text-ink-900 text-sm sm:text-[15px]; }
+  .mcard-sub { @apply text-xs text-ink-500; }
+  .mcard-meta { @apply flex flex-wrap gap-1.5 items-center; }
+
+  /* Chip estoque */
+  .stock-ok { @apply chip bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200; }
+  .stock-low { @apply chip bg-amber-50 text-amber-700 ring-1 ring-amber-200; }
+  .stock-out { @apply chip bg-rose-50 text-rose-700 ring-1 ring-rose-200; }
 }
 
 @layer utilities {
   .safe-top { padding-top: env(safe-area-inset-top); }
   .safe-bottom { padding-bottom: env(safe-area-inset-bottom); }
+  .safe-x {
+    padding-left: env(safe-area-inset-left);
+    padding-right: env(safe-area-inset-right);
+  }
   .hide-scroll { scrollbar-width: none; -ms-overflow-style: none; }
   .hide-scroll::-webkit-scrollbar { display: none; }
   .num { font-variant-numeric: tabular-nums; }
+
+  /* Utilitário para não quebrar layout com texto longo */
+  .truncate-2 {
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  .truncate-3 {
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    line-clamp: 3;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+
+  /* Evita overflow lateral em qualquer container de lista */
+  .page-wrap {
+    @apply flex flex-col gap-5 w-full;
+    min-width: 0;
+  }
 }
+
+@keyframes slideUp {
+  from { transform: translateY(100%); opacity: 0.2; }
+  to   { transform: translateY(0); opacity: 1; }
+}
+@keyframes popIn {
+  from { transform: scale(0.96); opacity: 0; }
+  to   { transform: scale(1); opacity: 1; }
+}
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+.animate-in.fade-in { animation: fadeIn 0.15s ease-out; }

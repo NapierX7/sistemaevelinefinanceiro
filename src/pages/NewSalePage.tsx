@@ -532,7 +532,7 @@ export default function NewSalePage() {
         />
       )}
 
-      <div className="fixed bottom-0 left-0 right-0 z-30 bg-white border-t border-ink-100 shadow-[0_-4px_16px_rgba(15,23,42,0.06)] safe-bottom sm:hidden">
+      <div className="sticky-bottom-panel sm:hidden">
         <div className="px-4 py-3 space-y-2">
           <div className="flex items-center justify-between text-xs">
             <span className="text-ink-500">Subtotal ({pluralize(pecas, 'peça')})</span>
@@ -559,7 +559,7 @@ export default function NewSalePage() {
         </div>
       </div>
 
-      <div className="hidden sm:flex items-center justify-between gap-3 pt-2 sticky bottom-0 bg-white border-t border-ink-100 py-3 -mx-4 px-4">
+      <div className="hidden sm:flex items-center justify-between gap-3 sticky bottom-0 bg-white border-t border-ink-100 py-3 -mx-4 px-4 safe-bottom z-20">
         <button onClick={goPrev} disabled={currentStep === 1} className="btn-secondary min-w-[140px]">
           <ArrowLeft className="w-4 h-4" /> Anterior
         </button>
@@ -689,12 +689,12 @@ function StepProducts({ cart, addProduct, removeCartItem, updateCartItemQty, set
                       <Trash2 className="w-4 h-4" />
                     </button>
                   </div>
-                  <div className="grid grid-cols-12 gap-2 items-end">
-                    <div className="col-span-4 sm:col-span-3">
+                  <div className="grid grid-cols-2 sm:grid-cols-12 gap-2 sm:items-end">
+                    <div className="col-span-1 sm:col-span-3">
                       <label className="label !text-[11px] !mb-1">Quantidade</label>
                       <div className="flex items-center rounded-lg border border-ink-200 overflow-hidden">
-                        <button onClick={() => updateCartItemQty(item.product.id, -1)} className="px-2.5 py-2 hover:bg-ink-50 text-ink-700 min-h-[40px]">
-                          <Minus className="w-3.5 h-3.5" />
+                        <button onClick={() => updateCartItemQty(item.product.id, -1)} className="px-2.5 py-2 hover:bg-ink-50 text-ink-700 min-h-[44px] flex-1 sm:flex-none">
+                          <Minus className="w-4 h-4" />
                         </button>
                         <input
                           type="number"
@@ -703,14 +703,14 @@ function StepProducts({ cart, addProduct, removeCartItem, updateCartItemQty, set
                             const v = Math.max(0, parseInt(e.target.value) || 0)
                             updateCartItemQty(item.product.id, v - item.quantity)
                           }}
-                          className="w-full text-center py-2 outline-none text-sm font-bold num border-x border-ink-100 bg-white min-w-0"
+                          className="w-full text-center py-2 outline-none text-sm font-bold num border-x border-ink-100 bg-white min-w-0 min-h-[44px]"
                         />
-                        <button onClick={() => updateCartItemQty(item.product.id, +1)} className="px-2.5 py-2 hover:bg-ink-50 text-ink-700 min-h-[40px]">
-                          <Plus className="w-3.5 h-3.5" />
+                        <button onClick={() => updateCartItemQty(item.product.id, +1)} className="px-2.5 py-2 hover:bg-ink-50 text-ink-700 min-h-[44px] flex-1 sm:flex-none">
+                          <Plus className="w-4 h-4" />
                         </button>
                       </div>
                     </div>
-                    <div className="col-span-4 sm:col-span-3">
+                    <div className="col-span-1 sm:col-span-3">
                       <label className="label !text-[11px] !mb-1">Desconto R$</label>
                       <input
                         type="text"
@@ -718,12 +718,12 @@ function StepProducts({ cart, addProduct, removeCartItem, updateCartItemQty, set
                         value={item.discountProduct > 0 ? String(item.discountProduct).replace('.', ',') : ''}
                         onChange={e => setItemDiscount(item.product.id, e.target.value)}
                         placeholder="0,00"
-                        className="input !py-2 text-sm num"
+                        className="input text-sm num"
                       />
                     </div>
-                    <div className="col-span-4 sm:col-span-6 text-right">
+                    <div className="col-span-2 sm:col-span-6 text-right sm:text-right pt-2 sm:pt-0 border-t sm:border-t-0 border-ink-100 mt-1 sm:mt-0">
                       <div className="text-[11px] text-ink-500">Subtotal linha</div>
-                      <div className="text-lg font-black text-ink-900 num">{formatCurrency(subtotalLine)}</div>
+                      <div className="text-lg sm:text-xl font-black text-ink-900 num">{formatCurrency(subtotalLine)}</div>
                     </div>
                   </div>
                 </div>

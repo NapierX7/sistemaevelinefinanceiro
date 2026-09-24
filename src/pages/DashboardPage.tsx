@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import {
   Calendar, DollarSign, TrendingUp, Package, ShoppingCart, Receipt,
   ArrowUpRight, ArrowDownRight, Filter, AlertTriangle, ChevronDown, AlertCircle,
-  CreditCard, Wallet, Clock, Check, X, CheckCircle2
+  CreditCard, Wallet, Clock, Check, X, CheckCircle2, List
 } from 'lucide-react'
 import {
   formatCurrency, formatPercent, formatDate, rangePresets,
@@ -69,6 +69,7 @@ export default function DashboardPage() {
   const [ipError, setIpError] = useState<string | null>(null)
 
   const [showIpConfirmModal, setShowIpConfirmModal] = useState(false)
+  const [showIpListModal, setShowIpListModal] = useState(false)
   const [ipSelected, setIpSelected] = useState<InfinitePayReceivable | null>(null)
   const [ipFormAmount, setIpFormAmount] = useState<string>('')
   const [ipFormDate, setIpFormDate] = useState<string>('')
@@ -534,40 +535,54 @@ export default function DashboardPage() {
   }
 
   return (
-    <div className="space-y-5 pb-4 sm:pb-6">
+    <div className="page-wrap pb-4 sm:pb-6">
       {/* Cabeçalho + filtro período */}
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-        <div>
-          <h1 className="text-xl sm:text-2xl font-black tracking-tight text-ink-900">Dashboard</h1>
-          <p className="text-sm text-ink-500 mt-0.5">Visão geral de vendas, estoque e financeiro.</p>
-        </div>
-        <div className="flex flex-col sm:flex-row gap-2">
-          <div className="relative">
-            <select
-              value={preset}
-              onChange={e => setPreset(e.target.value as PresetKey)}
-              className="select pr-10"
-            >
-              {Object.entries(presets).map(([k, v]) => (
-                <option key={k} value={k}>{v.label}</option>
-              ))}
-              <option value="PERSONALIZADO">Personalizado</option>
-            </select>
-            <ChevronDown className="w-4 h-4 absolute right-3 top-1/2 -translate-y-1/2 text-ink-400 pointer-events-none" />
+      <header className="page-header">
+        <div className="page-header-row">
+          <div>
+            <h1 className="page-title">Dashboard</h1>
+            <p className="page-subtitle">Visão geral de vendas, estoque e financeiro.</p>
           </div>
-          <div className="flex gap-2 items-center">
-            <div className="flex items-center gap-1.5 px-3 py-2 rounded-card bg-white border border-ink-200">
-              <Calendar className="w-4 h-4 text-ink-500" />
-              <input type="date" value={from} onChange={e => { setFrom(e.target.value); setPreset('PERSONALIZADO') }} className="bg-transparent text-sm outline-none w-[110px]" />
-            </div>
-            <span className="text-ink-400 text-sm">à</span>
-            <div className="flex items-center gap-1.5 px-3 py-2 rounded-card bg-white border border-ink-200">
-              <Calendar className="w-4 h-4 text-ink-500" />
-              <input type="date" value={to} onChange={e => { setTo(e.target.value); setPreset('PERSONALIZADO') }} className="bg-transparent text-sm outline-none w-[110px]" />
+          <div className="w-full sm:w-auto">
+            <div className="filter-row sm:gap-2 w-full">
+              <div className="relative sm:min-w-[200px] flex-1 sm:flex-none">
+                <select
+                  value={preset}
+                  onChange={e => setPreset(e.target.value as PresetKey)}
+                  className="select pr-10 w-full"
+                >
+                  {Object.entries(presets).map(([k, v]) => (
+                    <option key={k} value={k}>{v.label}</option>
+                  ))}
+                  <option value="PERSONALIZADO">Personalizado</option>
+                </select>
+                <ChevronDown className="w-4 h-4 absolute right-3 top-1/2 -translate-y-1/2 text-ink-400 pointer-events-none" />
+              </div>
+              <div className="flex gap-2 items-center w-full sm:w-auto justify-between sm:justify-start">
+                <div className="flex items-center gap-1.5 px-3 rounded-card bg-white border border-ink-200 flex-1 sm:flex-none">
+                  <Calendar className="w-4 h-4 text-ink-500 shrink-0" />
+                  <input
+                    type="date"
+                    value={from}
+                    onChange={e => { setFrom(e.target.value); setPreset('PERSONALIZADO') }}
+                    className="bg-transparent text-sm outline-none w-full sm:w-[110px] py-2 min-w-0"
+                  />
+                </div>
+                <span className="text-ink-400 text-sm shrink-0 hidden sm:block">à</span>
+                <div className="flex items-center gap-1.5 px-3 rounded-card bg-white border border-ink-200 flex-1 sm:flex-none">
+                  <Calendar className="w-4 h-4 text-ink-500 shrink-0" />
+                  <input
+                    type="date"
+                    value={to}
+                    onChange={e => { setTo(e.target.value); setPreset('PERSONALIZADO') }}
+                    className="bg-transparent text-sm outline-none w-full sm:w-[110px] py-2 min-w-0"
+                  />
+                </div>
+              </div>
             </div>
           </div>
         </div>
-      </div>
+      </header>
 
       {/* ============================================================
           BLOCO I · CAIXA + PROJEÇÃO
@@ -576,46 +591,50 @@ export default function DashboardPage() {
         <div className="flex items-center gap-2 mb-2 px-0.5">
           <div className="w-1.5 h-5 rounded-full bg-emerald-600" />
           <h2 className="font-black text-ink-900 tracking-tight">I · Caixa & Projeção</h2>
-          <span className="chip bg-emerald-50 text-emerald-700 text-[10px] font-bold uppercase tracking-[0.14em]">
+          <span className="chip bg-emerald-50 text-emerald-700 text-[10px] font-bold uppercase tracking-[0.14em] hidden sm:inline-flex">
             Cash basis + recebíveis
           </span>
         </div>
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-          <div className="flex flex-col justify-between p-4 rounded-card bg-gradient-to-br from-emerald-500 to-emerald-700 text-white shadow-sm">
+          <div className="flex flex-col justify-between p-4 rounded-card bg-gradient-to-br from-emerald-500 to-emerald-700 text-white shadow-sm min-h-[140px]">
             <div className="flex items-center justify-between mb-3">
               <div className="flex items-center gap-2">
-                <div className="w-9 h-9 rounded-xl bg-white/10 flex items-center justify-center">
-                  <Wallet className="w-4.5 h-4.5" />
+                <div className="w-9 h-9 rounded-xl bg-white/10 flex items-center justify-center shrink-0">
+                  <Wallet className="w-[18px] h-[18px]" />
                 </div>
-                <div>
-                  <div className="text-[11px] font-bold uppercase tracking-[0.12em] text-white/75">Saldo atual da conta</div>
-                  <div className="text-[10px] text-white/60 mt-0.5">CAIXA_EVELINE · posição atual</div>
+                <div className="min-w-0">
+                  <div className="text-[11px] font-bold uppercase tracking-[0.12em] text-white/75">Saldo atual</div>
+                  <div className="text-[10px] text-white/60 mt-0.5 truncate">CAIXA_EVELINE</div>
                 </div>
               </div>
-              {loadingCash && <div className="text-[10px] text-white/60 animate-pulse">Carregando…</div>}
+              {loadingCash && <div className="text-[10px] text-white/60 animate-pulse shrink-0">…</div>}
             </div>
-            <div className="text-2xl sm:text-3xl font-black num tracking-tight">
+            <div className="kpi-value !text-white num">
               {(loadingCash || cashError) ? '—' : formatCurrency(saldoCaixa)}
             </div>
-            <div className="mt-2 text-[10px] text-white/70 flex items-center justify-between">
-              <span>Entradas {(loadingCash || cashError) ? '—' : formatCurrency(receitas)}</span>
-              <span>Saídas {(loadingCash || cashError) ? '—' : formatCurrency(despesas)}</span>
+            <div className="mt-2 text-[10px] text-white/70 flex items-center justify-between gap-2">
+              <span className="truncate">Ent. {(loadingCash || cashError) ? '—' : formatCurrency(receitas)}</span>
+              <span className="truncate">Sai. {(loadingCash || cashError) ? '—' : formatCurrency(despesas)}</span>
             </div>
           </div>
-          <div className="flex flex-col p-4 rounded-card bg-white border border-sky-200 shadow-sm lg:col-span-2">
+
+          {/* CARD 2 · INFINITEPAY · RESPONSIVO: compacto mobile + expandido desktop */}
+          <div className="flex flex-col p-4 rounded-card bg-white border border-sky-200 shadow-sm sm:col-span-2 lg:col-span-2">
             <div className="flex items-center justify-between mb-3">
-              <div className="flex items-center gap-2">
-                <div className="w-9 h-9 rounded-xl bg-sky-500/10 flex items-center justify-center text-sky-700">
-                  <CreditCard className="w-4.5 h-4.5" />
+              <div className="flex items-center gap-2 min-w-0">
+                <div className="w-9 h-9 rounded-xl bg-sky-500/10 flex items-center justify-center text-sky-700 shrink-0">
+                  <CreditCard className="w-[18px] h-[18px]" />
                 </div>
-                <div>
+                <div className="min-w-0">
                   <div className="text-[11px] font-bold uppercase tracking-[0.12em] text-ink-500">A repassar InfinitePay</div>
-                  <div className="text-[10px] text-ink-400 mt-0.5">Bruto − taxa real · soma líquida sem filtro de data</div>
+                  <div className="text-[10px] text-ink-400 mt-0.5 truncate hidden sm:block">Bruto − taxa real · sem filtro de data</div>
                 </div>
               </div>
-              {loadingIp && <div className="text-[10px] text-ink-400 animate-pulse">Carregando…</div>}
+              {loadingIp && <div className="text-[10px] text-ink-400 animate-pulse shrink-0">Carregando…</div>}
             </div>
-            <div className="flex items-baseline gap-2 flex-wrap">
+
+            {/* Resumo (mobile + desktop sempre visível) */}
+            <div className="flex flex-wrap items-baseline gap-2">
               <div className="text-2xl sm:text-3xl font-black num tracking-tight text-sky-700">
                 {(loadingIp || ipError) ? '—' : formatCurrency(aRepassarInfinitePay)}
               </div>
@@ -626,25 +645,40 @@ export default function DashboardPage() {
               )}
               {!loadingIp && totalRepassadoInfinitePay > 0 && (
                 <span className="chip bg-emerald-50 text-emerald-700 text-[10px]">
-                  +{formatCurrency(totalRepassadoInfinitePay)} já repassado(s)
+                  +{formatCurrency(totalRepassadoInfinitePay)} já repassado
                 </span>
               )}
             </div>
-            <div className="mt-2 text-[10px] text-ink-400">
-              Entra no caixa quando confirmar o recebimento (operadora de cartão).
-            </div>
+            <p className="mt-2 text-[11px] text-ink-400 line-clamp-2">
+              Entra no caixa quando você confirmar o recebimento do repasse da operadora.
+            </p>
+
             {ipError && (
               <div className="mt-3 p-3 rounded-xl border border-rose-200 bg-rose-50 text-rose-800 text-xs">
                 Não foi possível carregar recebíveis InfinitePay.
               </div>
             )}
+
+            {/* MOBILE: botão Ver repasses + modal */}
+            {!loadingIp && !ipError && ipLinhasARepassar.length > 0 && (
+              <div className="mt-3 lg:hidden">
+                <button
+                  onClick={() => setShowIpListModal(true)}
+                  className="btn-secondary btn-block btn-sm flex items-center justify-center gap-1.5"
+                >
+                  <List className="w-4 h-4" /> Ver repasses pendentes
+                </button>
+              </div>
+            )}
             {!loadingIp && !ipError && ipLinhasARepassar.length === 0 && (
-              <div className="mt-4 p-4 rounded-xl border border-dashed border-ink-200 text-center text-ink-400 text-sm">
+              <div className="mt-3 p-3 rounded-xl border border-dashed border-ink-200 text-center text-ink-400 text-xs">
                 Nenhum valor a repassar no momento.
               </div>
             )}
+
+            {/* DESKTOP: lista expandida */}
             {!loadingIp && !ipError && ipLinhasARepassar.length > 0 && (
-              <div className="mt-4 space-y-2 max-h-[320px] overflow-auto pr-1">
+              <div className="hidden lg:block mt-4 space-y-2 max-h-[340px] overflow-auto pr-1">
                 {ipLinhasARepassar.map(r => (
                   <div key={r.sale_payment_id} className="p-3 rounded-xl border border-sky-100 bg-sky-50/40 flex flex-col sm:flex-row sm:items-center gap-3">
                     <div className="min-w-0 flex-1">
@@ -674,7 +708,7 @@ export default function DashboardPage() {
                         setIpSuccessMsg(null)
                         setShowIpConfirmModal(true)
                       }}
-                      className="btn-primary !py-2 !px-3 text-xs whitespace-nowrap min-w-fit self-start sm:self-center flex items-center gap-1.5"
+                      className="btn-primary !py-2 !px-3 text-xs whitespace-nowrap min-w-fit self-start sm:self-center flex items-center gap-1.5 btn-sm"
                     >
                       <CheckCircle2 className="w-3.5 h-3.5" /> Confirmar recebimento
                     </button>
@@ -683,47 +717,134 @@ export default function DashboardPage() {
               </div>
             )}
           </div>
-          <div className="flex flex-col justify-between p-4 rounded-card bg-gradient-to-br from-sky-500 to-brand-600 text-white shadow-sm">
-            <div className="flex items-center gap-2 mb-3">
-              <div className="w-9 h-9 rounded-xl bg-white/10 flex items-center justify-center">
-                <TrendingUp className="w-4.5 h-4.5" />
+
+          <div className="flex flex-col justify-between p-4 rounded-card bg-gradient-to-br from-sky-500 to-brand-600 text-white shadow-sm min-h-[140px]">
+            <div className="flex items-center gap-2 mb-3 min-w-0">
+              <div className="w-9 h-9 rounded-xl bg-white/10 flex items-center justify-center shrink-0">
+                <TrendingUp className="w-[18px] h-[18px]" />
               </div>
-              <div>
+              <div className="min-w-0">
                 <div className="text-[11px] font-bold uppercase tracking-[0.12em] text-white/75">Disponível / Após crédito</div>
-                <div className="text-[10px] text-white/60 mt-0.5">saldo atual + recebíveis InfinitePay</div>
+                <div className="text-[10px] text-white/60 mt-0.5 truncate">saldo + recebíveis</div>
               </div>
             </div>
-            <div className="text-2xl sm:text-3xl font-black num tracking-tight">
+            <div className="kpi-value !text-white num">
               {((loadingCash || loadingIp) || cashError || ipError) ? '—' : formatCurrency(aposCreditoIp)}
             </div>
-            <div className="mt-2 text-[10px] text-white/70">
-              Projeção após crédito da operadora de cartão.
+            <div className="mt-2 text-[10px] text-white/70 line-clamp-2">
+              Projeção após crédito da operadora.
             </div>
           </div>
-          <div className="flex flex-col justify-between p-4 rounded-card bg-white border border-ink-200 shadow-sm">
-            <div className="flex items-center justify-between mb-3">
-              <div className="flex items-center gap-2">
-                <div className="w-9 h-9 rounded-xl bg-amber-500/10 flex items-center justify-center text-amber-700">
-                  <Clock className="w-4.5 h-4.5" />
+
+          <div className="flex flex-col justify-between p-4 rounded-card bg-white border border-ink-200 shadow-sm sm:col-span-2 lg:col-span-1 min-h-[140px]">
+            <div className="flex items-center justify-between mb-3 min-w-0">
+              <div className="flex items-center gap-2 min-w-0">
+                <div className="w-9 h-9 rounded-xl bg-amber-500/10 flex items-center justify-center text-amber-700 shrink-0">
+                  <Clock className="w-[18px] h-[18px]" />
                 </div>
-                <div>
+                <div className="min-w-0">
                   <div className="text-[11px] font-bold uppercase tracking-[0.12em] text-ink-500">A receber de clientes</div>
-                  <div className="text-[10px] text-ink-400 mt-0.5">Vendas pendentes · não só período</div>
+                  <div className="text-[10px] text-ink-400 mt-0.5 truncate hidden sm:block">Vendas pendentes</div>
                 </div>
               </div>
-              {loadingReceiv && <div className="text-[10px] text-ink-400 animate-pulse">Carregando…</div>}
+              {loadingReceiv && <div className="text-[10px] text-ink-400 animate-pulse shrink-0">…</div>}
             </div>
-            <div className="text-2xl sm:text-3xl font-black num tracking-tight text-amber-700">
+            <div className="kpi-value !text-amber-700 num">
               {(loadingReceiv || receivError) ? '—' : formatCurrency(aReceberGlobal)}
             </div>
-            <div className="mt-2 text-[10px] text-ink-400">
+            <div className="mt-2 text-[11px] text-ink-400 line-clamp-2">
               {receivablesTotal && !receivError
-                ? `${receivablesTotal.vendas_pendentes_qtd ?? 0} venda(s) pendente(s). Entra quando receber.`
+                ? `${receivablesTotal.vendas_pendentes_qtd ?? 0} ${pluralize(receivablesTotal.vendas_pendentes_qtd ?? 0, 'venda', 'vendas')} pendente(s).`
                 : 'Não entrou no caixa ainda.'}
             </div>
           </div>
         </div>
       </section>
+
+      {/* MODAL LISTA IP (mobile: botão Ver repasses) */}
+      {showIpListModal && (
+        <div className="modal-shell" onClick={() => setShowIpListModal(false)}>
+          <div className="modal-backdrop" aria-hidden />
+          <div className="modal-content modal-wide" onClick={e => e.stopPropagation()} role="dialog" aria-modal="true">
+            <div className="modal-header bg-sky-50/60">
+              <div className="flex items-center gap-2 min-w-0">
+                <CreditCard className="w-5 h-5 text-sky-700 shrink-0" />
+                <div className="min-w-0">
+                  <h3 className="modal-title">Repasses InfinitePay pendentes</h3>
+                  <p className="text-[11px] text-ink-500 mt-0.5">
+                    {ipLinhasARepassar.length} {pluralize(ipLinhasARepassar.length, 'venda', 'vendas')} · Total <span className="font-bold text-sky-700 num">{formatCurrency(aRepassarInfinitePay)}</span>
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setShowIpListModal(false)}
+                className="btn-icon !min-w-[40px] !min-h-[40px] -mr-1 shrink-0"
+                aria-label="Fechar"
+              >
+                <X className="w-4.5 h-4.5" />
+              </button>
+            </div>
+            <div className="modal-body flex flex-col gap-2.5">
+              {ipLinhasARepassar.length === 0 && (
+                <div className="p-6 rounded-xl border border-dashed border-ink-200 text-center text-ink-400 text-sm">
+                  Nenhum valor a repassar.
+                </div>
+              )}
+              {ipLinhasARepassar.map(r => (
+                <div key={r.sale_payment_id} className="p-3.5 rounded-xl border border-sky-100 bg-sky-50/30 flex flex-col gap-3">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        {r.sale_friendly_number ? (
+                          <span className="chip bg-white text-sky-700 border border-sky-200 text-[10px] font-bold">#{String(r.sale_friendly_number).padStart(4, '0')}</span>
+                        ) : null}
+                        <span className="text-[11px] text-ink-500">{formatDate(r.sale_date ?? r.payment_created_at)}</span>
+                        {r.installments > 1 && (
+                          <span className="chip bg-white text-ink-500 text-[10px] border border-ink-200">{r.installments}x</span>
+                        )}
+                      </div>
+                      <div className="mt-1 text-[15px] font-bold text-ink-900 truncate">
+                        {r.customer_name ?? 'Cliente não identificado'}
+                      </div>
+                    </div>
+                    <div className="text-right shrink-0">
+                      <div className="text-[11px] font-bold uppercase tracking-wider text-sky-700">Líquido</div>
+                      <div className="text-lg font-black num text-sky-700">{formatCurrency(r.liquido)}</div>
+                    </div>
+                  </div>
+                  <div className="text-[11px] text-ink-500 num grid grid-cols-2 gap-2 border-t border-sky-100 pt-2">
+                    <div>Bruto: <span className="font-semibold text-ink-700">{formatCurrency(r.bruto)}</span></div>
+                    <div>Taxa real: <span className="font-semibold text-rose-600">-{formatCurrency(r.taxa_real)}</span></div>
+                  </div>
+                  <button
+                    onClick={() => {
+                      setShowIpListModal(false)
+                      setIpSelected(r)
+                      setIpFormAmount(r.liquido.toFixed(2).replace('.', ','))
+                      setIpFormDate(new Date().toISOString().slice(0, 10))
+                      setIpFormNotes('')
+                      setIpActionError(null)
+                      setIpSuccessMsg(null)
+                      setTimeout(() => setShowIpConfirmModal(true), 50)
+                    }}
+                    className="btn-primary btn-sm btn-block flex items-center justify-center gap-1.5"
+                  >
+                    <CheckCircle2 className="w-4 h-4" /> Confirmar recebimento
+                  </button>
+                </div>
+              ))}
+            </div>
+            <div className="modal-footer">
+              <button
+                onClick={() => setShowIpListModal(false)}
+                className="btn-secondary btn-block"
+              >
+                Fechar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ============================================================
           BLOCO II · RESULTADO DO PERÍODO (accrual)
@@ -1307,20 +1428,20 @@ export default function DashboardPage() {
 
       {showIpConfirmModal && ipSelected && (
         <div
-          className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4 bg-black/40 backdrop-blur-sm"
-          onClick={() => !ipLoading && setShowIpConfirmModal(false)}
+          className="modal-shell"
+          onClick={(e) => { if (e.target === e.currentTarget && !ipLoading) setShowIpConfirmModal(false) }}
         >
           <div
-            className="w-full sm:max-w-lg bg-white rounded-t-2xl sm:rounded-2xl shadow-2xl overflow-hidden max-h-[92vh] overflow-y-auto"
+            className="modal-content"
             onClick={(e) => e.stopPropagation()}
           >
-            <div className="flex items-center justify-between gap-3 px-5 py-4 border-b border-ink-100 bg-sky-50">
+            <div className="modal-header !bg-sky-50">
               <div className="flex items-center gap-2.5 min-w-0">
                 <div className="w-9 h-9 rounded-xl bg-sky-600 flex items-center justify-center flex-shrink-0">
                   <CreditCard className="w-5 h-5 text-white" />
                 </div>
                 <div className="min-w-0">
-                  <h3 className="font-black text-ink-900 tracking-tight leading-none">Confirmar recebimento InfinitePay</h3>
+                  <h3 className="modal-title">Confirmar recebimento InfinitePay</h3>
                   <p className="text-[11px] text-sky-700 mt-1">
                     Cria ENTRADA / REPASSE_INFINITEPAY no caixa Eveline.
                   </p>
@@ -1330,13 +1451,14 @@ export default function DashboardPage() {
                 type="button"
                 onClick={() => !ipLoading && setShowIpConfirmModal(false)}
                 disabled={ipLoading}
-                className="w-9 h-9 rounded-xl flex items-center justify-center text-ink-500 hover:text-ink-800 hover:bg-white/70 disabled:opacity-50 transition-colors flex-shrink-0"
+                className="btn-icon"
+                aria-label="Fechar"
               >
-                <X className="w-4.5 h-4.5" />
+                <X className="w-5 h-5" />
               </button>
             </div>
 
-            <form onSubmit={handleSubmitIpRepasse} className="p-5 space-y-4">
+            <form id="ip-repasse-form" onSubmit={handleSubmitIpRepasse} className="modal-body space-y-4">
               <div className="p-4 rounded-xl border border-sky-100 bg-sky-50/40 space-y-2 text-sm">
                 <div className="flex items-center justify-between gap-2 flex-wrap">
                   <span className="text-ink-500 text-xs uppercase tracking-[0.08em] font-bold">Venda</span>
@@ -1432,47 +1554,49 @@ export default function DashboardPage() {
                 </div>
               )}
 
-              <div className="pt-2 flex flex-col-reverse sm:flex-row sm:justify-end gap-2">
-                <button
-                  type="button"
-                  disabled={ipLoading}
-                  onClick={() => !ipLoading && setShowIpConfirmModal(false)}
-                  className="btn-secondary !py-3"
-                >
-                  Cancelar
-                </button>
-                <button
-                  type="submit"
-                  disabled={ipLoading}
-                  className="btn-primary !py-3 flex items-center justify-center gap-2"
-                >
-                  {ipLoading
-                    ? <span className="animate-pulse">Registrando…</span>
-                    : <><CheckCircle2 className="w-4 h-4" /> Confirmar recebimento</>
-                  }
-                </button>
-              </div>
             </form>
+            <div className="modal-footer flex flex-col-reverse sm:flex-row sm:justify-end gap-2">
+              <button
+                type="button"
+                disabled={ipLoading}
+                onClick={() => !ipLoading && setShowIpConfirmModal(false)}
+                className="btn-secondary"
+              >
+                Cancelar
+              </button>
+              <button
+                type="submit"
+                form="ip-repasse-form"
+                onClick={handleSubmitIpRepasse}
+                disabled={ipLoading}
+                className="btn-primary flex items-center justify-center gap-2"
+              >
+                {ipLoading
+                  ? <span className="animate-pulse">Registrando…</span>
+                  : <><CheckCircle2 className="w-4 h-4" /> Confirmar recebimento</>
+                }
+              </button>
+            </div>
           </div>
         </div>
       )}
 
       {showPayModal && (
         <div
-          className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4 bg-black/40 backdrop-blur-sm"
-          onClick={() => !payLoading && setShowPayModal(false)}
+          className="modal-shell"
+          onClick={(e) => { if (e.target === e.currentTarget && !payLoading) setShowPayModal(false) }}
         >
           <div
-            className="w-full sm:max-w-lg bg-white rounded-t-2xl sm:rounded-2xl shadow-2xl overflow-hidden max-h-[92vh] overflow-y-auto"
+            className="modal-content"
             onClick={(e) => e.stopPropagation()}
           >
-            <div className="flex items-center justify-between gap-3 px-5 py-4 border-b border-ink-100 bg-violet-50">
+            <div className="modal-header !bg-violet-50">
               <div className="flex items-center gap-2.5 min-w-0">
                 <div className="w-9 h-9 rounded-xl bg-violet-600 flex items-center justify-center flex-shrink-0">
                   <Check className="w-5 h-5 text-white" />
                 </div>
                 <div className="min-w-0">
-                  <h3 className="font-black text-ink-900 tracking-tight leading-none">Registrar pagamento de obrigação</h3>
+                  <h3 className="modal-title">Registrar pagamento de obrigação</h3>
                   <p className="text-[11px] text-violet-700 mt-1">
                     O valor será lançado como SAÍDA / PAGAMENTO_OBRIGACAO no caixa Eveline.
                   </p>
@@ -1482,13 +1606,14 @@ export default function DashboardPage() {
                 type="button"
                 onClick={() => !payLoading && setShowPayModal(false)}
                 disabled={payLoading}
-                className="w-9 h-9 rounded-xl flex items-center justify-center text-ink-500 hover:text-ink-800 hover:bg-white/70 disabled:opacity-50 transition-colors flex-shrink-0"
+                className="btn-icon"
+                aria-label="Fechar"
               >
-                <X className="w-4.5 h-4.5" />
+                <X className="w-5 h-5" />
               </button>
             </div>
 
-            <form onSubmit={handleSubmitPay} className="p-5 space-y-4">
+            <form id="pay-obligation-form" onSubmit={handleSubmitPay} className="modal-body space-y-4">
               <div>
                 <label className="block text-xs font-bold text-ink-700 mb-1.5 uppercase tracking-[0.08em]">Obrigação a pagar</label>
                 <select
@@ -1617,34 +1742,35 @@ export default function DashboardPage() {
                 </div>
               )}
 
-              <div className="pt-1 flex items-center gap-2.5">
-                <button
-                  type="button"
-                  onClick={() => !payLoading && setShowPayModal(false)}
-                  disabled={payLoading}
-                  className="flex-1 h-12 rounded-xl border border-ink-200 bg-white text-sm font-bold text-ink-700 hover:bg-ink-50 disabled:opacity-60 transition-colors"
-                >
-                  Cancelar
-                </button>
-                <button
-                  type="submit"
-                  disabled={payLoading || !paySelectedObligationId}
-                  className="flex-[1.5] h-12 px-4 rounded-xl bg-violet-600 hover:bg-violet-700 disabled:bg-violet-300 disabled:cursor-not-allowed text-white text-sm font-bold shadow-sm transition-colors flex items-center justify-center gap-2"
-                >
-                  {payLoading ? (
-                    <>
-                      <span className="w-4 h-4 rounded-full border-2 border-white/40 border-t-white animate-spin" />
-                      Registrando…
-                    </>
-                  ) : (
-                    <>
-                      <Check className="w-4.5 h-4.5" />
-                      Confirmar pagamento
-                    </>
-                  )}
-                </button>
-              </div>
             </form>
+            <div className="modal-footer flex flex-col-reverse sm:flex-row sm:justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => !payLoading && setShowPayModal(false)}
+                disabled={payLoading}
+                className="btn-secondary flex-1 sm:flex-none"
+              >
+                Cancelar
+              </button>
+              <button
+                type="submit"
+                form="pay-obligation-form"
+                disabled={payLoading || !paySelectedObligationId}
+                className="btn-primary !bg-violet-600 hover:!bg-violet-700 flex-1 sm:flex-[1.5]"
+              >
+                {payLoading ? (
+                  <>
+                    <span className="w-4 h-4 rounded-full border-2 border-white/40 border-t-white animate-spin" />
+                    Registrando…
+                  </>
+                ) : (
+                  <>
+                    <Check className="w-4 h-4" />
+                    Confirmar pagamento
+                  </>
+                )}
+              </button>
+            </div>
           </div>
         </div>
       )}

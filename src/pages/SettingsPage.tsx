@@ -73,21 +73,25 @@ export default function SettingsPage() {
   ]
 
   return (
-    <div className="space-y-5 pb-4 sm:pb-6 relative">
+    <div className="page-wrap pb-4 sm:pb-6 relative">
       {toast && (
         <div className="fixed top-4 right-4 z-[60] bg-emerald-600 text-white px-4 py-3 rounded-lg shadow-lg flex items-center gap-2 text-sm font-semibold animate-in fade-in slide-in-from-top-2">
           <Check className="w-4 h-4" /> {toast}
         </div>
       )}
 
-      <div>
-        <h1 className="text-xl sm:text-2xl font-black tracking-tight text-ink-900 flex items-center gap-2">
-          <SettingsIcon className="w-6 h-6" /> Configurações
-        </h1>
-        <p className="text-sm text-ink-500 mt-0.5">
-          Taxas, embalagens, descontos e dados da loja.
-        </p>
-      </div>
+      <header className="page-header">
+        <div className="page-header-row">
+          <div>
+            <h1 className="page-title flex items-center gap-2">
+              <SettingsIcon className="w-5 h-5 sm:w-6 sm:h-6" /> Configurações
+            </h1>
+            <p className="page-subtitle mt-0.5">
+              Taxas, embalagens, descontos e dados da loja.
+            </p>
+          </div>
+        </div>
+      </header>
 
       <div className="card overflow-hidden">
         <div className="flex overflow-x-auto hide-scroll border-b border-ink-100">

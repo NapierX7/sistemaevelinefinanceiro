@@ -351,7 +351,7 @@ export interface FinancialTransaction {
   due_date?: string | null;
   created_by?: UUID | null;
   notes?: string | null;
-  payment_source?: 'CAIXA_EVELINE' | 'FABIANA' | 'DONA' | 'OUTRO' | string | null;
+  payment_source?: 'CAIXA_EVELINE' | 'FABIANA' | 'DONA' | 'OUTRO' | 'INFINITEPAY' | 'MERCADO_PAGO' | string | null;
   created_at: string;
   updated_at?: string;
 }

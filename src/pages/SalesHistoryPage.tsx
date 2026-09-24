@@ -275,22 +275,24 @@ export default function SalesHistoryPage() {
   }
 
   return (
-    <div className="pb-6 space-y-4">
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-        <div>
-          <h1 className="text-xl sm:text-2xl font-black tracking-tight text-ink-900 flex items-center gap-2">
-            <ShoppingBag className="w-6 h-6 text-brand-800" />
-            Histórico de vendas
-          </h1>
-          <p className="text-sm text-ink-500 mt-0.5">
-            {loading ? 'Carregando…' : pluralize(filtered.length, 'venda encontrada')} ·
-            Período de {formatDate(from)} à {formatDate(to)}
-          </p>
+    <div className="page-wrap pb-4 sm:pb-6">
+      <header className="page-header">
+        <div className="page-header-row">
+          <div>
+            <h1 className="page-title flex items-center gap-2">
+              <ShoppingBag className="w-5 h-5 sm:w-6 sm:h-6 text-brand-800" />
+              Histórico de vendas
+            </h1>
+            <p className="page-subtitle mt-0.5">
+              {loading ? 'Carregando…' : pluralize(filtered.length, 'venda encontrada')} ·
+              Período de {formatDate(from)} à {formatDate(to)}
+            </p>
+          </div>
+          <Link to="/vendas/nova" className="btn-primary">
+            <Plus className="w-4 h-4" /> Nova venda
+          </Link>
         </div>
-        <Link to="/vendas/nova" className="btn-primary">
-          <Plus className="w-4 h-4" /> Nova venda
-        </Link>
-      </div>
+      </header>
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
         <div className="kpi-card">
@@ -316,62 +318,60 @@ export default function SalesHistoryPage() {
       </div>
 
       <div className="card p-4">
-        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-3">
-          <div className="flex flex-col lg:flex-row lg:items-center gap-2 w-full lg:w-auto">
-            <div className="relative w-full lg:w-[240px]">
-              <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-ink-400" />
+        <div className="filter-row mb-3">
+          <div className="relative w-full sm:w-[240px] sm:flex-shrink-0">
+            <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-ink-400" />
+            <input
+              type="text"
+              value={fCustomer}
+              onChange={e => setFCustomer(e.target.value)}
+              placeholder="Buscar por nome do cliente…"
+              className="input pl-10"
+            />
+          </div>
+          <div className="relative w-full sm:w-auto sm:flex-shrink-0">
+            <select
+              value={preset}
+              onChange={e => setPreset(e.target.value as PresetKey)}
+              className="select pr-10 w-full sm:min-w-[160px]"
+            >
+              {Object.entries(presets).map(([k, v]: [string, any]) => (
+                <option key={k} value={k}>{v.label}</option>
+              ))}
+              <option value="PERSONALIZADO">Personalizado</option>
+            </select>
+            <ChevronDown className="w-4 h-4 absolute right-3 top-1/2 -translate-y-1/2 text-ink-400 pointer-events-none" />
+          </div>
+          <div className="flex gap-2 items-center flex-wrap w-full sm:w-auto sm:flex-shrink-0">
+            <div className="flex items-center gap-1.5 px-3 rounded-card bg-white border border-ink-200 min-w-0 flex-1 sm:flex-shrink-0" style={{ minHeight: 44 }}>
+              <Calendar className="w-4 h-4 text-ink-500 flex-shrink-0" />
               <input
-                type="text"
-                value={fCustomer}
-                onChange={e => setFCustomer(e.target.value)}
-                placeholder="Buscar por nome do cliente…"
-                className="input pl-9 !py-2 !text-sm"
+                type="date"
+                value={from}
+                onChange={e => { setFrom(e.target.value); setPreset('PERSONALIZADO') }}
+                className="bg-transparent text-sm outline-none w-full sm:w-[110px]"
               />
             </div>
-            <div className="relative">
-              <select
-                value={preset}
-                onChange={e => setPreset(e.target.value as PresetKey)}
-                className="select pr-10 min-w-[160px]"
-              >
-                {Object.entries(presets).map(([k, v]: [string, any]) => (
-                  <option key={k} value={k}>{v.label}</option>
-                ))}
-                <option value="PERSONALIZADO">Personalizado</option>
-              </select>
-              <ChevronDown className="w-4 h-4 absolute right-3 top-1/2 -translate-y-1/2 text-ink-400 pointer-events-none" />
-            </div>
-            <div className="flex gap-2 items-center flex-wrap sm:flex-nowrap">
-              <div className="flex items-center gap-1.5 px-3 py-2 rounded-card bg-white border border-ink-200 min-w-0">
-                <Calendar className="w-4 h-4 text-ink-500 flex-shrink-0" />
-                <input
-                  type="date"
-                  value={from}
-                  onChange={e => { setFrom(e.target.value); setPreset('PERSONALIZADO') }}
-                  className="bg-transparent text-sm outline-none w-[110px]"
-                />
-              </div>
-              <span className="text-ink-400 text-sm">à</span>
-              <div className="flex items-center gap-1.5 px-3 py-2 rounded-card bg-white border border-ink-200 min-w-0">
-                <Calendar className="w-4 h-4 text-ink-500 flex-shrink-0" />
-                <input
-                  type="date"
-                  value={to}
-                  onChange={e => { setTo(e.target.value); setPreset('PERSONALIZADO') }}
-                  className="bg-transparent text-sm outline-none w-[110px]"
-                />
-              </div>
+            <span className="text-ink-400 text-sm hidden sm:inline">à</span>
+            <div className="flex items-center gap-1.5 px-3 rounded-card bg-white border border-ink-200 min-w-0 flex-1 sm:flex-shrink-0" style={{ minHeight: 44 }}>
+              <Calendar className="w-4 h-4 text-ink-500 flex-shrink-0" />
+              <input
+                type="date"
+                value={to}
+                onChange={e => { setTo(e.target.value); setPreset('PERSONALIZADO') }}
+                className="bg-transparent text-sm outline-none w-full sm:w-[110px]"
+              />
             </div>
           </div>
-          <div className="flex items-center gap-2 sm:justify-end">
+          <div className="flex items-center gap-2 justify-start sm:justify-end flex-wrap w-full sm:w-auto sm:flex-shrink-0">
             {activeFiltersCount > 0 && (
-              <button onClick={clearFilters} className="btn-ghost text-xs !py-2">
-                <X className="w-3.5 h-3.5" /> Limpar filtros ({activeFiltersCount})
+              <button onClick={clearFilters} className="btn-secondary text-sm !min-h-[44px]">
+                <X className="w-4 h-4" /> Limpar ({activeFiltersCount})
               </button>
             )}
             <button onClick={() => setFiltersOpen(o => !o)} className={cn('btn-secondary', filtersOpen && '!bg-brand-50 !border-brand-300 !text-brand-800')}>
-              <Filter className="w-4 h-4" /> Filtros avançados
-              {activeFiltersCount > 0 && <span className="chip !py-0.5 !px-2 bg-brand-900 text-white">{activeFiltersCount}</span>}
+              <Filter className="w-4 h-4" /> Filtros
+              {activeFiltersCount > 0 && <span className="chip !py-0.5 !px-2 bg-brand-900 text-white !min-h-[22px]">{activeFiltersCount}</span>}
             </button>
           </div>
         </div>
@@ -719,170 +719,177 @@ export default function SalesHistoryPage() {
               </div>
             </div>
 
-            <div className="block sm:hidden">
-              <ul className="divide-y divide-ink-100">
-                {filtered.map(s => {
-                  const st = statusLabel(s.status)
-                  const snapProvider = (s as any).payment_provider_snapshot
-                  const snapMethod = (s as any).payment_method_snapshot
-                  const snapInstallments = Number((s as any).installments_snapshot ?? 1)
-                  return (
-                    <li key={s.id} className="p-4 space-y-3">
-                      <div className="flex items-start justify-between gap-2">
-                        <div className="min-w-0">
-                          <div className="flex items-center gap-2">
-                            <button
-                              onClick={() => navigate(`/vendas/${s.id}`)}
-                              className="text-brand-800 hover:underline font-black num text-base"
-                            >
-                              #{String(s.friendly_number ?? '')}
-                            </button>
-                            <span className={st.class + ' !py-0.5'}>{st.label}</span>
-                          </div>
-                          <div className="flex items-center gap-1.5 mt-1 text-xs text-ink-500">
+            <div className="sm:hidden flex flex-col gap-3">
+              {loading ? (
+                <div className="mcard justify-center items-center py-8 text-ink-500">Carregando vendas…</div>
+              ) : filtered.length === 0 ? (
+                <div className="mcard justify-center items-center py-8 text-center">
+                  <ShoppingBag className="w-12 h-12 text-ink-200 mb-2" />
+                  <div className="font-bold text-ink-800">Sem vendas no período</div>
+                  <div className="text-sm text-ink-500 mt-1">Ajuste os filtros ou inicie uma nova venda.</div>
+                </div>
+              ) : filtered.map(s => {
+                const st = statusLabel(s.status)
+                return (
+                  <div key={s.id} className="mcard">
+                    <div className="mcard-head">
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <button
+                            onClick={() => navigate(`/vendas/${s.id}`)}
+                            className="text-brand-800 hover:underline font-black num text-base flex-shrink-0"
+                          >
+                            #{String(s.friendly_number ?? '')}
+                          </button>
+                          <span className={st.class + ' !py-0.5'}>{st.label}</span>
+                        </div>
+                        <div className="mcard-meta mt-1.5">
+                          <span className="flex items-center gap-1 text-ink-500">
                             <Clock className="w-3.5 h-3.5 flex-shrink-0" />
                             <span className="num">{formatDateTime(s.sale_date ?? s.created_at)}</span>
-                            <span className="text-ink-300">·</span>
-                            <span className="chip bg-ink-100 text-ink-600 !py-0 !text-[10px]">{sourceLabel(s.source)}</span>
-                          </div>
-                        </div>
-                        <div className="text-right min-w-[110px]">
-                          <div className={cn('font-black text-lg num',
-                            s.status === 'CANCELADA' ? 'text-ink-400 line-through' : 'text-ink-900')}>
-                            {formatCurrency(s.total_customer)}
-                          </div>
-                          {s.status !== 'CANCELADA' && (
-                            <div className={cn('text-xs font-semibold num mt-0.5',
-                              Number(s.real_profit ?? 0) >= 0 ? 'text-emerald-700' : 'text-rose-700')}>
-                              Lucro {formatCurrency(s.real_profit ?? 0)}
-                            </div>
-                          )}
+                          </span>
+                          <span className="chip bg-ink-100 text-ink-600 !py-0 !text-[10px]">{sourceLabel(s.source)}</span>
                         </div>
                       </div>
-
-                      <div className="rounded-xl border border-ink-100 bg-ink-50/60 p-3 space-y-1.5">
-                        {s.customer_name ? (
-                          <div className="flex items-start gap-2">
-                            <UserCircle className="w-4 h-4 text-brand-700 mt-0.5 flex-shrink-0" />
-                            <div className="min-w-0 flex-1">
-                              <div className="font-bold text-ink-900 break-words">{s.customer_name}</div>
-                              {s.customer_phone && (
-                                <div className="flex items-center gap-1.5 mt-0.5 text-xs text-ink-600">
-                                  <Phone className="w-3.5 h-3.5 flex-shrink-0" />
-                                  <span className="num">{s.customer_phone}</span>
-                                </div>
-                              )}
-                            </div>
+                      <div className="text-right min-w-[100px]">
+                        <div className={cn('font-black text-lg num leading-tight',
+                          s.status === 'CANCELADA' ? 'text-ink-400 line-through' : 'text-ink-900')}>
+                          {formatCurrency(s.total_customer)}
+                        </div>
+                        {s.status !== 'CANCELADA' && (
+                          <div className={cn('text-xs font-semibold num mt-0.5',
+                            Number(s.real_profit ?? 0) >= 0 ? 'text-emerald-700' : 'text-rose-700')}>
+                            Lucro {formatCurrency(s.real_profit ?? 0)}
                           </div>
-                        ) : (
-                          <div className="text-sm text-ink-500 italic">Cliente não identificado</div>
                         )}
-                        <div className="flex items-center justify-between gap-2 pt-1 text-xs text-ink-600 border-t border-ink-200/70 mt-1.5">
-                          <span className="flex items-center gap-1.5 flex-wrap">
-                            <span className="chip bg-white text-ink-600 !py-0 border border-ink-200">
-                              {pagamentoLabel(s) || 'Sem pagamento'}
-                            </span>
-                          </span>
-                          <span className="font-bold num text-ink-700 flex-shrink-0">
-                            {pluralize(pecasBySale(s.id), 'peça')}
-                          </span>
-                        </div>
                       </div>
+                    </div>
 
-                      <div className="grid grid-cols-2 gap-2 pt-0.5">
-                        <button
-                          onClick={() => navigate(`/vendas/${s.id}#editar`)}
-                          className="btn-secondary !py-2.5 text-sm min-h-[44px]"
-                        >
-                          <Edit3 className="w-4 h-4" /> Editar
-                        </button>
-                        <button
-                          onClick={() => navigate(`/vendas/${s.id}`)}
-                          className="btn-primary !py-2.5 text-sm min-h-[44px]"
-                        >
-                          Ver detalhe
-                        </button>
-                      </div>
-                      {s.status !== 'CANCELADA' && (
-                        <button
-                          onClick={() => openCancel(s)}
-                          className={cn(
-                            'w-full text-sm rounded-lg border transition inline-flex items-center justify-center gap-1.5 font-semibold min-h-[40px]',
-                            'border-rose-200 bg-white text-rose-700 hover:bg-rose-50'
-                          )}
-                        >
-                          <Trash2 className="w-4 h-4" /> Cancelar venda
-                        </button>
+                    <div className="rounded-xl border border-ink-100 bg-ink-50/60 p-3 space-y-2">
+                      {s.customer_name ? (
+                        <div className="flex items-start gap-2">
+                          <UserCircle className="w-4 h-4 text-brand-700 mt-0.5 flex-shrink-0" />
+                          <div className="min-w-0 flex-1">
+                            <div className="font-bold text-ink-900 break-words">{s.customer_name}</div>
+                            {s.customer_phone && (
+                              <div className="flex items-center gap-1.5 mt-0.5 text-xs text-ink-600">
+                                <Phone className="w-3.5 h-3.5 flex-shrink-0" />
+                                <span className="num">{s.customer_phone}</span>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="text-sm text-ink-500 italic">Cliente não identificado</div>
                       )}
-                    </li>
-                  )
-                })}
-              </ul>
+                      <div className="flex items-center justify-between gap-2 pt-2 text-xs text-ink-600 border-t border-ink-200/70">
+                        <span className="chip bg-white text-ink-600 !py-0 border border-ink-200 truncate max-w-[70%]" title={pagamentoLabel(s) || ''}>
+                          {pagamentoLabel(s) || 'Sem pagamento'}
+                        </span>
+                        <span className="font-bold num text-ink-700 flex-shrink-0 whitespace-nowrap">
+                          {pluralize(pecasBySale(s.id), 'peça')}
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-2 pt-0.5">
+                      <button
+                        onClick={() => navigate(`/vendas/${s.id}#editar`)}
+                        className="btn-secondary !py-2 text-sm min-h-[44px]"
+                      >
+                        <Edit3 className="w-4 h-4" /> Editar
+                      </button>
+                      <button
+                        onClick={() => navigate(`/vendas/${s.id}`)}
+                        className="btn-primary !py-2 text-sm min-h-[44px]"
+                      >
+                        Ver detalhe
+                      </button>
+                    </div>
+                    {s.status !== 'CANCELADA' && (
+                      <button
+                        onClick={() => openCancel(s)}
+                        className={cn(
+                          'w-full text-sm rounded-card border transition inline-flex items-center justify-center gap-1.5 font-semibold min-h-[44px]',
+                          'border-rose-200 bg-white text-rose-700 hover:bg-rose-50'
+                        )}
+                      >
+                        <Trash2 className="w-4 h-4" /> Cancelar venda
+                      </button>
+                    )}
+                  </div>
+                )
+              })}
             </div>
           </>
         )}
       </div>
 
       {cancelModal.open && cancelModal.sale && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-ink-900/50 backdrop-blur-sm">
-          <div className="w-full max-w-md card p-5 shadow-2xl">
-            <div className="flex items-start gap-3 mb-4">
-              <div className="w-11 h-11 rounded-full bg-rose-100 flex items-center justify-center text-rose-700 flex-shrink-0">
-                <AlertTriangle className="w-5.5 h-5.5" />
-              </div>
-              <div className="flex-1">
-                <h3 className="text-lg font-black text-ink-900">
-                  Cancelar venda #{formatFriendlyNumber(cancelModal.sale.friendly_number)}
-                </h3>
-                {cancelModal.sale.customer_name && (
-                  <div className="text-sm text-ink-600 mt-0.5">
-                    Cliente: <strong>{cancelModal.sale.customer_name}</strong>
-                  </div>
-                )}
-                <p className="text-sm text-ink-600 mt-1">
-                  Esta ação é <strong>irreversível</strong>. O estoque será devolvido e os valores ajustados.
-                </p>
+        <div className="modal-shell" onClick={(e) => { if (e.target === e.currentTarget) setCancelModal({ open: false, sale: null }) }}>
+          <div className="modal-content">
+            <div className="modal-header">
+              <div className="flex items-start gap-3">
+                <div className="w-10 h-10 rounded-full bg-rose-100 flex items-center justify-center text-rose-700 flex-shrink-0">
+                  <AlertTriangle className="w-5 h-5" />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <h3 className="modal-title">
+                    Cancelar venda #{formatFriendlyNumber(cancelModal.sale.friendly_number)}
+                  </h3>
+                  {cancelModal.sale.customer_name && (
+                    <p className="text-sm text-ink-600 mt-0.5">
+                      Cliente: <strong>{cancelModal.sale.customer_name}</strong>
+                    </p>
+                  )}
+                </div>
               </div>
               <button
                 onClick={() => setCancelModal({ open: false, sale: null })}
-                className="btn-ghost !p-2"
+                className="btn-icon"
                 disabled={canceling}
+                aria-label="Fechar"
               >
-                <X className="w-4 h-4" />
+                <X className="w-5 h-5" />
               </button>
             </div>
-            <div className="mb-4 p-3 rounded-lg bg-rose-50 border border-rose-100">
-              <div className="grid grid-cols-2 gap-3 text-xs">
-                <div>
-                  <span className="text-rose-700/70">Data:</span>{' '}
-                  <span className="font-semibold text-rose-900 num">{formatDateTime(cancelModal.sale.sale_date ?? cancelModal.sale.created_at)}</span>
-                </div>
-                <div>
-                  <span className="text-rose-700/70">Total:</span>{' '}
-                  <span className="font-black text-rose-900 num">{formatCurrency(cancelModal.sale.total_customer)}</span>
-                </div>
-                <div>
-                  <span className="text-rose-700/70">Origem:</span>{' '}
-                  <span className="font-semibold text-rose-900">{sourceLabel(cancelModal.sale.source)}</span>
-                </div>
-                <div>
-                  <span className="text-rose-700/70">Status atual:</span>{' '}
-                  <span className="font-semibold text-rose-900">{statusLabel(cancelModal.sale.status).label}</span>
+            <div className="modal-body space-y-4">
+              <p className="text-sm text-ink-600">
+                Esta ação é <strong>irreversível</strong>. O estoque será devolvido e os valores ajustados.
+              </p>
+              <div className="p-3 rounded-xl bg-rose-50 border border-rose-100">
+                <div className="grid grid-cols-2 gap-3 text-xs">
+                  <div>
+                    <span className="text-rose-700/70">Data:</span>{' '}
+                    <span className="font-semibold text-rose-900 num">{formatDateTime(cancelModal.sale.sale_date ?? cancelModal.sale.created_at)}</span>
+                  </div>
+                  <div>
+                    <span className="text-rose-700/70">Total:</span>{' '}
+                    <span className="font-black text-rose-900 num">{formatCurrency(cancelModal.sale.total_customer)}</span>
+                  </div>
+                  <div>
+                    <span className="text-rose-700/70">Origem:</span>{' '}
+                    <span className="font-semibold text-rose-900">{sourceLabel(cancelModal.sale.source)}</span>
+                  </div>
+                  <div>
+                    <span className="text-rose-700/70">Status atual:</span>{' '}
+                    <span className="font-semibold text-rose-900">{statusLabel(cancelModal.sale.status).label}</span>
+                  </div>
                 </div>
               </div>
+              <div>
+                <label className="label">Motivo do cancelamento <span className="text-rose-600">*</span></label>
+                <textarea
+                  value={cancelReason}
+                  onChange={e => setCancelReason(e.target.value)}
+                  placeholder="Informe por que esta venda está sendo cancelada… (ex: cliente desistiu, produto com defeito, duplicata)"
+                  rows={4}
+                  className="input resize-none"
+                  disabled={canceling}
+                />
+              </div>
             </div>
-            <div className="mb-5">
-              <label className="label">Motivo do cancelamento <span className="text-rose-600">*</span></label>
-              <textarea
-                value={cancelReason}
-                onChange={e => setCancelReason(e.target.value)}
-                placeholder="Informe por que esta venda está sendo cancelada… (ex: cliente desistiu, produto com defeito, duplicata)"
-                rows={4}
-                className="input resize-none"
-                disabled={canceling}
-              />
-            </div>
-            <div className="flex gap-2">
+            <div className="modal-footer flex flex-col-reverse sm:flex-row gap-2">
               <button
                 onClick={() => setCancelModal({ open: false, sale: null })}
                 disabled={canceling}
@@ -898,7 +905,7 @@ export default function SalesHistoryPage() {
                 {canceling ? (
                   <>Cancelando…</>
                 ) : (
-                  <><Trash2 className="w-4 h-4" /> Sim, cancelar venda</>
+                  <><Trash2 className="w-4 h-4" /> Sim, cancelar</>
                 )}
               </button>
             </div>

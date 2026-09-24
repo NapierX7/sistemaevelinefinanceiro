@@ -149,21 +149,23 @@ export default function FinancePage() {
   const loadingAny = loadingSales || loadingFin
 
   return (
-    <div className="space-y-5 pb-4 sm:pb-6">
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-        <div>
-          <h1 className="text-xl sm:text-2xl font-black tracking-tight text-ink-900">Financeiro</h1>
-          <p className="text-sm text-ink-500 mt-0.5">Faturamento, lucro e fluxo de caixa — usando as views oficiais.</p>
-        </div>
-        <div className="flex flex-col sm:flex-row gap-2 sm:items-center">
+    <div className="page-wrap pb-4 sm:pb-6">
+      <header className="page-header">
+        <div className="page-header-row">
+          <div>
+            <h1 className="page-title">Financeiro</h1>
+            <p className="page-subtitle">Faturamento, lucro e fluxo de caixa — usando as views oficiais.</p>
+          </div>
           <button onClick={() => setModalDespesaOpen(true)} className="btn-primary">
             <Plus className="w-4 h-4" /> Lançar despesa
           </button>
-          <div className="relative">
+        </div>
+        <div className="filter-row">
+          <div className="relative w-full sm:w-auto sm:flex-shrink-0">
             <select
               value={preset}
               onChange={e => setPreset(e.target.value as PresetKey)}
-              className="select pr-10"
+              className="select pr-10 w-full sm:min-w-[160px]"
             >
               {Object.entries(presets).map(([k, v]) => (
                 <option key={k} value={k}>{v.label}</option>
@@ -172,23 +174,23 @@ export default function FinancePage() {
             </select>
             <ChevronDown className="w-4 h-4 absolute right-3 top-1/2 -translate-y-1/2 text-ink-400 pointer-events-none" />
           </div>
-          <div className="flex gap-2 items-center">
-            <div className="flex items-center gap-1.5 px-3 py-2 rounded-card bg-white border border-ink-200">
-              <Calendar className="w-4 h-4 text-ink-500" />
+          <div className="flex gap-2 items-center flex-wrap w-full sm:w-auto sm:flex-shrink-0">
+            <div className="flex items-center gap-1.5 px-3 rounded-card bg-white border border-ink-200 min-w-0 flex-1 sm:flex-shrink-0" style={{ minHeight: 44 }}>
+              <Calendar className="w-4 h-4 text-ink-500 flex-shrink-0" />
               <input type="date" value={from}
                 onChange={e => { setFrom(e.target.value); setPreset('PERSONALIZADO') }}
-                className="bg-transparent text-sm outline-none w-[110px]" />
+                className="bg-transparent text-sm outline-none w-full sm:w-[110px]" />
             </div>
-            <span className="text-ink-400 text-sm">à</span>
-            <div className="flex items-center gap-1.5 px-3 py-2 rounded-card bg-white border border-ink-200">
-              <Calendar className="w-4 h-4 text-ink-500" />
+            <span className="text-ink-400 text-sm hidden sm:inline">à</span>
+            <div className="flex items-center gap-1.5 px-3 rounded-card bg-white border border-ink-200 min-w-0 flex-1 sm:flex-shrink-0" style={{ minHeight: 44 }}>
+              <Calendar className="w-4 h-4 text-ink-500 flex-shrink-0" />
               <input type="date" value={to}
                 onChange={e => { setTo(e.target.value); setPreset('PERSONALIZADO') }}
-                className="bg-transparent text-sm outline-none w-[110px]" />
+                className="bg-transparent text-sm outline-none w-full sm:w-[110px]" />
             </div>
           </div>
         </div>
-      </div>
+      </header>
 
       {(salesError || finError) && (
         <div className="space-y-2">
@@ -214,102 +216,102 @@ export default function FinancePage() {
       )}
 
       <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-3">
-        <div className="card p-5 border-t-4 !border-t-emerald-500">
-          <div className="flex items-start justify-between mb-3">
-            <div>
+        <div className="kpi-card border-t-4 !border-t-emerald-500">
+          <div className="flex items-start justify-between mb-1">
+            <div className="min-w-0 flex-1">
               <div className="kpi-label">FATURAMENTO</div>
               <div className="text-[11px] text-ink-400 mt-0.5">receita bruta das vendas</div>
             </div>
-            <div className="w-10 h-10 rounded-lg bg-emerald-50 ring-1 ring-emerald-100 flex items-center justify-center text-emerald-700">
+            <div className="w-10 h-10 rounded-lg bg-emerald-50 ring-1 ring-emerald-100 flex items-center justify-center text-emerald-700 flex-shrink-0">
               <DollarSign className="w-5 h-5" />
             </div>
           </div>
-          <div className="text-2xl sm:text-3xl font-black num text-emerald-800">
+          <div className="kpi-value num text-emerald-800">
             {salesError ? '—' : formatCurrency(kpis.faturamento)}
           </div>
-          <div className="mt-2 text-xs text-ink-500">
+          <div className="kpi-sub mt-0.5">
             {salesError ? 'Verifique a view v_dashboard_sales' : pluralize(periodSales.length, 'venda', 'vendas')} · {kpis.recebido > 0 || kpis.aReceber > 0
               ? <>recebido <strong className="text-emerald-700">{formatCurrency(kpis.recebido)}</strong> · a receber <strong className="text-amber-700">{formatCurrency(kpis.aReceber)}</strong></>
               : ''}
           </div>
         </div>
 
-        <div className="card p-5 border-t-4 !border-t-brand-700">
-          <div className="flex items-start justify-between mb-3">
-            <div>
+        <div className="kpi-card border-t-4 !border-t-brand-700">
+          <div className="flex items-start justify-between mb-1">
+            <div className="min-w-0 flex-1">
               <div className="kpi-label">LUCRO REAL</div>
               <div className="text-[11px] text-ink-400 mt-0.5">receita − custos e taxas reais</div>
             </div>
-            <div className="w-10 h-10 rounded-lg bg-brand-50 ring-1 ring-brand-100 flex items-center justify-center text-brand-700">
+            <div className="w-10 h-10 rounded-lg bg-brand-50 ring-1 ring-brand-100 flex items-center justify-center text-brand-700 flex-shrink-0">
               <TrendingUp className="w-5 h-5" />
             </div>
           </div>
           <div className={cn(
-            'text-2xl sm:text-3xl font-black num',
+            'kpi-value num',
             salesError ? 'text-rose-700' : kpis.lucro >= 0 ? 'text-brand-900' : 'text-rose-700'
           )}>
             {salesError ? '—' : (kpis.lucro >= 0 ? '' : '− ')}{formatCurrency(Math.abs(kpis.lucro))}
           </div>
-          <div className="mt-2 text-xs text-ink-500">
+          <div className="kpi-sub mt-0.5">
             {salesError ? '—' : (
               <>Margem: {kpis.faturamento > 0 ? `${((kpis.lucro / kpis.faturamento) * 100).toFixed(1)}%` : 'sem vendas'}</>
             )}
           </div>
         </div>
 
-        <div className="card p-5 border-t-4 !border-t-emerald-600">
-          <div className="flex items-start justify-between mb-3">
-            <div>
+        <div className="kpi-card border-t-4 !border-t-emerald-600">
+          <div className="flex items-start justify-between mb-1">
+            <div className="min-w-0 flex-1">
               <div className="kpi-label">RECEBIDO</div>
               <div className="text-[11px] text-ink-400 mt-0.5">pagamentos já confirmados</div>
             </div>
-            <div className="w-10 h-10 rounded-lg bg-emerald-50 ring-1 ring-emerald-100 flex items-center justify-center text-emerald-700">
+            <div className="w-10 h-10 rounded-lg bg-emerald-50 ring-1 ring-emerald-100 flex items-center justify-center text-emerald-700 flex-shrink-0">
               <CreditCard className="w-5 h-5" />
             </div>
           </div>
-          <div className="text-2xl sm:text-3xl font-black num text-emerald-900">
+          <div className="kpi-value num text-emerald-900">
             {salesError ? '—' : formatCurrency(kpis.recebido)}
           </div>
-          <div className="mt-2 text-xs text-ink-500">
+          <div className="kpi-sub mt-0.5">
             {salesError ? '—' : (kpis.faturamento > 0 ? `${((kpis.recebido / kpis.faturamento) * 100).toFixed(0)}% recebido` : '')}
           </div>
         </div>
 
-        <div className="card p-5 border-t-4 !border-t-amber-500">
-          <div className="flex items-start justify-between mb-3">
-            <div>
+        <div className="kpi-card border-t-4 !border-t-amber-500">
+          <div className="flex items-start justify-between mb-1">
+            <div className="min-w-0 flex-1">
               <div className="kpi-label">A RECEBER</div>
               <div className="text-[11px] text-ink-400 mt-0.5">valores pendentes</div>
             </div>
-            <div className="w-10 h-10 rounded-lg bg-amber-50 ring-1 ring-amber-100 flex items-center justify-center text-amber-700">
+            <div className="w-10 h-10 rounded-lg bg-amber-50 ring-1 ring-amber-100 flex items-center justify-center text-amber-700 flex-shrink-0">
               <Clock className="w-5 h-5" />
             </div>
           </div>
-          <div className="text-2xl sm:text-3xl font-black num text-amber-800">
+          <div className="kpi-value num text-amber-800">
             {salesError ? '—' : formatCurrency(kpis.aReceber)}
           </div>
-          <div className="mt-2 text-xs text-ink-500">
+          <div className="kpi-sub mt-0.5">
             {salesError ? '—' : (kpis.aReceber === 0 ? 'tudo em dia' : 'contas a receber')}
           </div>
         </div>
 
-        <div className="card p-5 border-t-4 !border-t-violet-500">
-          <div className="flex items-start justify-between mb-3">
-            <div>
+        <div className="kpi-card border-t-4 !border-t-violet-500">
+          <div className="flex items-start justify-between mb-1">
+            <div className="min-w-0 flex-1">
               <div className="kpi-label">SALDO EM CAIXA</div>
               <div className="text-[11px] text-ink-400 mt-0.5">entradas − saídas (CONFIRMADO)</div>
             </div>
-            <div className="w-10 h-10 rounded-lg bg-violet-50 ring-1 ring-violet-100 flex items-center justify-center text-violet-700">
+            <div className="w-10 h-10 rounded-lg bg-violet-50 ring-1 ring-violet-100 flex items-center justify-center text-violet-700 flex-shrink-0">
               <Wallet className="w-5 h-5" />
             </div>
           </div>
           <div className={cn(
-            'text-2xl sm:text-3xl font-black num',
+            'kpi-value num',
             finError ? 'text-rose-700' : kpis.saldo >= 0 ? 'text-violet-900' : 'text-rose-700'
           )}>
             {finError ? '—' : (kpis.saldo >= 0 ? '' : '− ')}{formatCurrency(Math.abs(kpis.saldo))}
           </div>
-          <div className="mt-2 text-xs text-ink-500">
+          <div className="kpi-sub mt-0.5">
             {finError ? 'Ver view v_dashboard_financial' : pluralize(periodTrans.length, 'lançamento', 'lançamentos')}
           </div>
         </div>
@@ -328,112 +330,210 @@ export default function FinancePage() {
             {loadingAny ? 'Carregando…' : pluralize(periodTrans.length, 'lançamento', 'lançamentos')}
           </span>
         </div>
-        <div className="table-wrap">
-          <table className="table-base min-w-[640px]">
-            <thead>
-              <tr>
-                <th>Data</th>
-                <th>Tipo / Status</th>
-                <th>Categoria</th>
-                <th>Descrição</th>
-                <th className="text-right">Valor R$</th>
-              </tr>
-            </thead>
-            <tbody>
-              {loadingFin ? (
-                <tr><td colSpan={5} className="text-center py-10 text-ink-500">Carregando...</td></tr>
-              ) : finError ? (
-                <tr><td colSpan={5} className="text-center py-10 text-rose-600 text-xs">
-                  Erro ao carregar financeiro: {finError}
-                </td></tr>
-              ) : periodTrans.length === 0 ? (
-                <tr><td colSpan={5} className="text-center py-10 text-ink-500">
-                  <Filter className="w-8 h-8 text-ink-300 mx-auto mb-2" />
-                  Nenhuma movimentação no período.
-                </td></tr>
-              ) : periodTrans.map(t => {
-                const isEntrada = t.trans_type === 'ENTRADA'
-                const confirmado = t.status === 'CONFIRMADO'
-                const valorAbs = Math.abs(Number(t.amount ?? 0))
-                return (
-                  <tr key={t.financial_transaction_id ?? (t as any).id} className={cn('transition', !confirmado && 'opacity-70 bg-amber-50/30')}>
-                    <td className="num text-ink-700 whitespace-nowrap">{formatDate(t.trans_date)}</td>
-                    <td>
-                      <div className="flex items-center gap-1.5 flex-wrap">
-                        <span className={cn(
-                          'chip ring-1 flex w-fit items-center gap-1',
-                          isEntrada
-                            ? 'bg-emerald-50 text-emerald-700 ring-emerald-200'
-                            : 'bg-rose-50 text-rose-700 ring-rose-200'
-                        )}>
-                          {isEntrada ? <ArrowUpRight className="w-3 h-3" /> : <ArrowDownRight className="w-3 h-3" />}
-                          {isEntrada ? 'Entrada' : 'Saída'}
-                        </span>
-                        {!confirmado && (
-                          <span className="chip ring-1 bg-amber-50 text-amber-700 ring-amber-200 text-[10px] font-bold uppercase tracking-wider">
-                            {t.status}
+
+        <div className="hidden sm:block">
+          <div className="table-wrap">
+            <table className="table-base min-w-[640px]">
+              <thead>
+                <tr>
+                  <th>Data</th>
+                  <th>Tipo / Status</th>
+                  <th>Categoria</th>
+                  <th>Descrição</th>
+                  <th className="text-right">Valor R$</th>
+                </tr>
+              </thead>
+              <tbody>
+                {loadingFin ? (
+                  <tr><td colSpan={5} className="text-center py-10 text-ink-500">Carregando...</td></tr>
+                ) : finError ? (
+                  <tr><td colSpan={5} className="text-center py-10 text-rose-600 text-xs">
+                    Erro ao carregar financeiro: {finError}
+                  </td></tr>
+                ) : periodTrans.length === 0 ? (
+                  <tr><td colSpan={5} className="text-center py-10 text-ink-500">
+                    <Filter className="w-8 h-8 text-ink-300 mx-auto mb-2" />
+                    Nenhuma movimentação no período.
+                  </td></tr>
+                ) : periodTrans.map(t => {
+                  const isEntrada = t.trans_type === 'ENTRADA'
+                  const confirmado = t.status === 'CONFIRMADO'
+                  const valorAbs = Math.abs(Number(t.amount ?? 0))
+                  return (
+                    <tr key={t.financial_transaction_id ?? (t as any).id} className={cn('transition', !confirmado && 'opacity-70 bg-amber-50/30')}>
+                      <td className="num text-ink-700 whitespace-nowrap">{formatDate(t.trans_date)}</td>
+                      <td>
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <span className={cn(
+                            'chip ring-1 flex w-fit items-center gap-1',
+                            isEntrada
+                              ? 'bg-emerald-50 text-emerald-700 ring-emerald-200'
+                              : 'bg-rose-50 text-rose-700 ring-rose-200'
+                          )}>
+                            {isEntrada ? <ArrowUpRight className="w-3 h-3" /> : <ArrowDownRight className="w-3 h-3" />}
+                            {isEntrada ? 'Entrada' : 'Saída'}
                           </span>
-                        )}
-                      </div>
-                    </td>
-                    <td>
-                      <span className="chip bg-ink-100 text-ink-700">
-                        {catLabel(t.category ?? null)}
-                      </span>
-                    </td>
-                    <td>
-                      <div className="text-sm text-ink-800 font-medium">{t.description}</div>
-                      {(t.payment_method || t.status !== 'CONFIRMADO') && (
-                        <div className="text-[11px] text-ink-400 mt-0.5 flex items-center gap-2 flex-wrap">
-                          {t.payment_method && <span>{paymentMethodLabel(t.payment_method)}</span>}
-                          {!confirmado && <span className="text-amber-600">· Pendente — não entra no caixa</span>}
+                          {!confirmado && (
+                            <span className="chip ring-1 bg-amber-50 text-amber-700 ring-amber-200 text-[10px] font-bold uppercase tracking-wider">
+                              {t.status}
+                            </span>
+                          )}
                         </div>
-                      )}
-                    </td>
-                    <td className={cn(
-                      'text-right num font-bold whitespace-nowrap',
-                      isEntrada ? 'text-emerald-700' : 'text-rose-700'
-                    )}>
-                      {isEntrada ? '+' : '−'} {formatCurrency(valorAbs)}
-                    </td>
-                  </tr>
-                )
-              })}
-            </tbody>
-            <tfoot>
-              <tr className="bg-ink-50/80 sticky bottom-0">
-                <td colSpan={3} className="font-bold text-ink-800 text-sm border-t-2 border-ink-200 py-4">
-                  Totalizador do período
-                </td>
-                <td className="text-sm text-ink-500 border-t-2 border-ink-200 py-4">
-                  {pluralize(periodTrans.length, 'lançamento')}
-                </td>
-                <td className="border-t-2 border-ink-200 py-4">
-                  <div className="space-y-1.5 text-right">
-                    <div className="flex items-center justify-end gap-2 text-sm">
-                      <ArrowUpRight className="w-3.5 h-3.5 text-emerald-600" />
-                      <span className="text-ink-600">Entradas confirmadas:</span>
-                      <span className="num font-bold text-emerald-700">{formatCurrency(kpis.entradas)}</span>
-                    </div>
-                    <div className="flex items-center justify-end gap-2 text-sm">
-                      <ArrowDownRight className="w-3.5 h-3.5 text-rose-600" />
-                      <span className="text-ink-600">Saídas confirmadas:</span>
-                      <span className="num font-bold text-rose-700">{formatCurrency(kpis.saidas)}</span>
-                    </div>
-                    <div className="pt-2 mt-1 border-t border-ink-200 flex items-center justify-end gap-2">
-                      <span className="font-bold text-ink-800 text-sm">Saldo:</span>
-                      <span className={cn(
-                        'num font-black text-lg',
-                        kpis.saldo >= 0 ? 'text-violet-800' : 'text-rose-700'
+                      </td>
+                      <td>
+                        <span className="chip bg-ink-100 text-ink-700">
+                          {catLabel(t.category ?? null)}
+                        </span>
+                      </td>
+                      <td>
+                        <div className="text-sm text-ink-800 font-medium">{t.description}</div>
+                        {(t.payment_method || t.status !== 'CONFIRMADO') && (
+                          <div className="text-[11px] text-ink-400 mt-0.5 flex items-center gap-2 flex-wrap">
+                            {t.payment_method && <span>{paymentMethodLabel(t.payment_method)}</span>}
+                            {!confirmado && <span className="text-amber-600">· Pendente — não entra no caixa</span>}
+                          </div>
+                        )}
+                      </td>
+                      <td className={cn(
+                        'text-right num font-bold whitespace-nowrap',
+                        isEntrada ? 'text-emerald-700' : 'text-rose-700'
                       )}>
-                        {kpis.saldo >= 0 ? '+' : '−'} {formatCurrency(Math.abs(kpis.saldo))}
-                      </span>
+                        {isEntrada ? '+' : '−'} {formatCurrency(valorAbs)}
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+              <tfoot>
+                <tr className="bg-ink-50/80 sticky bottom-0">
+                  <td colSpan={3} className="font-bold text-ink-800 text-sm border-t-2 border-ink-200 py-4">
+                    Totalizador do período
+                  </td>
+                  <td className="text-sm text-ink-500 border-t-2 border-ink-200 py-4">
+                    {pluralize(periodTrans.length, 'lançamento')}
+                  </td>
+                  <td className="border-t-2 border-ink-200 py-4">
+                    <div className="space-y-1.5 text-right">
+                      <div className="flex items-center justify-end gap-2 text-sm">
+                        <ArrowUpRight className="w-3.5 h-3.5 text-emerald-600" />
+                        <span className="text-ink-600">Entradas confirmadas:</span>
+                        <span className="num font-bold text-emerald-700">{formatCurrency(kpis.entradas)}</span>
+                      </div>
+                      <div className="flex items-center justify-end gap-2 text-sm">
+                        <ArrowDownRight className="w-3.5 h-3.5 text-rose-600" />
+                        <span className="text-ink-600">Saídas confirmadas:</span>
+                        <span className="num font-bold text-rose-700">{formatCurrency(kpis.saidas)}</span>
+                      </div>
+                      <div className="pt-2 mt-1 border-t border-ink-200 flex items-center justify-end gap-2">
+                        <span className="font-bold text-ink-800 text-sm">Saldo:</span>
+                        <span className={cn(
+                          'num font-black text-lg',
+                          kpis.saldo >= 0 ? 'text-violet-800' : 'text-rose-700'
+                        )}>
+                          {kpis.saldo >= 0 ? '+' : '−'} {formatCurrency(Math.abs(kpis.saldo))}
+                        </span>
+                      </div>
                     </div>
+                  </td>
+                </tr>
+              </tfoot>
+            </table>
+          </div>
+        </div>
+
+        <div className="sm:hidden flex flex-col gap-3 px-4 py-4">
+          {loadingFin ? (
+            <div className="mcard justify-center items-center py-8 text-ink-500">Carregando...</div>
+          ) : finError ? (
+            <div className="mcard justify-center items-center py-8 text-rose-600 text-center text-sm">
+              Erro ao carregar financeiro.
+            </div>
+          ) : periodTrans.length === 0 ? (
+            <div className="mcard justify-center items-center py-8 text-center">
+              <Filter className="w-10 h-10 text-ink-300 mb-2" />
+              <div className="text-ink-500 font-medium">Nenhuma movimentação no período.</div>
+            </div>
+          ) : periodTrans.map(t => {
+            const isEntrada = t.trans_type === 'ENTRADA'
+            const confirmado = t.status === 'CONFIRMADO'
+            const valorAbs = Math.abs(Number(t.amount ?? 0))
+            return (
+              <div key={t.financial_transaction_id ?? (t as any).id} className={cn('mcard', !confirmado && '!bg-amber-50/50')}>
+                <div className="mcard-head">
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className={cn(
+                        'chip ring-1 flex items-center gap-1',
+                        isEntrada
+                          ? 'bg-emerald-50 text-emerald-700 ring-emerald-200'
+                          : 'bg-rose-50 text-rose-700 ring-rose-200'
+                      )}>
+                        {isEntrada ? <ArrowUpRight className="w-3 h-3" /> : <ArrowDownRight className="w-3 h-3" />}
+                        {isEntrada ? 'Entrada' : 'Saída'}
+                      </span>
+                      {!confirmado && (
+                        <span className="chip ring-1 bg-amber-50 text-amber-700 ring-amber-200 text-[10px] font-bold uppercase tracking-wider">
+                          {t.status}
+                        </span>
+                      )}
+                    </div>
+                    <div className="mcard-sub num mt-1.5">{formatDate(t.trans_date)}</div>
                   </div>
-                </td>
-              </tr>
-            </tfoot>
-          </table>
+                  <div className={cn(
+                    'text-right num font-black text-lg leading-tight',
+                    isEntrada ? 'text-emerald-700' : 'text-rose-700'
+                  )}>
+                    {isEntrada ? '+' : '−'} {formatCurrency(valorAbs)}
+                  </div>
+                </div>
+                <div className="space-y-1.5 pt-1">
+                  <div className="flex items-start gap-2">
+                    <span className="chip bg-ink-100 text-ink-700 !py-0.5 flex-shrink-0">
+                      {catLabel(t.category ?? null)}
+                    </span>
+                  </div>
+                  <div className="text-sm text-ink-800 font-medium break-words">{t.description}</div>
+                  {(t.payment_method || !confirmado) && (
+                    <div className="text-[11px] text-ink-500 flex items-center gap-2 flex-wrap pt-0.5">
+                      {t.payment_method && <span>{paymentMethodLabel(t.payment_method)}</span>}
+                      {!confirmado && <span className="text-amber-600 font-semibold">· Pendente — não entra no caixa</span>}
+                    </div>
+                  )}
+                </div>
+              </div>
+            )
+          })}
+
+          {!loadingFin && !finError && periodTrans.length > 0 && (
+            <div className="mcard !bg-ink-50/80 space-y-2.5">
+              <div className="font-bold text-ink-800 text-sm">Totalizador do período</div>
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between gap-2 text-sm">
+                  <span className="text-ink-600 flex items-center gap-1.5">
+                    <ArrowUpRight className="w-3.5 h-3.5 text-emerald-600" />
+                    Entradas:
+                  </span>
+                  <span className="num font-bold text-emerald-700">{formatCurrency(kpis.entradas)}</span>
+                </div>
+                <div className="flex items-center justify-between gap-2 text-sm">
+                  <span className="text-ink-600 flex items-center gap-1.5">
+                    <ArrowDownRight className="w-3.5 h-3.5 text-rose-600" />
+                    Saídas:
+                  </span>
+                  <span className="num font-bold text-rose-700">{formatCurrency(kpis.saidas)}</span>
+                </div>
+                <div className="pt-2 mt-1 border-t border-ink-200 flex items-center justify-between gap-2">
+                  <span className="font-bold text-ink-800 text-sm">Saldo:</span>
+                  <span className={cn(
+                    'num font-black text-lg',
+                    kpis.saldo >= 0 ? 'text-violet-800' : 'text-rose-700'
+                  )}>
+                    {kpis.saldo >= 0 ? '+' : '−'} {formatCurrency(Math.abs(kpis.saldo))}
+                  </span>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       </div>
 
@@ -536,21 +636,24 @@ function DespesaModal({
   const amtNum = parseBrl(amount) || 0
 
   return (
-    <div className="fixed inset-0 z-50 bg-ink-900/50 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4">
-      <div className="bg-white rounded-t-2xl sm:rounded-2xl shadow-xl w-full max-w-2xl max-h-[92vh] overflow-hidden flex flex-col">
-        <div className="sticky top-0 bg-white border-b border-ink-100 px-5 py-4 flex items-center justify-between z-10">
-          <div>
-            <h2 className="text-lg font-black text-ink-900">Lançar despesa operacional</h2>
+    <div
+      className="modal-shell"
+      onClick={(e) => { if (e.target === e.currentTarget) onClose() }}
+    >
+      <div className="modal-content modal-wide">
+        <div className="modal-header">
+          <div className="min-w-0">
+            <h2 className="modal-title">Lançar despesa operacional</h2>
             <p className="text-xs text-ink-500 mt-0.5">
               Sacolas, cheirinho, frete avulso, marketing — RPC registrar_despesa + view v_dashboard_financial.
             </p>
           </div>
-          <button onClick={onClose} className="btn-ghost !p-2">
+          <button onClick={onClose} className="btn-icon" aria-label="Fechar">
             <X className="w-5 h-5" />
           </button>
         </div>
 
-        <div className="flex-1 overflow-y-auto p-5 space-y-4">
+        <div className="modal-body space-y-4">
           <div>
             <label className="label text-sm mb-2">Tipo rápido</label>
             <div className="grid grid-cols-3 sm:grid-cols-5 gap-2">
@@ -655,9 +758,9 @@ function DespesaModal({
           </div>
         </div>
 
-        <div className="sticky bottom-0 bg-white border-t border-ink-100 px-5 py-4 flex flex-col-reverse sm:flex-row sm:justify-end gap-2">
-          <button onClick={onClose} disabled={saving} className="btn-secondary min-h-[44px]">Cancelar</button>
-          <button onClick={submit} disabled={saving} className="btn-danger min-h-[44px] justify-center">
+        <div className="modal-footer flex flex-col-reverse sm:flex-row sm:justify-end gap-2">
+          <button onClick={onClose} disabled={saving} className="btn-secondary">Cancelar</button>
+          <button onClick={submit} disabled={saving || !amtNum || amtNum <= 0 || !description.trim()} className="btn-danger justify-center">
             {saving ? (
               <>Lançando…</>
             ) : (

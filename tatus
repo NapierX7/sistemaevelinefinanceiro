@@ -1,0 +1,28 @@
+warning: in the working copy of 'src/contexts/AuthContext.tsx', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/index.css', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/lib/supabase.ts', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/pages/DashboardPage.tsx', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/pages/FinancePage.tsx', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/pages/InventoryPage.tsx', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/pages/NewSalePage.tsx', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/pages/ProductsPage.tsx', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/pages/PurchasesPage.tsx', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/pages/SaleDetailPage.tsx', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/pages/SalesHistoryPage.tsx', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/pages/SettingsPage.tsx', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/services/index.ts', LF will be replaced by CRLF the next time Git touches it
+ src/contexts/AuthContext.tsx   |   8 [32m+[m[31m-[m
+ src/index.css                  | 171 [32m++++++++++++++[m[31m-[m
+ src/lib/supabase.ts            |  11 [32m+[m
+ src/pages/DashboardPage.tsx    | 406 [32m+++++++++++++++++++++++[m[31m-------------[m
+ src/pages/FinancePage.tsx      | 411 [32m++++++++++++++++++++++[m[31m--------------[m
+ src/pages/InventoryPage.tsx    | 460 [32m++++++++++++++++++++++++++++[m[31m-------------[m
+ src/pages/NewSalePage.tsx      |  26 [32m+[m[31m--[m
+ src/pages/ProductsPage.tsx     | 241 [32m+++++++++++++[m[31m--------[m
+ src/pages/PurchasesPage.tsx    | 317 [32m++++++++++++++++++[m[31m----------[m
+ src/pages/SaleDetailPage.tsx   |   2 [32m+[m[31m-[m
+ src/pages/SalesHistoryPage.tsx | 413 [32m++++++++++++++++++[m[31m------------------[m
+ src/pages/SettingsPage.tsx     |  22 [32m+[m[31m-[m
+ src/services/index.ts          |  29 [32m++[m[31m-[m
+ src/types/supabase.ts          |   2 [32m+[m[31m-[m
+ 14 files changed, 1647 insertions(+), 872 deletions(-)

@@ -127,16 +127,18 @@ export default function PurchasesPage() {
   }
 
   return (
-    <div className="space-y-5 pb-4 sm:pb-6">
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-        <div>
-          <h1 className="text-xl sm:text-2xl font-black tracking-tight text-ink-900">Compras / Entradas</h1>
-          <p className="text-sm text-ink-500 mt-0.5">Entradas de mercadoria e rateio de custos.</p>
+    <div className="page-wrap pb-4 sm:pb-6">
+      <header className="page-header">
+        <div className="page-header-row">
+          <div>
+            <h1 className="page-title">Compras / Entradas</h1>
+            <p className="page-subtitle">Entradas de mercadoria e rateio de custos.</p>
+          </div>
+          <button onClick={() => setModalOpen(true)} className="btn-primary">
+            <Plus className="w-4 h-4" /> Nova Entrada
+          </button>
         </div>
-        <button onClick={() => setModalOpen(true)} className="btn-primary">
-          <Plus className="w-4 h-4" /> Nova Entrada
-        </button>
-      </div>
+      </header>
 
       {uiError && (
         <div className="p-4 rounded-2xl border border-rose-200 bg-rose-50 text-rose-800 flex items-start gap-3">
@@ -150,88 +152,179 @@ export default function PurchasesPage() {
         </div>
       )}
 
-      <div className="card">
-        <div className="table-wrap">
-          <table className="table-base">
-            <thead>
-              <tr>
-                <th>Nº</th>
-                <th>Data entrada</th>
-                <th>Fornecedor</th>
-                <th>Origem</th>
-                <th className="text-right">Itens</th>
-                <th className="text-right">Total custo</th>
-                <th>Recebimento</th>
-                <th>Status</th>
-                <th className="w-40 text-right">Ações</th>
-              </tr>
-            </thead>
-            <tbody>
-              {loading ? (
-                <tr><td colSpan={9} className="text-center py-10 text-ink-500">Carregando...</td></tr>
-              ) : purchases.length === 0 ? (
-                <tr><td colSpan={9} className="text-center py-10 text-ink-500">
-                  <Filter className="w-8 h-8 text-ink-300 mx-auto mb-2" />
-                  Nenhuma entrada registrada. Clique em "Nova Entrada" para começar.
-                </td></tr>
-              ) : purchases.map((p, i) => {
-                const inTransit = (p.origin ?? '').toUpperCase() === 'COMPRA_EM_TRANSITO'
-                const received = purchaseIdReceived.has(String(p.id))
-                let statusChip: any = null
-                let recChip: any = null
-                if (inTransit) {
-                  if (received) {
-                    recChip =
+      <div className="hidden sm:block">
+        <div className="card">
+          <div className="table-wrap">
+            <table className="table-base">
+              <thead>
+                <tr>
+                  <th>Nº</th>
+                  <th>Data entrada</th>
+                  <th>Fornecedor</th>
+                  <th>Origem</th>
+                  <th className="text-right">Itens</th>
+                  <th className="text-right">Total custo</th>
+                  <th>Recebimento</th>
+                  <th>Status</th>
+                  <th className="w-40 text-right">Ações</th>
+                </tr>
+              </thead>
+              <tbody>
+                {loading ? (
+                  <tr><td colSpan={9} className="text-center py-10 text-ink-500">Carregando...</td></tr>
+                ) : purchases.length === 0 ? (
+                  <tr><td colSpan={9} className="text-center py-10 text-ink-500">
+                    <Filter className="w-8 h-8 text-ink-300 mx-auto mb-2" />
+                    Nenhuma entrada registrada. Clique em "Nova Entrada" para começar.
+                  </td></tr>
+                ) : purchases.map((p, i) => {
+                  const inTransit = (p.origin ?? '').toUpperCase() === 'COMPRA_EM_TRANSITO'
+                  const received = purchaseIdReceived.has(String(p.id))
+                  let statusChip: any = null
+                  let recChip: any = null
+                  if (inTransit) {
+                    if (received) {
+                      recChip =
+                        <span className="chip bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200">
+                          <Check className="w-3.5 h-3.5 mr-1 inline align-sub" /> Recebida
+                        </span>
+                      statusChip =
+                        <span className="chip bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200">Confirmada</span>
+                    } else {
+                      recChip =
+                        <span className="chip bg-amber-50 text-amber-700 ring-1 ring-amber-200">
+                          <Truck className="w-3.5 h-3.5 mr-1 inline align-sub" /> Em trânsito
+                        </span>
+                      statusChip =
+                        <span className="chip bg-amber-50 text-amber-700 ring-1 ring-amber-200">Aguardando recebimento</span>
+                    }
+                  } else {
+                    recChip = received ?
                       <span className="chip bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200">
-                        <Check className="w-3.5 h-3.5 mr-1 inline align-sub" /> Recebida
+                        <PackageCheck className="w-3.5 h-3.5 mr-1 inline align-sub" /> Lotes criados
                       </span>
+                      :
+                      <span className="chip bg-ink-50 text-ink-600 ring-1 ring-ink-200">—</span>
                     statusChip =
                       <span className="chip bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200">Confirmada</span>
-                  } else {
-                    recChip =
-                      <span className="chip bg-amber-50 text-amber-700 ring-1 ring-amber-200">
-                        <Truck className="w-3.5 h-3.5 mr-1 inline align-sub" /> Em trânsito
-                      </span>
-                    statusChip =
-                      <span className="chip bg-amber-50 text-amber-700 ring-1 ring-amber-200">Aguardando recebimento</span>
                   }
-                } else {
-                  recChip = received ?
-                    <span className="chip bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200">
-                      <PackageCheck className="w-3.5 h-3.5 mr-1 inline align-sub" /> Lotes criados
-                    </span>
-                    :
-                    <span className="chip bg-ink-50 text-ink-600 ring-1 ring-ink-200">—</span>
-                  statusChip =
-                    <span className="chip bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200">Confirmada</span>
-                }
-                return (
-                  <tr key={p.id} className="hover:bg-ink-50/50 transition">
-                    <td className="font-bold num">#{String(purchases.length - i)}</td>
-                    <td className="num text-ink-700">{formatDate(p.entry_date)}</td>
-                    <td className="font-medium text-ink-800">{p.supplier || '—'}</td>
-                    <td className="text-ink-600 text-sm">{p.origin || '—'}</td>
-                    <td className="text-right num">{(p as any).items_count || '—'}</td>
-                    <td className="text-right num font-bold text-ink-900">{formatCurrency(p.total_cost)}</td>
-                    <td>{recChip}</td>
-                    <td>{statusChip}</td>
-                    <td className="text-right space-x-2">
-                      {inTransit && !received ? (
-                        <button onClick={() => handleReceivePurchase(p)}
-                          className="btn-primary !py-2 text-xs inline-flex items-center gap-1">
-                          <PackageCheck className="w-4 h-4" /> Receber mercadoria
+                  return (
+                    <tr key={p.id} className="hover:bg-ink-50/50 transition">
+                      <td className="font-bold num">#{String(purchases.length - i)}</td>
+                      <td className="num text-ink-700">{formatDate(p.entry_date)}</td>
+                      <td className="font-medium text-ink-800">{p.supplier || '—'}</td>
+                      <td className="text-ink-600 text-sm">{p.origin || '—'}</td>
+                      <td className="text-right num">{(p as any).items_count || '—'}</td>
+                      <td className="text-right num font-bold text-ink-900">{formatCurrency(p.total_cost)}</td>
+                      <td>{recChip}</td>
+                      <td>{statusChip}</td>
+                      <td className="text-right space-x-2">
+                        {inTransit && !received ? (
+                          <button onClick={() => handleReceivePurchase(p)}
+                            className="btn-primary !py-2 text-xs inline-flex items-center gap-1">
+                            <PackageCheck className="w-4 h-4" /> Receber mercadoria
+                          </button>
+                        ) : null}
+                        <button onClick={() => loadDetail(p.id)} className="btn-secondary !py-2 text-xs">
+                          Ver detalhe
                         </button>
-                      ) : null}
-                      <button onClick={() => loadDetail(p.id)} className="btn-secondary !py-2 text-xs">
-                        Ver detalhe
-                      </button>
-                    </td>
-                  </tr>
-                )
-              })}
-            </tbody>
-          </table>
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
         </div>
+      </div>
+
+      <div className="sm:hidden flex flex-col gap-3">
+        {loading ? (
+          <div className="mcard justify-center items-center py-8 text-ink-500">Carregando...</div>
+        ) : purchases.length === 0 ? (
+          <div className="mcard justify-center items-center py-8 text-center">
+            <Filter className="w-10 h-10 text-ink-300 mb-2" />
+            <div className="text-ink-500 font-medium">Nenhuma entrada registrada.</div>
+            <button onClick={() => setModalOpen(true)} className="btn-primary mt-3">
+              <Plus className="w-4 h-4" /> Nova Entrada
+            </button>
+          </div>
+        ) : purchases.map((p, i) => {
+          const inTransit = (p.origin ?? '').toUpperCase() === 'COMPRA_EM_TRANSITO'
+          const received = purchaseIdReceived.has(String(p.id))
+          return (
+            <div key={p.id} className="mcard">
+              <div className="mcard-head">
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="font-black num text-ink-900">#{String(purchases.length - i)}</span>
+                    {inTransit && !received ? (
+                      <span className="stock-low flex items-center gap-1">
+                        <Truck className="w-3 h-3" /> Em trânsito
+                      </span>
+                    ) : received ? (
+                      <span className="stock-ok flex items-center gap-1">
+                        <PackageCheck className="w-3 h-3" /> Recebida
+                      </span>
+                    ) : (
+                      <span className="stock-ok flex items-center gap-1">
+                        <Check className="w-3 h-3" /> Confirmada
+                      </span>
+                    )}
+                  </div>
+                  <div className="mcard-sub num mt-1">
+                    <Calendar className="w-3 h-3 inline mr-1" />
+                    {formatDate(p.entry_date)}
+                  </div>
+                </div>
+                <div className="text-right min-w-[100px]">
+                  <div className="font-black text-lg num text-ink-900 leading-tight">
+                    {formatCurrency(p.total_cost)}
+                  </div>
+                  <div className="mcard-sub num mt-0.5">
+                    {pluralize(Number((p as any).items_count ?? 0), 'item')}
+                  </div>
+                </div>
+              </div>
+
+              <div className="space-y-1.5 pt-1">
+                <div className="flex items-start gap-2">
+                  <Building2 className="w-4 h-4 text-ink-400 mt-0.5 flex-shrink-0" />
+                  <div className="min-w-0 flex-1">
+                    <div className="mcard-sub">Fornecedor</div>
+                    <div className="font-semibold text-ink-800 text-sm">{p.supplier || '—'}</div>
+                  </div>
+                </div>
+                {p.origin && (
+                  <div className="flex items-start gap-2">
+                    <MapPin className="w-4 h-4 text-ink-400 mt-0.5 flex-shrink-0" />
+                    <div className="min-w-0 flex-1">
+                      <div className="mcard-sub">Origem</div>
+                      <div className="text-sm text-ink-700">{p.origin}</div>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <div className="flex flex-col gap-2 pt-2 border-t border-ink-100">
+                {inTransit && !received && (
+                  <button
+                    onClick={() => handleReceivePurchase(p)}
+                    className="btn-primary !py-2 text-sm min-h-[44px]"
+                  >
+                    <PackageCheck className="w-4 h-4" /> Receber mercadoria
+                  </button>
+                )}
+                <button
+                  onClick={() => loadDetail(p.id)}
+                  className="btn-secondary !py-2 text-sm min-h-[44px]"
+                >
+                  Ver detalhe
+                </button>
+              </div>
+            </div>
+          )
+        })}
       </div>
 
       {modalOpen && (
@@ -409,11 +502,14 @@ function NewPurchaseModal({
   }
 
   return (
-    <div className="fixed inset-0 z-50 bg-ink-900/50 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4">
-      <div className="bg-white rounded-t-2xl sm:rounded-2xl shadow-xl w-full max-w-4xl max-h-[92vh] overflow-hidden flex flex-col">
-        <div className="sticky top-0 bg-white border-b border-ink-100 px-5 py-4 flex items-center justify-between z-10">
-          <div>
-            <div className="flex items-center gap-3 mb-2">
+    <div
+      className="modal-shell"
+      onClick={(e) => { if (e.target === e.currentTarget) onClose() }}
+    >
+      <div className="modal-content" style={{ maxWidth: '960px' }}>
+        <div className="modal-header">
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2 mb-2 flex-wrap">
               {[1, 2].map(s => (
                 <div key={s} className="flex items-center gap-2">
                   <div className={cn(
@@ -428,7 +524,7 @@ function NewPurchaseModal({
                   )}>
                     {s === 1 ? 'Dados da NF' : 'Produtos + Rateio'}
                   </span>
-                  {s === 1 && <div className="w-10 sm:w-16 h-px bg-ink-200" />}
+                  {s === 1 && <div className="w-10 sm:w-16 h-px bg-ink-200 hidden sm:block" />}
                 </div>
               ))}
             </div>
@@ -436,12 +532,12 @@ function NewPurchaseModal({
               {step === 1 ? 'Informe fornecedor e data.' : 'Adicione produtos, custos e confirme o rateio.'}
             </p>
           </div>
-          <button onClick={onClose} className="btn-ghost !p-2">
+          <button onClick={onClose} className="btn-icon" aria-label="Fechar">
             <X className="w-5 h-5" />
           </button>
         </div>
 
-        <div className="flex-1 overflow-y-auto p-5 space-y-4">
+        <div className="modal-body space-y-4">
           {toast && (
             <div
               role="status"
@@ -819,27 +915,27 @@ function NewPurchaseModal({
           )}
         </div>
 
-        <div className="sticky bottom-0 bg-white border-t border-ink-100 px-5 py-4 flex flex-col-reverse sm:flex-row sm:justify-between gap-2">
-          <div className="flex gap-2">
+        <div className="modal-footer flex flex-col-reverse sm:flex-row sm:justify-between gap-2">
+          <div className="flex gap-2 w-full sm:w-auto flex-col-reverse sm:flex-row">
             {step > 1 && (
-              <button onClick={() => setStep(s => (s - 1) as Step)} disabled={saving} className="btn-secondary">
+              <button onClick={() => setStep(s => (s - 1) as Step)} disabled={saving} className="btn-secondary flex-1 sm:flex-none">
                 ← Voltar
               </button>
             )}
-            <button onClick={onClose} disabled={saving} className="btn-ghost">Cancelar</button>
+            <button onClick={onClose} disabled={saving} className="btn-ghost flex-1 sm:flex-none">Cancelar</button>
           </div>
-          <div className="flex gap-2">
+          <div className="flex gap-2 w-full sm:w-auto">
             {step < 2 && (
               <button
                 onClick={() => setStep(s => (s + 1) as Step)}
                 disabled={!canAdvance()}
-                className="btn-primary"
+                className="btn-primary flex-1 sm:flex-none"
               >
                 Avançar →
               </button>
             )}
             {step === 2 && (
-              <button onClick={submit} disabled={saving || totalQtd === 0} className="btn-primary">
+              <button onClick={submit} disabled={saving || totalQtd === 0} className="btn-primary flex-1 sm:flex-none">
                 {saving ? 'Registrando...' : '✓ Confirmar Entrada'}
               </button>
             )}
@@ -868,16 +964,21 @@ function DetailModal({
   onClose: () => void
 }) {
   return (
-    <div className="fixed inset-0 z-50 bg-ink-900/50 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4">
-      <div className="bg-white rounded-t-2xl sm:rounded-2xl shadow-xl w-full max-w-3xl max-h-[92vh] overflow-hidden flex flex-col">
-        <div className="bg-white border-b border-ink-100 px-5 py-4 flex items-center justify-between">
-          <div>
-            <h2 className="text-lg font-black text-ink-900">Detalhe da Entrada</h2>
+    <div
+      className="modal-shell"
+      onClick={(e) => { if (e.target === e.currentTarget) onClose() }}
+    >
+      <div className="modal-content modal-wide">
+        <div className="modal-header">
+          <div className="min-w-0">
+            <h2 className="modal-title">Detalhe da Entrada</h2>
             <p className="text-xs text-ink-500 mt-0.5">{loading ? 'Carregando...' : formatDate(detail?.purchase?.entry_date)}</p>
           </div>
-          <button onClick={onClose} className="btn-ghost !p-2"><X className="w-5 h-5" /></button>
+          <button onClick={onClose} className="btn-icon" aria-label="Fechar">
+            <X className="w-5 h-5" />
+          </button>
         </div>
-        <div className="flex-1 overflow-y-auto p-5 space-y-4">
+        <div className="modal-body space-y-4">
           {loading ? (
             <div className="text-center py-10 text-ink-500">Carregando detalhes...</div>
           ) : detail ? (
@@ -960,8 +1061,8 @@ function DetailModal({
             <div className="text-center py-10 text-ink-500">Sem dados.</div>
           )}
         </div>
-        <div className="border-t border-ink-100 px-5 py-4 flex justify-end">
-          <button onClick={onClose} className="btn-secondary">Fechar</button>
+        <div className="modal-footer flex justify-end">
+          <button onClick={onClose} className="btn-primary">Fechar</button>
         </div>
       </div>
     </div>

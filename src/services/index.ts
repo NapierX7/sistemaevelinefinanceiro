@@ -380,6 +380,7 @@ export async function finalizeSale(p: FinalizeSaleParams) {
         fee_rule_id: p.payment.fee_rule_id ?? null,
         payment_source_hint: paymentSourceHint,
       } as any) : null,
+      p_payment_source_hint: paymentSourceHint,
       p_packaging: p.packaging as any ?? null,
       p_extra_costs: (p.extra_costs ?? []) as any,
       p_customer_name: p.customer_name ?? null,
@@ -1119,7 +1120,7 @@ export interface ConfirmRepasseParams {
   notes?: string;
 }
 
-export async function confirmRepasseInfinitePay(p: ConfirmRepasseParams): Promise<{ ok: boolean; idempotent?: boolean; message: string; transacao_id?: UUID }> {
+export async function confirmRepasseInfinitePay(p: ConfirmRepasseParams): Promise<{ ok: boolean; idempotent?: boolean; blocked?: boolean; message: string; transacao_id?: UUID }> {
   if (!p || !(Number(p.amount_received) > 0)) return { ok: false, message: 'Valor recebido inválido.' }
   const amt = Number(p.amount_received)
   const dateStr = p.trans_date?.slice(0, 10) ?? new Date().toISOString().slice(0, 10)
@@ -1142,6 +1143,32 @@ export async function confirmRepasseInfinitePay(p: ConfirmRepasseParams): Promis
     .maybeSingle()
   if (errEx) console.warn('[services.confirmRepasseInfinitePay] checagem idempotência avisou:', errEx?.message ?? errEx)
   if (existing) return { ok: true, idempotent: true, message: 'Repasse já confirmado anteriormente (idempotente). Nenhuma duplicidade criada.', transacao_id: existing.id }
+
+  // REGRA ANTI-DUPLICAÇÃO CRÍTICA:
+  // Se a VENDA original já foi gravada com payment_source CAIXA_EVELINE,
+  // o dinheiro já entrou no caixa na época da venda. CRIAR REPASSE agora DUPLICARIA o caixa.
+  // Bloqueia e pede correção manual dessa venda legada.
+  try {
+    const { data: vendaOriginal } = await sup
+      .from('financial_transactions')
+      .select('id, category, trans_type, payment_source, amount, status')
+      .eq('trans_type', 'ENTRADA')
+      .eq('category', 'VENDA')
+      .eq('related_sale_id', p.sale_id)
+      .in_('payment_source', ['CAIXA_EVELINE'])
+      .eq('status', 'CONFIRMADO')
+      .limit(1)
+      .maybeSingle()
+    if (vendaOriginal) {
+      return {
+        ok: false,
+        blocked: true,
+        message: `BLOQUEIO ANTI-DUPLICAÇÃO: esta venda (R$ ${Number(vendaOriginal.amount).toFixed(2)}) já foi contabilizada direto em CAIXA_EVELINE no momento da venda. Confirmar repasse duplicaria o dinheiro em caixa. Se o dinheiro realmente caiu após a venda, a correção de dados históricos deve ser feita separadamente, NÃO por este botão.`
+      }
+    }
+  } catch (e: any) {
+    console.warn('[services.confirmRepasseInfinitePay] anti-duplicação query falhou, prosseguindo seguro:', e?.message ?? e)
+  }
 
   const descArr = []
   descArr.push('Repasse InfinitePay')

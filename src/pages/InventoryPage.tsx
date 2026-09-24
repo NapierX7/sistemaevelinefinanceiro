@@ -130,19 +130,21 @@ export default function InventoryPage() {
   const anyErrorProdutos = summaryError || listError
 
   return (
-    <div className="space-y-5 pb-4 sm:pb-6">
-      <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-3">
-        <div>
-          <h1 className="text-xl sm:text-2xl font-black tracking-tight text-ink-900">Estoque</h1>
-          <p className="text-sm text-ink-500 mt-0.5">Produtos disponíveis, movimentações e lotes FIFO.</p>
+    <div className="page-wrap pb-4 sm:pb-6">
+      <header className="page-header">
+        <div className="page-header-row">
+          <div>
+            <h1 className="page-title">Estoque</h1>
+            <p className="page-subtitle">Produtos disponíveis, movimentações e lotes FIFO.</p>
+          </div>
+          <button
+            onClick={() => setTick(t => t + 1)}
+            className="btn-secondary inline-flex items-center gap-1.5 w-full sm:w-auto justify-center"
+          >
+            <RefreshCw className="w-4 h-4" /> Atualizar
+          </button>
         </div>
-        <button
-          onClick={() => setTick(t => t + 1)}
-          className="btn-secondary !py-2 text-xs sm:text-sm inline-flex items-center gap-1.5 w-full sm:w-auto justify-center"
-        >
-          <RefreshCw className="w-4 h-4" /> Atualizar dados
-        </button>
-      </div>
+      </header>
 
       {(summaryError || listError) && (
         <div className="p-4 rounded-2xl border border-rose-200 bg-rose-50 text-rose-800">
@@ -280,54 +282,107 @@ export default function InventoryPage() {
               ) : produtosFiltrados.length === 0 ? (
                 <EmptyState text="Nenhum produto para o filtro selecionado." />
               ) : (
-                <div className="table-wrap">
-                  <table className="table-base">
-                    <thead>
-                      <tr>
-                        <th className="w-16">Img</th>
-                        <th>Produto / SKU</th>
-                        <th>Categoria</th>
-                        <th className="text-right">Qtd disponível</th>
-                        <th className="text-right">Custo (lote)</th>
-                        <th className="text-right">Potencial</th>
-                        <th>Status</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {produtosFiltrados.map(p => {
-                        const qty = Number(p.units_available ?? 0)
-                        const min = Number(p.min_stock ?? 0)
-                        const custo = Number(p.stock_cost ?? 0)
-                        const venda = Number(p.sales_potential ?? 0)
-                        let statusChip = <span className="chip bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200">Normal</span>
-                        if (qty === 0) statusChip = <span className="chip bg-rose-50 text-rose-700 ring-1 ring-rose-200">Sem estoque</span>
-                        else if (min > 0 ? qty <= min : qty <= 2) statusChip = <span className="chip bg-amber-50 text-amber-700 ring-1 ring-amber-200">Baixo</span>
-                        return (
-                          <tr key={String(p.product_id)} className="hover:bg-ink-50/50 transition">
-                            <td>
+                <>
+                  <div className="hidden sm:block">
+                    <div className="table-wrap">
+                      <table className="table-base">
+                        <thead>
+                          <tr>
+                            <th className="w-16">Img</th>
+                            <th>Produto / SKU</th>
+                            <th>Categoria</th>
+                            <th className="text-right">Qtd disponível</th>
+                            <th className="text-right">Custo (lote)</th>
+                            <th className="text-right">Potencial</th>
+                            <th>Status</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {produtosFiltrados.map(p => {
+                            const qty = Number(p.units_available ?? 0)
+                            const min = Number(p.min_stock ?? 0)
+                            const custo = Number(p.stock_cost ?? 0)
+                            const venda = Number(p.sales_potential ?? 0)
+                            let statusChip = <span className="chip bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200">Normal</span>
+                            if (qty === 0) statusChip = <span className="chip bg-rose-50 text-rose-700 ring-1 ring-rose-200">Sem estoque</span>
+                            else if (min > 0 ? qty <= min : qty <= 2) statusChip = <span className="chip bg-amber-50 text-amber-700 ring-1 ring-amber-200">Baixo</span>
+                            return (
+                              <tr key={String(p.product_id)} className="hover:bg-ink-50/50 transition">
+                                <td>
+                                  {p.image_url ? (
+                                    <img src={p.image_url} alt="" className="w-10 h-10 rounded-lg object-cover border border-ink-100" onError={e => { (e.target as HTMLImageElement).style.display = 'none' }} />
+                                  ) : (
+                                    <div className="w-10 h-10 rounded-lg bg-ink-100 flex items-center justify-center text-ink-400">
+                                      <Package className="w-5 h-5" />
+                                    </div>
+                                  )}
+                                </td>
+                                <td>
+                                  <div className="font-semibold text-ink-900">{p.product_name || 'Produto'}</div>
+                                  <div className="text-xs text-ink-500 num">{p.sku || 'Sem SKU'}</div>
+                                </td>
+                                <td>{p.category_name || <span className="text-ink-400">—</span>}</td>
+                                <td className="text-right num font-bold">{String(qty)}</td>
+                                <td className="text-right num">{formatCurrency(custo)}</td>
+                                <td className="text-right num">{formatCurrency(venda)}</td>
+                                <td>{statusChip}</td>
+                              </tr>
+                            )
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+
+                  <div className="sm:hidden flex flex-col gap-3">
+                    {produtosFiltrados.map(p => {
+                      const qty = Number(p.units_available ?? 0)
+                      const min = Number(p.min_stock ?? 0)
+                      const custo = Number(p.stock_cost ?? 0)
+                      const venda = Number(p.sales_potential ?? 0)
+                      const stockBadge = qty === 0
+                        ? <span className="stock-out">{qty} un · Sem estoque</span>
+                        : min > 0 ? qty <= min : qty <= 2
+                        ? <span className="stock-low">{qty} un · Baixo estoque</span>
+                        : <span className="stock-ok">{qty} un · Em estoque</span>
+                      return (
+                        <div key={String(p.product_id)} className="mcard">
+                          <div className="mcard-head">
+                            <div className="flex items-start gap-3 min-w-0 flex-1">
                               {p.image_url ? (
-                                <img src={p.image_url} alt="" className="w-10 h-10 rounded-lg object-cover border border-ink-100" onError={e => { (e.target as HTMLImageElement).style.display = 'none' }} />
+                                <img src={p.image_url} alt="" className="w-12 h-12 rounded-xl object-cover border border-ink-100 flex-shrink-0" onError={e => { (e.target as HTMLImageElement).style.display = 'none' }} />
                               ) : (
-                                <div className="w-10 h-10 rounded-lg bg-ink-100 flex items-center justify-center text-ink-400">
-                                  <Package className="w-5 h-5" />
+                                <div className="w-12 h-12 rounded-xl bg-ink-100 flex items-center justify-center text-ink-400 flex-shrink-0">
+                                  <Package className="w-6 h-6" />
                                 </div>
                               )}
-                            </td>
-                            <td>
-                              <div className="font-semibold text-ink-900">{p.product_name || 'Produto'}</div>
-                              <div className="text-xs text-ink-500 num">{p.sku || 'Sem SKU'}</div>
-                            </td>
-                            <td>{p.category_name || <span className="text-ink-400">—</span>}</td>
-                            <td className="text-right num font-bold">{String(qty)}</td>
-                            <td className="text-right num">{formatCurrency(custo)}</td>
-                            <td className="text-right num">{formatCurrency(venda)}</td>
-                            <td>{statusChip}</td>
-                          </tr>
-                        )
-                      })}
-                    </tbody>
-                  </table>
-                </div>
+                              <div className="min-w-0 flex-1">
+                                <div className="mcard-title truncate" title={p.product_name || ''}>{p.product_name || 'Produto'}</div>
+                                {p.sku && <div className="mcard-sub num">SKU: {p.sku}</div>}
+                                {p.category_name && <div className="mcard-sub">{p.category_name}</div>}
+                              </div>
+                            </div>
+                          </div>
+                          <div className="mcard-meta">{stockBadge}</div>
+                          <div className="grid grid-cols-3 gap-2 pt-2 border-t border-ink-100">
+                            <div>
+                              <div className="text-[10px] font-bold uppercase tracking-wider text-ink-400">Qtd</div>
+                              <div className="num font-black text-ink-900 mt-0.5">{String(qty)}</div>
+                            </div>
+                            <div>
+                              <div className="text-[10px] font-bold uppercase tracking-wider text-ink-400">Custo</div>
+                              <div className="num font-semibold text-ink-700 mt-0.5 truncate">{formatCurrency(custo)}</div>
+                            </div>
+                            <div>
+                              <div className="text-[10px] font-bold uppercase tracking-wider text-ink-400">Potencial</div>
+                              <div className="num font-bold text-brand-800 mt-0.5 truncate">{formatCurrency(venda)}</div>
+                            </div>
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                </>
               )}
             </>
           )}
@@ -353,55 +408,103 @@ export default function InventoryPage() {
               ) : movements.length === 0 ? (
                 <EmptyState text="Sem movimentações recentes." />
               ) : (
-                <div className="table-wrap">
-                  <table className="table-base">
-                    <thead>
-                      <tr>
-                        <th>Data</th>
-                        <th>Tipo</th>
-                        <th>Produto</th>
-                        <th className="text-right">Qtd</th>
-                        <th>Responsável / Observação</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {movements.map(m => {
-                        const isEntrada = m.movement_type === 'ENTRADA' || m.movement_type === 'AJUSTE_POS'
-                        const tipoLabel: Record<string, string> = {
-                          ENTRADA: 'Entrada', SAIDA: 'Saída', AJUSTE_POS: 'Ajuste +',
-                          AJUSTE_NEG: 'Ajuste -', PERDA: 'Perda', DEVOLUCAO: 'Devolução'
-                        }
-                        const produtoNome = (m as any).product_name ?? null
-                        return (
-                          <tr key={m.id} className="hover:bg-ink-50/50 transition">
-                            <td className="num text-ink-700 whitespace-nowrap">{formatDateTime(m.created_at)}</td>
-                            <td>
-                              <span className={cn('chip ring-1 flex w-fit items-center gap-1',
-                                isEntrada
-                                  ? 'bg-emerald-50 text-emerald-700 ring-emerald-200'
-                                  : 'bg-rose-50 text-rose-700 ring-rose-200')}>
-                                {isEntrada ? <ArrowUpRight className="w-3 h-3" /> : <ArrowDownRight className="w-3 h-3" />}
-                                {tipoLabel[m.movement_type] || m.movement_type}
-                              </span>
-                            </td>
-                            <td className="font-medium text-ink-800">
+                <>
+                  <div className="hidden sm:block">
+                    <div className="table-wrap">
+                      <table className="table-base">
+                        <thead>
+                          <tr>
+                            <th>Data</th>
+                            <th>Tipo</th>
+                            <th>Produto</th>
+                            <th className="text-right">Qtd</th>
+                            <th>Responsável / Observação</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {movements.map(m => {
+                            const isEntrada = m.movement_type === 'ENTRADA' || m.movement_type === 'AJUSTE_POS'
+                            const tipoLabel: Record<string, string> = {
+                              ENTRADA: 'Entrada', SAIDA: 'Saída', AJUSTE_POS: 'Ajuste +',
+                              AJUSTE_NEG: 'Ajuste -', PERDA: 'Perda', DEVOLUCAO: 'Devolução'
+                            }
+                            const produtoNome = (m as any).product_name ?? null
+                            return (
+                              <tr key={m.id} className="hover:bg-ink-50/50 transition">
+                                <td className="num text-ink-700 whitespace-nowrap">{formatDateTime(m.created_at)}</td>
+                                <td>
+                                  <span className={cn('chip ring-1 flex w-fit items-center gap-1',
+                                    isEntrada
+                                      ? 'bg-emerald-50 text-emerald-700 ring-emerald-200'
+                                      : 'bg-rose-50 text-rose-700 ring-rose-200')}>
+                                    {isEntrada ? <ArrowUpRight className="w-3 h-3" /> : <ArrowDownRight className="w-3 h-3" />}
+                                    {tipoLabel[m.movement_type] || m.movement_type}
+                                  </span>
+                                </td>
+                                <td className="font-medium text-ink-800">
+                                  {produtoNome || (
+                                    <span className="text-ink-400 italic">Produto #…{String(m.product_id).slice(-4)}</span>
+                                  )}
+                                </td>
+                                <td className={cn('text-right num font-bold whitespace-nowrap', isEntrada ? 'text-emerald-700' : 'text-rose-700')}>
+                                  {isEntrada ? '+' : '-'}{Number(m.quantity ?? 0)}
+                                </td>
+                                <td className="text-sm text-ink-600">
+                                  <div className="font-medium">{m.reason || 'Sem motivo'}</div>
+                                  {m.notes && <div className="text-xs text-ink-400 mt-0.5">{m.notes}</div>}
+                                </td>
+                              </tr>
+                            )
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+
+                  <div className="sm:hidden flex flex-col gap-3 px-4 py-4">
+                    {movements.map(m => {
+                      const isEntrada = m.movement_type === 'ENTRADA' || m.movement_type === 'AJUSTE_POS'
+                      const tipoLabel: Record<string, string> = {
+                        ENTRADA: 'Entrada', SAIDA: 'Saída', AJUSTE_POS: 'Ajuste +',
+                        AJUSTE_NEG: 'Ajuste -', PERDA: 'Perda', DEVOLUCAO: 'Devolução'
+                      }
+                      const produtoNome = (m as any).product_name ?? null
+                      return (
+                        <div key={m.id} className="mcard">
+                          <div className="mcard-head">
+                            <div className="min-w-0 flex-1">
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <span className={cn('chip ring-1 flex items-center gap-1',
+                                  isEntrada
+                                    ? 'bg-emerald-50 text-emerald-700 ring-emerald-200'
+                                    : 'bg-rose-50 text-rose-700 ring-rose-200')}>
+                                  {isEntrada ? <ArrowUpRight className="w-3 h-3" /> : <ArrowDownRight className="w-3 h-3" />}
+                                  {tipoLabel[m.movement_type] || m.movement_type}
+                                </span>
+                              </div>
+                              <div className="mcard-sub num mt-1.5">{formatDateTime(m.created_at)}</div>
+                            </div>
+                            <div className={cn(
+                              'text-right num font-black text-lg leading-tight',
+                              isEntrada ? 'text-emerald-700' : 'text-rose-700'
+                            )}>
+                              {isEntrada ? '+' : '-'}{Number(m.quantity ?? 0)}
+                            </div>
+                          </div>
+                          <div className="space-y-1 pt-1">
+                            <div className="text-sm font-semibold text-ink-900">
                               {produtoNome || (
                                 <span className="text-ink-400 italic">Produto #…{String(m.product_id).slice(-4)}</span>
                               )}
-                            </td>
-                            <td className={cn('text-right num font-bold whitespace-nowrap', isEntrada ? 'text-emerald-700' : 'text-rose-700')}>
-                              {isEntrada ? '+' : '-'}{Number(m.quantity ?? 0)}
-                            </td>
-                            <td className="text-sm text-ink-600">
-                              <div className="font-medium">{m.reason || 'Sem motivo'}</div>
-                              {m.notes && <div className="text-xs text-ink-400 mt-0.5">{m.notes}</div>}
-                            </td>
-                          </tr>
-                        )
-                      })}
-                    </tbody>
-                  </table>
-                </div>
+                            </div>
+                            <div className="text-sm text-ink-700 font-medium">{m.reason || 'Sem motivo'}</div>
+                            {m.notes && <div className="text-xs text-ink-500 break-words">{m.notes}</div>}
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                </>
               )}
             </>
           )}
@@ -427,55 +530,120 @@ export default function InventoryPage() {
               ) : batches.length === 0 ? (
                 <EmptyState text="Nenhum lote registrado." />
               ) : (
-                <div className="table-wrap">
-                  <table className="table-base">
-                    <thead>
-                      <tr>
-                        <th>Produto</th>
-                        <th>Lote</th>
-                        <th className="whitespace-nowrap">Recebido em</th>
-                        <th className="text-right">Qtd recebida</th>
-                        <th className="text-right">Disponível</th>
-                        <th className="text-right">Custo unitário</th>
-                        <th className="text-right">Valor total</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {batches.map(b => {
-                        const disponivel = Number(b.quantity_available ?? 0)
-                        const original = Number(b.quantity_received ?? 0)
-                        const custo = Number(b.unit_cost ?? 0) + Number((b as any).allocated_purchase_cost ?? 0)
-                        const total = disponivel * custo
-                        const pctDisp = original > 0 ? (disponivel / original) * 100 : 0
-                        const produtoNome = stockRows.find(r => r.product_id === b.product_id)?.product_name
-                          ?? (b as any).product_name ?? null
-                        return (
-                          <tr key={b.id} className="hover:bg-ink-50/50 transition">
-                            <td className="font-semibold text-ink-900">
-                              {produtoNome ||
-                                <span className="text-ink-400 italic">Produto #{String(b.product_id).slice(-4)}</span>}
-                            </td>
-                            <td className="text-ink-700 num whitespace-nowrap">
-                              Lote #{formatFriendlyNumber(parseInt(b.id.slice(-4), 16) || 0, 4)}
-                              <div className="mt-1 h-1.5 w-20 rounded-full bg-ink-100 overflow-hidden">
+                <>
+                  <div className="hidden sm:block">
+                    <div className="table-wrap">
+                      <table className="table-base">
+                        <thead>
+                          <tr>
+                            <th>Produto</th>
+                            <th>Lote</th>
+                            <th className="whitespace-nowrap">Recebido em</th>
+                            <th className="text-right">Qtd recebida</th>
+                            <th className="text-right">Disponível</th>
+                            <th className="text-right">Custo unitário</th>
+                            <th className="text-right">Valor total</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {batches.map(b => {
+                            const disponivel = Number(b.quantity_available ?? 0)
+                            const original = Number(b.quantity_received ?? 0)
+                            const custo = Number(b.unit_cost ?? 0) + Number((b as any).allocated_purchase_cost ?? 0)
+                            const total = disponivel * custo
+                            const pctDisp = original > 0 ? (disponivel / original) * 100 : 0
+                            const produtoNome = stockRows.find(r => r.product_id === b.product_id)?.product_name
+                              ?? (b as any).product_name ?? null
+                            return (
+                              <tr key={b.id} className="hover:bg-ink-50/50 transition">
+                                <td className="font-semibold text-ink-900">
+                                  {produtoNome ||
+                                    <span className="text-ink-400 italic">Produto #{String(b.product_id).slice(-4)}</span>}
+                                </td>
+                                <td className="text-ink-700 num whitespace-nowrap">
+                                  Lote #{formatFriendlyNumber(parseInt(b.id.slice(-4), 16) || 0, 4)}
+                                  <div className="mt-1 h-1.5 w-20 rounded-full bg-ink-100 overflow-hidden">
+                                    <div
+                                      className={cn('h-full rounded-full',
+                                        pctDisp > 50 ? 'bg-emerald-500' : pctDisp > 10 ? 'bg-amber-500' : 'bg-rose-500')}
+                                      style={{ width: `${pctDisp}%` }}
+                                    />
+                                  </div>
+                                </td>
+                                <td className="num text-ink-600 whitespace-nowrap">{formatDate(b.received_at, true)}</td>
+                                <td className="text-right num">{String(original)}</td>
+                                <td className="text-right num font-bold text-ink-900">{String(disponivel)}</td>
+                                <td className="text-right num">{formatCurrency(custo)}</td>
+                                <td className="text-right num font-bold text-brand-900">{formatCurrency(total)}</td>
+                              </tr>
+                            )
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+
+                  <div className="sm:hidden flex flex-col gap-3 px-4 py-4">
+                    {batches.map(b => {
+                      const disponivel = Number(b.quantity_available ?? 0)
+                      const original = Number(b.quantity_received ?? 0)
+                      const custo = Number(b.unit_cost ?? 0) + Number((b as any).allocated_purchase_cost ?? 0)
+                      const total = disponivel * custo
+                      const pctDisp = original > 0 ? (disponivel / original) * 100 : 0
+                      const produtoNome = stockRows.find(r => r.product_id === b.product_id)?.product_name
+                        ?? (b as any).product_name ?? null
+                      return (
+                        <div key={b.id} className="mcard">
+                          <div className="mcard-head">
+                            <div className="min-w-0 flex-1">
+                              <div className="mcard-title truncate">
+                                {produtoNome ||
+                                  <span className="text-ink-400 italic">Produto #{String(b.product_id).slice(-4)}</span>}
+                              </div>
+                              <div className="mcard-meta mt-1">
+                                <span className="chip bg-ink-100 text-ink-700">
+                                  Lote #{formatFriendlyNumber(parseInt(b.id.slice(-4), 16) || 0, 4)}
+                                </span>
+                              </div>
+                            </div>
+                            <div className="text-right num font-black text-brand-900 leading-tight">
+                              {formatCurrency(total)}
+                            </div>
+                          </div>
+                          <div className="space-y-2">
+                            <div>
+                              <div className="h-2 w-full rounded-full bg-ink-100 overflow-hidden">
                                 <div
-                                  className={cn('h-full rounded-full',
+                                  className={cn('h-full rounded-full transition-all',
                                     pctDisp > 50 ? 'bg-emerald-500' : pctDisp > 10 ? 'bg-amber-500' : 'bg-rose-500')}
                                   style={{ width: `${pctDisp}%` }}
                                 />
                               </div>
-                            </td>
-                            <td className="num text-ink-600 whitespace-nowrap">{formatDate(b.received_at, true)}</td>
-                            <td className="text-right num">{String(original)}</td>
-                            <td className="text-right num font-bold text-ink-900">{String(disponivel)}</td>
-                            <td className="text-right num">{formatCurrency(custo)}</td>
-                            <td className="text-right num font-bold text-brand-900">{formatCurrency(total)}</td>
-                          </tr>
-                        )
-                      })}
-                    </tbody>
-                  </table>
-                </div>
+                              <div className="flex justify-between text-[11px] text-ink-500 mt-1">
+                                <span>{disponivel} un. disponíveis</span>
+                                <span>{pctDisp.toFixed(0)}%</span>
+                              </div>
+                            </div>
+                            <div className="grid grid-cols-3 gap-2 pt-1 border-t border-ink-100">
+                              <div>
+                                <div className="text-[10px] font-bold uppercase tracking-wider text-ink-400">Recebido</div>
+                                <div className="num text-sm font-semibold text-ink-800 mt-0.5">{formatDate(b.received_at, true)}</div>
+                              </div>
+                              <div>
+                                <div className="text-[10px] font-bold uppercase tracking-wider text-ink-400">Qtd total</div>
+                                <div className="num text-sm font-bold text-ink-900 mt-0.5">{original} un.</div>
+                              </div>
+                              <div>
+                                <div className="text-[10px] font-bold uppercase tracking-wider text-ink-400">Custo un.</div>
+                                <div className="num text-sm font-bold text-ink-900 mt-0.5">{formatCurrency(custo)}</div>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                </>
               )}
             </>
           )}
