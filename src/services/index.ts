@@ -696,7 +696,7 @@ export async function updateSale(sale_id: UUID, patch: Partial<Sale>): Promise<S
     ret = Demo.demoUpdateSale(sale_id, patch)
   } else {
     const sup: any = supabase
-    const patchSafe: Partial<Sale> = {}
+    const patchSafe: Record<string, any> = {}
     if ('customer_name' in patch) patchSafe.customer_name = patch.customer_name
     if ('customer_phone' in patch) patchSafe.customer_phone = patch.customer_phone
     if ('sale_date' in patch) patchSafe.sale_date = patch.sale_date
@@ -704,19 +704,24 @@ export async function updateSale(sale_id: UUID, patch: Partial<Sale>): Promise<S
     if ('status' in patch) patchSafe.status = patch.status
     if ('notes' in patch) patchSafe.notes = patch.notes
     if ('total_customer' in patch) patchSafe.total_customer = Number(patch.total_customer ?? 0)
-    if (!('updated_at' in patch) || !patch.updated_at) {
-      patchSafe.updated_at = new Date().toISOString()
-    } else {
-      patchSafe.updated_at = patch.updated_at
-    }
-    const { data, error } = await sup
-      .from('sales')
-      .update(patchSafe)
-      .eq('id', sale_id)
-      .select()
-      .maybeSingle()
+
+    const { data, error } = await sup.rpc('update_sale_with_financial_sync', {
+      p_sale_id: sale_id,
+      p_sale_patch: patchSafe,
+      p_payment_patch: null,
+    })
     if (error) throw error
-    ret = (data as Sale) ?? null
+    if (data && typeof data === 'object' && data.warning) {
+      console.warn('[services.updateSale] RPC warning:', data.warning)
+    }
+    const { data: refreshed, error: errRef } = await sup
+      .from('sales')
+      .select('*')
+      .eq('id', sale_id)
+      .limit(1)
+      .maybeSingle()
+    if (errRef) throw errRef
+    ret = (refreshed as Sale) ?? null
   }
   setTimeout(__reloadDashboard, 50)
   return ret
@@ -759,13 +764,13 @@ export async function listObligationsPendentes(): Promise<ObligationRow[]> {
   return (data ?? []).map(mapRow)
 }
 
-export async function updateSalePayment(payment_id: UUID, patch: Partial<SalePayment>): Promise<SalePayment | null> {
+export async function updateSalePayment(payment_id: UUID, patch: Partial<SalePayment> & { sale_id?: UUID }): Promise<SalePayment | null> {
   let ret: any = null
   if (!usingSupabase) {
     ret = (Demo.demoUpdateSalePayment(payment_id, patch) ?? null)
   } else {
     const sup: any = supabase
-    const patchSafe: any = {}
+    const patchSafe: Record<string, any> = { id: payment_id }
     if (patch.method !== undefined) patchSafe.method = patch.method
     if (patch.amount !== undefined) patchSafe.amount = Number(patch.amount)
     if ((patch as any).trans_date !== undefined) patchSafe.trans_date = (patch as any).trans_date
@@ -773,16 +778,44 @@ export async function updateSalePayment(payment_id: UUID, patch: Partial<SalePay
     if ((patch as any).modality_snapshot !== undefined) patchSafe.modality_snapshot = (patch as any).modality_snapshot
     if ((patch as any).fee_expected_snapshot !== undefined) patchSafe.fee_expected_snapshot = Number((patch as any).fee_expected_snapshot ?? 0)
     if ((patch as any).fee_real_snapshot !== undefined) patchSafe.fee_real_snapshot = Number((patch as any).fee_real_snapshot ?? 0)
-    if ((patch as any).installments_snapshot !== undefined) patchSafe.installments_snapshot = Number((patch as any).installments_snapshot ?? 1)
+    if ((patch as any).fee_percent_snapshot !== undefined) patchSafe.fee_percent_snapshot = Number((patch as any).fee_percent_snapshot ?? 0)
+    if (patch.installments !== undefined) patchSafe.installments = Number(patch.installments ?? 1)
+    if ((patch as any).notes_snapshot !== undefined) patchSafe.notes_snapshot = (patch as any).notes_snapshot
     if ((patch as any).notes !== undefined) patchSafe.notes = (patch as any).notes
-    const { data, error } = await sup
-      .from('sale_payments')
-      .update(patchSafe)
-      .eq('id', payment_id)
-      .select()
-      .maybeSingle()
+
+    const saleIdRaw = (patch as any).sale_id
+    let sale_id: UUID | null = null
+    if (saleIdRaw) {
+      sale_id = saleIdRaw as UUID
+    } else {
+      const { data: spRow, error: errSp } = await sup
+        .from('sale_payments')
+        .select('id, sale_id')
+        .eq('id', payment_id)
+        .limit(1)
+        .maybeSingle()
+      if (errSp) throw errSp
+      sale_id = spRow?.sale_id ?? null
+    }
+    if (!sale_id) throw new Error('Pagamento não encontrado ou sem sale_id vinculado.')
+
+    const { data, error } = await sup.rpc('update_sale_with_financial_sync', {
+      p_sale_id: sale_id,
+      p_sale_patch: {},
+      p_payment_patch: patchSafe,
+    })
     if (error) throw error
-    ret = (data as SalePayment) ?? null
+    if (data && typeof data === 'object' && data.warning) {
+      console.warn('[services.updateSalePayment] RPC warning:', data.warning)
+    }
+    const { data: refreshed, error: errRef } = await sup
+      .from('sale_payments')
+      .select('*')
+      .eq('id', payment_id)
+      .limit(1)
+      .maybeSingle()
+    if (errRef) throw errRef
+    ret = (refreshed as SalePayment) ?? null
   }
   setTimeout(__reloadDashboard, 50)
   return ret

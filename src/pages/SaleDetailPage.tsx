@@ -217,7 +217,8 @@ export default function SaleDetailPage() {
       const feeExp = parseBrl(paymentEdit.fee_expected_snapshot) ?? 0
       const feeReal = parseBrl(paymentEdit.fee_real_snapshot) ?? 0
       const feePerc = parseBrl(paymentEdit.fee_percent_snapshot) ?? 0
-      await updateSalePayment(paymentEdit.paymentId, {
+      const rpcRet: any = await (updateSalePayment as any)(paymentEdit.paymentId, {
+        sale_id: s?.id,
         method: paymentEdit.method,
         provider_snapshot: paymentEdit.provider_snapshot.trim() || undefined,
         modality_snapshot: paymentEdit.modality_snapshot.trim() || undefined,
@@ -229,7 +230,11 @@ export default function SaleDetailPage() {
         notes_snapshot: paymentEdit.notes_snapshot.trim() || undefined,
       })
       setPaymentEdit({ ...paymentEdit, open: false })
-      showFeedback('ok', 'Pagamento atualizado com sucesso.')
+      if (rpcRet && typeof rpcRet === 'object' && rpcRet.warning) {
+        showFeedback('err', rpcRet.warning, 8500)
+      } else {
+        showFeedback('ok', 'Pagamento atualizado com sucesso.')
+      }
       dispatchInvalidateAll()
       load()
     } catch (e: any) {
@@ -280,10 +285,13 @@ export default function SaleDetailPage() {
       }
       payload.updated_at = new Date().toISOString()
 
-      const res = await updateSale(s.id, payload)
+      const res: any = await (updateSale as any)(s.id, payload)
       if (!res) throw new Error('Sem retorno do servidor ao salvar venda.')
-
-      showFeedback('ok', 'Venda atualizada com sucesso.')
+      if (res && typeof res === 'object' && res.warning) {
+        showFeedback('err', res.warning, 8500)
+      } else {
+        showFeedback('ok', 'Venda atualizada com sucesso.')
+      }
       closeEditMode()
       dispatchInvalidateAll()
       load()
