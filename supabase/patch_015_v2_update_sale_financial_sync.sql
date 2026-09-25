@@ -2,9 +2,20 @@
 -- Mantido apenas como registro historico local.
 
 -- ==============================================================================
--- PATCH 015 — SINCRONIZAÇÃO ATÔMICA EDIÇÃO DE VENDA
+-- PATCH 015 v2 — SINCRONIZAÇÃO ATÔMICA EDIÇÃO DE VENDA (CORRIGIDO 25/09)
 -- EXECUTAR APENAS UMA VEZ NO SQL EDITOR DO SUPABASE.
 -- NÃO ALTERA DADOS HISTÓRICOS EXISTENTES (conciliação, Venda #43 etc intactos).
+--
+-- Diferenças vs PATCH 015 v1 (inválido anterior):
+--   1. Segurança: SECURITY DEFINER com auth.uid() validado + REVOKE PUBLIC
+--      (apenas usuários autenticados conseguem chamar; proprietário mantém).
+--   2. Regra PARCIAL financeiro: Se status='PARCIAL' e total_received > 0
+--      → CONFIRMADO no payment_source correspondente (NÃO PENDENTE como antes).
+--      Dinheiro Pix/InfinitePay recebido parcial hoje é CONFIRMADO na conta.
+--   3. Upsert deterministic 1 FT ativa VENDA: CONFIRMADO first, updated_at DESC.
+--      Evita duplicação Cristina #16 (2x FT VENDA por related_sale_id).
+--   4. sale_payments.trans_date EXISTE como coluna opcional (confirmado types).
+--      Mantida como DATE optional; sale.sale_date usado como fallback sempre.
 --
 -- Objetivo: Ao editar uma venda no Histórico (sales + sale_payments),
 -- sincronizar de forma atômica as financial_transactions (VENDA + TAXA).
@@ -90,21 +101,26 @@ END;
 $$;
 
 -- ==========================================================================
--- RPC OFICIAL de edição atômica de venda.
+-- RPC OFICIAL de edição atômica de venda (PATCH 015 v2).
+-- SECURITY DEFINER com auth.uid() + REVOKE PUBLIC.
 --
 -- Recebe patch de sales + OPCIONALMENTE um sale_payment individual a atualizar
 -- (para o fluxo do frontend que edita apenas 1 pagamento por vez no SaleDetail).
 --
 -- Comportamento:
---  1. Atualiza public.sales com os campos permitidos.
---  2. Se p_payment_patch for informado, atualiza o sale_payments.id correspondente.
---  3. RECALCULA o estado financeiro a partir de (sales atualizada + TODOS sale_payments ativos).
---  4. FAZ UPSERT em financial_transactions para VENDA e TAXA por related_sale_id.
---  5. NÃO toca em REPASSE_INFINITEPAY, AJUSTE_CONCILIACAO, EMBALAGEM.
+--  1. Valida auth.uid() não nulo.
+--  2. Atualiza public.sales com os campos permitidos.
+--  3. Se p_payment_patch for informado, atualiza o sale_payments.id correspondente.
+--  4. RECALCULA o estado financeiro a partir de (sales atualizada + TODOS sale_payments ativos).
+--  5. FAZ UPSERT em financial_transactions para VENDA e TAXA por related_sale_id.
+--  6. 1 FT ativa VENDA: CONFIRMADO first, updated_at DESC LIMIT 1 → anti-duplicação.
+--  7. NÃO toca em REPASSE_INFINITEPAY, AJUSTE_CONCILIACAO, EMBALAGEM.
+--  8. Parcial com recebido > 0 → CONFIRMADO financeiro (Pix parcial recebido hj = caixa).
 --
 -- Idempotente: Chamar 10x com mesmo payload = 1 escrita efetiva.
 -- ==========================================================================
 DROP FUNCTION IF EXISTS public.update_sale_with_financial_sync(UUID, JSONB, JSONB);
+
 CREATE OR REPLACE FUNCTION public.update_sale_with_financial_sync(
   p_sale_id UUID,
   p_sale_patch JSONB DEFAULT '{}'::jsonb,
@@ -165,7 +181,14 @@ DECLARE
   v_warning TEXT := NULL;
 BEGIN
   -- -----------------------------------------------------------------------
-  -- PASSO 0 — Validar venda existe
+  -- PASSO 0 — Segurança: validar autenticação. SECURITY DEFINER com auth.uid().
+  -- -----------------------------------------------------------------------
+  IF auth.uid() IS NULL THEN
+    RAISE EXCEPTION 'Acesso negado: usuário não autenticado (auth.uid() nulo).';
+  END IF;
+
+  -- -----------------------------------------------------------------------
+  -- PASSO 0B — Validar venda existe
   -- -----------------------------------------------------------------------
   SELECT * INTO STRICT v_sale FROM public.sales WHERE id = p_sale_id LIMIT 1;
 
@@ -201,6 +224,7 @@ BEGIN
 
   -- -----------------------------------------------------------------------
   -- PASSO 2 — Atualizar sale_payments (se informado)
+  -- coluna trans_date existe em sale_payments como opcional; mantida compatibilidade
   -- -----------------------------------------------------------------------
   IF p_payment_patch IS NOT NULL
      AND jsonb_typeof(p_payment_patch) = 'object'
@@ -274,7 +298,12 @@ BEGIN
 
   -- -----------------------------------------------------------------------
   -- PASSO 4 — Determinar payment_source e status financeiro
-  --            (Regras 1, 2, 3, 4 do documento)
+  --            (Regras 1, 2, 3, 4 do documento + REGRA PARCIAL CORRIGIDA v2)
+  --
+  --  REGRA PARCIAL v2 (diferente v1):
+  --   · Venda PARCIAL com total_received > 0 → entrada CONFIRMADA hoje.
+  --     Pix parcial recebido R$80 = R$80 CONFIRMADO em CAIXA_EVELINE AGORA.
+  --   · Apenas PENDENTE quando nada foi recebido (total_received = 0).
   -- -----------------------------------------------------------------------
   v_tx_ps := public.__resolve_sale_payment_source(
     p_total_received => v_total_received,
@@ -282,17 +311,10 @@ BEGIN
     p_methods        => v_methods
   );
 
-  -- Status financeiro depende de: venda cancelada / status sale / pagamentos recebidos.
-  IF v_status = 'CANCELADA' THEN
+  IF v_status = 'CANCELADA' OR v_status = 'REEMBOLSADA' THEN
     v_tx_status := 'CANCELADO';
   ELSIF v_total_received <= 0 THEN
     v_tx_status := 'PENDENTE';
-  ELSIF v_status = 'PENDENTE' AND v_total_received < v_total_customer - 0.005 THEN
-    -- Cliente pagou parcialmente mas venda marcada manualmente como pendente.
-    -- Mantemos como PENDENTE financeiro se for menor que o total.
-    v_tx_status := 'PENDENTE';
-  ELSIF v_status = 'PARCIAL' THEN
-    v_tx_status := 'PENDENTE';  -- Parcial = entrada ainda não está consolidada 100% no caixa.
   ELSE
     v_tx_status := 'CONFIRMADO';
   END IF;
@@ -326,41 +348,39 @@ BEGIN
   SELECT EXISTS(
     SELECT 1 FROM public.financial_transactions ft
     WHERE ft.related_sale_id = p_sale_id
-      AND ft.category         = 'REPASSE_INFINITEPAY'
+      AND upper(ft.category)         = 'REPASSE_INFINITEPAY'
       AND ft.status           = 'CONFIRMADO'
-      AND ft.payment_source   = 'CAIXA_EVELINE'
+      AND upper(ft.payment_source)   = 'CAIXA_EVELINE'
       AND (ft.amount IS NULL OR ft.amount > 0)
     LIMIT 1
   ) INTO v_has_repasse_infinitepay;
 
   IF v_has_repasse_infinitepay THEN
-    -- Venda já foi repassada para CAIXA_EVELINE via REPASSE_INFINITEPAY.
-    -- Qualquer tentativa de jogar a VENDA novamente em CAIXA_EVELINE duplica o dinheiro.
-    -- Forçamos a VENDA a continuar como payment_source = INFINITEPAY / CONFIRMADO.
-    -- O caixa continua correto (já recebeu pelo repasse).
     IF v_tx_ps = 'CAIXA_EVELINE' OR v_tx_ps = 'FABIANA' OR v_tx_ps = 'DONA' OR v_tx_ps = 'OUTRO' THEN
       v_tx_ps := 'INFINITEPAY';
-      v_warning := '⚠️ Venda já possui REPASSE_INFINITEPAY CONFIRMADO em caixa. Venda foi mantida como payment_source=INFINITEPAY para evitar dupla entrada no caixa. O saldo já está correto via repasse.';
+      v_warning := 'Venda já possui REPASSE_INFINITEPAY confirmado em caixa. Mantido payment_source=INFINITEPAY para evitar dupla entrada no caixa. O saldo já está correto via repasse.';
     END IF;
   END IF;
 
   -- -----------------------------------------------------------------------
   -- PASSO 7 — UPSERT FINANCIAL_TRANSACTIONS VENDA
   --            (Regra 5: atualiza por related_sale_id, NÃO duplica.)
+  --
+  --  UPSERT DETERMINÍSTICO 1 FT ATIVA v2 (CORRIGE Cristina #16 dupla VENDA):
+  --   · CONFIRMADO first (CASE WHEN status='CONFIRMADO' THEN 0 ELSE 1 END)
+  --   · Mais recente primeiro (updated_at DESC)
+  --   · Exclui AJUSTE_CONCILIACAO e REPASSE_INFINITEPAY
+  --   · LIMIT 1 → sempre 0 ou 1 FT para UPDATE; senão INSERT.
   -- -----------------------------------------------------------------------
   SELECT ft.id INTO v_venda_ft_id
   FROM public.financial_transactions ft
   WHERE ft.related_sale_id = p_sale_id
-    AND ft.category = 'VENDA'
-    AND ft.trans_type = 'ENTRADA'
-    AND ft.id NOT IN (
-      -- Não usar rows de conciliação ou repasse
-      SELECT id FROM public.financial_transactions
-      WHERE related_sale_id = p_sale_id
-        AND (category = 'AJUSTE_CONCILIACAO' OR category = 'REPASSE_INFINITEPAY')
-    )
+    AND upper(ft.category) = 'VENDA'
+    AND upper(ft.trans_type) = 'ENTRADA'
+    AND upper(ft.category) NOT IN ('AJUSTE_CONCILIACAO', 'REPASSE_INFINITEPAY')
   ORDER BY
-    CASE WHEN ft.status = v_tx_status THEN 0 ELSE 1 END,
+    CASE WHEN upper(ft.status) = 'CONFIRMADO' THEN 0 ELSE 1 END,
+    ft.updated_at DESC NULLS LAST,
     ft.created_at DESC
   LIMIT 1;
 
@@ -379,6 +399,7 @@ BEGIN
       amount         = v_venda_amount,
       status         = v_tx_status,
       payment_source = v_tx_ps,
+      payment_method = CASE WHEN array_length(v_methods, 1) > 0 THEN v_methods[1] ELSE ft.payment_method END,
       due_date       = CASE WHEN v_tx_status = 'PENDENTE' THEN (v_sale_date + INTERVAL '30 days')::DATE ELSE NULL END,
       updated_at     = now()
     WHERE ft.id = v_venda_ft_id;
@@ -386,7 +407,7 @@ BEGIN
   ELSE
     INSERT INTO public.financial_transactions (
       trans_date, trans_type, category, description, amount,
-      related_sale_id, status, payment_source, due_date,
+      related_sale_id, status, payment_source, payment_method, due_date,
       created_by, updated_at
     ) VALUES (
       v_sale_date,
@@ -397,6 +418,7 @@ BEGIN
       p_sale_id,
       v_tx_status,
       v_tx_ps,
+      CASE WHEN array_length(v_methods, 1) > 0 THEN v_methods[1] ELSE NULL END,
       CASE WHEN v_tx_status = 'PENDENTE' THEN (v_sale_date + INTERVAL '30 days')::DATE ELSE NULL END,
       v_sale.created_by,
       now()
@@ -412,8 +434,8 @@ BEGIN
   SELECT ft.id INTO v_taxa_ft_id
   FROM public.financial_transactions ft
   WHERE ft.related_sale_id = p_sale_id
-    AND ft.category = 'TAXA'
-  ORDER BY ft.created_at DESC
+    AND upper(ft.category) = 'TAXA'
+  ORDER BY ft.updated_at DESC NULLS LAST, ft.created_at DESC
   LIMIT 1;
 
   v_desc_taxa := format(
@@ -424,9 +446,6 @@ BEGIN
   );
 
   IF v_fee_amount > 0 THEN
-    -- Taxa > 0: Garante 1 transação TAXA SAÍDA.
-    -- Usa MESMO payment_source da VENDA (se venda está em intermediador,
-    -- taxa debitou lá, não em CAIXA_EVELINE).
     IF v_taxa_ft_id IS NOT NULL THEN
       UPDATE public.financial_transactions ft
       SET
@@ -435,6 +454,7 @@ BEGIN
         amount         = v_fee_amount,
         status         = v_tx_status,
         payment_source = v_tx_ps,
+        trans_type     = 'SAIDA',
         updated_at     = now()
       WHERE ft.id = v_taxa_ft_id;
       v_upserted_taxa := TRUE;
@@ -458,9 +478,6 @@ BEGIN
       v_upserted_taxa := TRUE;
     END IF;
   ELSE
-    -- Taxa = 0 (ex: PIX Direto, Dinheiro).
-    -- Se existia taxa, ZERAMOS ela (para manter o id mas sem impacto financeiro).
-    -- Não deletamos para manter histórico (audit).
     IF v_taxa_ft_id IS NOT NULL THEN
       UPDATE public.financial_transactions ft
       SET
@@ -492,7 +509,7 @@ BEGIN
     );
 
   -- -----------------------------------------------------------------------
-  -- RETORNO
+  -- RETORNO (12+ campos — compatível services/updateSale/updateSalePayment/SaleDetail)
   -- -----------------------------------------------------------------------
   RETURN jsonb_build_object(
     'ok', TRUE,
@@ -507,6 +524,7 @@ BEGIN
     'total_received', v_total_received,
     'total_customer', v_total_customer,
     'total_fee_real', v_total_fee_real,
+    'amount_receivable', GREATEST(v_total_customer - v_total_received, 0),
     'financial', jsonb_build_object(
       'payment_source', v_tx_ps,
       'status', v_tx_status,
@@ -516,5 +534,16 @@ BEGIN
   );
 END;
 $$;
+
+-- ==========================================================================
+-- SEGURANÇA PATCH 015 v2:
+--   · REVOKE PUBLIC para evitar execução anônima.
+--   · Apenas roles autenticadas (authenticated / postgres) podem executar.
+-- ==========================================================================
+REVOKE EXECUTE ON FUNCTION public.update_sale_with_financial_sync(UUID, JSONB, JSONB) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.update_sale_with_financial_sync(UUID, JSONB, JSONB) TO postgres;
+GRANT EXECUTE ON FUNCTION public.update_sale_with_financial_sync(UUID, JSONB, JSONB) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.__resolve_sale_payment_source(NUMERIC, TEXT[], TEXT[]) TO postgres;
+GRANT EXECUTE ON FUNCTION public.__resolve_sale_payment_source(NUMERIC, TEXT[], TEXT[]) TO authenticated;
 
 COMMIT;

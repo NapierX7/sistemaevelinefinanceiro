@@ -1374,3 +1374,65 @@ export function demoPayObligation(args: {
   }
 }
 
+
+// Repasses InfinitePay no modo demo, com a mesma regra idempotente do Supabase.
+export function demoListInfinitePayReceivables(): any[] {
+  const s = loadStore()
+  const sales = new Map(s.sales.map(v => [String(v.id), v]))
+  const repasses = new Map<string, FinancialTransaction>()
+  for (const ft of s.financial_transactions) {
+    if (ft.category === 'REPASSE_INFINITEPAY' && ft.status === 'CONFIRMADO' && ft.related_sale_id) {
+      repasses.set(String(ft.related_sale_id), ft)
+    }
+  }
+  return s.sale_payments
+    .filter(p => String(p.provider_snapshot ?? '').toLowerCase().includes('infinite') && Number(p.amount ?? 0) > 0)
+    .map(p => {
+      const sale = sales.get(String(p.sale_id))
+      const repasse = repasses.get(String(p.sale_id))
+      const bruto = Number(p.amount ?? 0)
+      const taxa = Number(p.fee_real_snapshot ?? p.fee_expected_snapshot ?? 0)
+      return {
+        sale_payment_id: p.id,
+        sale_id: p.sale_id,
+        sale_friendly_number: sale?.friendly_number ?? null,
+        sale_date: sale?.sale_date ?? p.created_at,
+        customer_name: sale?.customer_name ?? null,
+        provider_snapshot: p.provider_snapshot ?? null,
+        method: p.method ?? null,
+        installments: Number(p.installments ?? 1),
+        bruto,
+        taxa_real: taxa,
+        liquido: Math.max(0, bruto - taxa),
+        payment_created_at: p.created_at,
+        repasse_confirmado: Boolean(repasse),
+        repasse_trans_id: repasse?.id ?? null,
+        repasse_amount: repasse?.amount ?? null,
+        repasse_date: repasse?.trans_date ?? null,
+      }
+    })
+}
+
+export function demoConfirmRepasseInfinitePay(p: {
+  sale_id: UUID,
+  amount_received: number,
+  trans_date?: string,
+  notes?: string,
+}) {
+  const s = loadStore()
+  const existing = s.financial_transactions.find(ft =>
+    ft.category === 'REPASSE_INFINITEPAY' && ft.status === 'CONFIRMADO' &&
+    String(ft.related_sale_id) === String(p.sale_id)
+  )
+  if (existing) return { ok: true, idempotent: true, message: 'Repasse ja confirmado.', transacao_id: existing.id }
+  const ft: FinancialTransaction = {
+    id: uid(), trans_date: p.trans_date ?? new Date().toISOString().slice(0, 10),
+    trans_type: 'ENTRADA', category: 'REPASSE_INFINITEPAY', description: 'Repasse InfinitePay',
+    amount: Number(p.amount_received), related_sale_id: p.sale_id, related_purchase_id: null,
+    payment_method: 'TRANSFERENCIA', status: 'CONFIRMADO', due_date: null, created_by: null,
+    notes: p.notes ?? null, payment_source: 'CAIXA_EVELINE', created_at: todayISO(), updated_at: todayISO(),
+  }
+  s.financial_transactions.push(ft)
+  saveStore(s)
+  return { ok: true, message: 'Repasse confirmado.', transacao_id: ft.id }
+}

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { createPortal } from 'react-dom'
 import {
   Calendar, DollarSign, TrendingUp, Package, ShoppingCart, Receipt,
   ArrowUpRight, ArrowDownRight, Filter, AlertTriangle, ChevronDown, AlertCircle,
@@ -12,7 +13,9 @@ import {
   dashboardStockSummary, dashboardSales, dashboardFinancial,
   listSalePaymentsBySaleIds, listObligationsPendentes, payObligation, dispatchInvalidateAll,
   dashboardCashEvelineSummary, dashboardReceivablesTotal,
-  listAllInfinitePayReceivables, confirmRepasseInfinitePay
+  listAllInfinitePayReceivables, confirmRepasseInfinitePay,
+  computeSalesPeriodKpis, computeFinancialPeriodKpis,
+  consolidateObligations, normalizePaymentLabel,
 } from '@/services'
 import type {
   DashboardStockSummary, DashboardSaleRow, DashboardFinancialRow,
@@ -207,32 +210,22 @@ export default function DashboardPage() {
   }, [salesRows])
 
   const kpis = useMemo(() => {
-    const rows = salesRows
-    const faturamento = rows.reduce((s, v) => {
-      const tc = Number((v as any).total_customer ?? 0)
-      return s + (tc > 0 ? tc : Number(v.revenue ?? 0))
-    }, 0)
-    const recebido = rows.reduce((s, v) => s + Number(v.amount_received ?? 0), 0)
-    const aReceber = rows.reduce((s, v) => s + Number(v.amount_receivable ?? 0), 0)
-
-    const custoMerc = rows.reduce((s, v) => s + Number(v.items_cost ?? 0), 0)
-    const custoAlloc = rows.reduce((s, v) => s + Number(v.allocated_purchase_cost ?? 0), 0)
-    const custoFrete = rows.reduce((s, v) => s + Number(v.extra_costs ?? 0), 0)
-    const custoTaxas = rows.reduce((s, v) => s + Number(v.payment_fees ?? 0), 0)
-    const custoEmbalagens = rows.reduce((s, v) => s + Number(v.packaging_cost ?? 0), 0)
-    const descontos = rows.reduce((s, v) => s + Number(v.total_discounts ?? 0), 0)
-
-    const saidasVenda = custoMerc + custoAlloc + custoFrete + custoTaxas + custoEmbalagens
-    const lucro = faturamento - saidasVenda
-    const pedidos = rows.length
-    const pecas = rows.reduce((s, v) => s + Number(v.pieces_sold ?? 0), 0)
-    const ticketMedio = pedidos ? faturamento / pedidos : 0
-    const margem = faturamento ? (lucro / faturamento) * 100 : 0
-
+    const k = computeSalesPeriodKpis(salesRows)
     return {
-      faturamento, recebido, aReceber,
-      lucro, margem, pedidos, pecas, ticketMedio,
-      custoMerc, custoAlloc, custoFrete, custoTaxas, custoEmbalagens, descontos
+      faturamento: k.faturamento,
+      recebido: k.recebido,
+      aReceber: k.a_receber,
+      lucro: k.lucro_real,
+      margem: k.margem_percent,
+      pedidos: k.pedidos,
+      pecas: k.pecas,
+      ticketMedio: k.ticket_medio,
+      custoMerc: k.custo_mercadorias,
+      custoAlloc: k.custo_rateio_aquisicao,
+      custoFrete: k.custo_frete_extras,
+      custoTaxas: k.custo_taxas,
+      custoEmbalagens: k.custo_embalagem,
+      descontos: k.descontos,
     }
   }, [salesRows])
 
@@ -257,16 +250,12 @@ export default function DashboardPage() {
         continue
       }
       for (const sp of list) {
-        const methodParts: string[] = []
-        const prov = sp.provider_snapshot ?? (sp as any).provider ?? null
-        const met = sp.method ?? (sp as any).payment_method_snapshot ?? null
-        if (prov) methodParts.push(String(prov))
-        if (met) methodParts.push(paymentMethodLabel(String(met)))
-        const mod: any = (sp as any).modality_snapshot ?? (sp as any).modality
-        if (mod && (!met || String(mod) !== String(met))) methodParts.push(String(mod))
-        const parc = Number((sp as any).installments ?? 1)
-        if (parc > 1) methodParts.push(`${parc}x`)
-        const key = methodParts.length ? methodParts.join(' · ') : 'Outro'
+        const key = normalizePaymentLabel({
+          provider_snapshot: (sp as any).provider_snapshot ?? (sp as any).provider ?? null,
+          method: sp.method ?? (sp as any).payment_method_snapshot ?? null,
+          modality_snapshot: (sp as any).modality_snapshot ?? (sp as any).modality ?? null,
+          installments: (sp as any).installments ?? null,
+        })
         if (!groups[key]) groups[key] = { label: key, count: 0, total: 0 }
         groups[key].count += 1
         groups[key].total += Number(sp.amount ?? 0)
@@ -315,19 +304,14 @@ export default function DashboardPage() {
   // ============================================================================
   // ============================================================================
   // BLOCO V — Movimentações a classificar (do período filtrado).
-  // IMPORTANTE: saldo do caixa NÃO usa este filtro de data.
+  // REGRA OFICIAL: payment_source NULL. NÃO confundir com payment_method=NAO_INFORMADO.
   // ============================================================================
   const naoInformado = useMemo(() => {
-    const niList: DashboardFinancialRow[] = []
-    for (const t of finRows) {
-      if (t.status !== 'CONFIRMADO') continue
-      const psRaw = String(t.payment_source ?? '').trim()
-      const ps = psRaw.toUpperCase()
-      if (ps === '' || ps === 'NAO_INFORMADO' || psRaw === null || psRaw === undefined) {
-        niList.push(t)
-      }
-    }
-    return niList
+    return finRows.filter(t => {
+      if (t.status !== 'CONFIRMADO') return false
+      const ps = t.payment_source ?? null
+      return ps === null || String(ps).trim() === ''
+    })
   }, [finRows])
 
   // ============================================================================
@@ -341,11 +325,6 @@ export default function DashboardPage() {
   // ============================================================================
   // INFINITEPAY — A REPASSAR (GLOBAL, não filtrado por período).
   // Service: listAllInfinitePayReceivables()
-  //   - Busca TODAS vendas InfinitePay (sale_payments + inner sales global.
-  //   - fee_real_snapshot (campo real da tabela sale_payments).
-  //   - EXCLUI vendas que já possuem REPASSE_INFINITEPAY CONFIRMADO no financial_transactions.
-  //   - líquido = bruto (amount) - taxa_real (fee_real_snapshot ?? fee_expected_snapshot)
-  // Venda #43: 529,70 - 28,55 = 501,15
   // ============================================================================
   const { aRepassarInfinitePay, totalRepassadoInfinitePay, ipLinhasARepassar, ipLinhasRepassadas } = useMemo(() => {
     let rep = 0
@@ -372,43 +351,12 @@ export default function DashboardPage() {
 
   // ============================================================================
   // A RECEBER TOTAL (todas vendas, não só período). Usa dashboardReceivablesTotal.
-  // PROJETADO (após crédito) = saldo + InfinitePay líquido (recebíveis intermediário já pago).
-  // A receber clientes (Day/Cristina/Evelyn = 439,90) fica no card 4 separado.
   // ============================================================================
   const aReceberGlobal = Number(receivablesTotal?.total_a_receber ?? 0)
   const caixaProjetado = aposCreditoIp
   const potencialFinanceiroTotal = caixaProjetado + aReceberGlobal + Number(stock?.total_sales_potential ?? 0)
 
-  const obrigacoes = useMemo(() => {
-    const byCredor = new Map<string, {
-      creditor: string; total: number; amount_paid: number; remaining: number; count: number
-    }>()
-    let total = 0
-    let totalPago = 0
-    for (const o of obligationsRows) {
-      const amt = Number(o.amount ?? 0)
-      if (amt <= 0) continue
-      const paid = Number((o as any).amount_paid ?? 0)
-      const rem = Number((o as any).amount_remaining ?? (o as any).remaining_balance ?? Math.max(0, amt - paid))
-      total += amt
-      totalPago += paid
-      const name = (o.creditor_name || 'Sem credor').toString().trim()
-      const prev = byCredor.get(name) ?? {
-        creditor: name, total: 0, amount_paid: 0, remaining: 0, count: 0
-      }
-      prev.total += amt
-      prev.amount_paid += paid
-      prev.remaining += rem
-      prev.count += 1
-      byCredor.set(name, prev)
-    }
-    return {
-      total,
-      totalPago,
-      totalRemaining: Math.max(0, total - totalPago),
-      linhas: Array.from(byCredor.values()).sort((a, b) => b.total - a.total)
-    }
-  }, [obligationsRows])
+  const obrigacoes = useMemo(() => consolidateObligations(obligationsRows), [obligationsRows])
 
   const recentSales = [...salesRows].slice(0, 8)
   const loadingAny = loadingStock || loadingSales || loadingFin || loadingPayments || loadingOblig || loadingCash || loadingReceiv
@@ -714,9 +662,10 @@ export default function DashboardPage() {
       </section>
 
       {/* MODAL LISTA IP — 2 ABAS: PENDENTES / REPASSADAS */}
-      {showIpListModal && (
-        <div className="modal-shell" onClick={() => setShowIpListModal(false)}>
-          <div className="modal-backdrop" aria-hidden />
+      {showIpListModal && typeof document !== 'undefined' && createPortal(
+        (
+          <div className="modal-shell" onClick={() => setShowIpListModal(false)}>
+            <div className="modal-backdrop" aria-hidden />
           <div className="modal-content modal-wide" onClick={e => e.stopPropagation()} role="dialog" aria-modal="true">
             <div className="modal-header bg-sky-50/60">
               <div className="flex items-center gap-2 min-w-0">
@@ -898,6 +847,8 @@ export default function DashboardPage() {
             </div>
           </div>
         </div>
+        ),
+        document.body
       )}
 
       {/* ============================================================
@@ -1150,20 +1101,16 @@ export default function DashboardPage() {
             <>
               <div className="space-y-3">
                 {obrigacoes.linhas.map(l => {
-                  const total = Number(l.total ?? 0)
-                  const pago = Number(l.amount_paid ?? 0)
-                  const restante = Number(l.remaining ?? Math.max(0, total - pago))
+                  const total = Number(l.original ?? 0)
+                  const pago = Number(l.pago ?? 0)
+                  const restante = Number(l.restante ?? Math.max(0, total - pago))
                   const pctRaw = total > 0 ? (pago / total) * 100 : 0
                   const pct = Math.min(100, Math.max(0, pctRaw))
-                  let statusLabel = 'PENDENTE'
+                  const st = String(l.status ?? 'PENDENTE')
                   let statusTone = 'bg-rose-50 text-rose-700 ring-rose-200'
-                  if (pago >= total && total > 0) {
-                    statusLabel = 'PAGO'
-                    statusTone = 'bg-emerald-50 text-emerald-700 ring-emerald-200'
-                  } else if (pago > 0) {
-                    statusLabel = 'PARCIAL'
-                    statusTone = 'bg-amber-50 text-amber-700 ring-amber-200'
-                  }
+                  if (st === 'PAGO') statusTone = 'bg-emerald-50 text-emerald-700 ring-emerald-200'
+                  else if (st === 'PARCIAL') statusTone = 'bg-amber-50 text-amber-700 ring-amber-200'
+                  else if (st === 'CANCELADO') statusTone = 'bg-ink-100 text-ink-500 ring-ink-200'
                   return (
                     <div key={l.creditor} className="p-3 rounded-xl border border-ink-100 bg-ink-50/30">
                       <div className="flex justify-between items-center mb-2 gap-2">
@@ -1172,12 +1119,12 @@ export default function DashboardPage() {
                           <div className="min-w-0">
                             <div className="font-semibold text-ink-800 truncate">{l.creditor}</div>
                             <div className="text-[11px] text-ink-500 num">
-                              {pluralize(l.count, 'lançamento')}
+                              {pluralize(l.qtd, 'lançamento')}
                             </div>
                           </div>
                         </div>
                         <span className={cn('chip ring-1 text-[10px] font-bold uppercase tracking-wider', statusTone)}>
-                          {statusLabel}
+                          {st}
                         </span>
                       </div>
                       <div className="flex items-center justify-between gap-2 mb-1.5">
@@ -1205,7 +1152,7 @@ export default function DashboardPage() {
                 </div>
                 {obrigacoes.totalPago > 0 && (
                   <div className="text-[11px] text-ink-500 mt-1 num">
-                    Já pago/abatido: {formatCurrency(obrigacoes.totalPago)} de {formatCurrency(obrigacoes.total)}
+                    Já pago/abatido: {formatCurrency(obrigacoes.totalPago)} de {formatCurrency(obrigacoes.totalOriginal)}
                   </div>
                 )}
               </div>
@@ -1225,7 +1172,7 @@ export default function DashboardPage() {
           <div className="w-1.5 h-5 rounded-full bg-rose-500" />
           <h2 className="font-black text-ink-900 tracking-tight">V · Movimentações a classificar</h2>
           <span className="chip bg-rose-50 text-rose-700 text-[10px] font-bold uppercase tracking-[0.14em]">
-            payment_source vazio / NAO_INFORMADO
+            payment_source NULL
           </span>
         </div>
         <div className="card p-5 space-y-4">
@@ -1480,353 +1427,359 @@ export default function DashboardPage() {
       </div>
       </section>
 
-      {showIpConfirmModal && ipSelected && (
-        <div
-          className="modal-shell"
-          onClick={(e) => { if (e.target === e.currentTarget && !ipLoading) setShowIpConfirmModal(false) }}
-        >
+      {showIpConfirmModal && ipSelected && typeof document !== 'undefined' && createPortal(
+        (
           <div
-            className="modal-content"
-            onClick={(e) => e.stopPropagation()}
+            className="modal-shell"
+            onClick={(e) => { if (e.target === e.currentTarget && !ipLoading) setShowIpConfirmModal(false) }}
           >
-            <div className="modal-header !bg-sky-50">
-              <div className="flex items-center gap-2.5 min-w-0">
-                <div className="w-9 h-9 rounded-xl bg-sky-600 flex items-center justify-center flex-shrink-0">
-                  <CreditCard className="w-5 h-5 text-white" />
+            <div
+              className="modal-content"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="modal-header !bg-sky-50">
+                <div className="flex items-center gap-2.5 min-w-0">
+                  <div className="w-9 h-9 rounded-xl bg-sky-600 flex items-center justify-center flex-shrink-0">
+                    <CreditCard className="w-5 h-5 text-white" />
+                  </div>
+                  <div className="min-w-0">
+                    <h3 className="modal-title">Confirmar recebimento InfinitePay</h3>
+                    <p className="text-[11px] text-sky-700 mt-1">
+                      Cria ENTRADA / REPASSE_INFINITEPAY no caixa Eveline.
+                    </p>
+                  </div>
                 </div>
-                <div className="min-w-0">
-                  <h3 className="modal-title">Confirmar recebimento InfinitePay</h3>
-                  <p className="text-[11px] text-sky-700 mt-1">
-                    Cria ENTRADA / REPASSE_INFINITEPAY no caixa Eveline.
-                  </p>
-                </div>
+                <button
+                  type="button"
+                  onClick={() => !ipLoading && setShowIpConfirmModal(false)}
+                  disabled={ipLoading}
+                  className="btn-icon"
+                  aria-label="Fechar"
+                >
+                  <X className="w-5 h-5" />
+                </button>
               </div>
-              <button
-                type="button"
-                onClick={() => !ipLoading && setShowIpConfirmModal(false)}
-                disabled={ipLoading}
-                className="btn-icon"
-                aria-label="Fechar"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
 
-            <form id="ip-repasse-form" onSubmit={handleSubmitIpRepasse} className="modal-body space-y-4">
-              <div className="p-4 rounded-xl border border-sky-100 bg-sky-50/40 space-y-2 text-sm">
-                <div className="flex items-center justify-between gap-2 flex-wrap">
-                  <span className="text-ink-500 text-xs uppercase tracking-[0.08em] font-bold">Venda</span>
-                  <span className="num font-bold text-sky-800">
-                    #{String(ipSelected.sale_friendly_number ?? '').padStart(4, '0') || 'Sem número'}
-                  </span>
-                </div>
-                <div className="flex items-center justify-between gap-2">
-                  <span className="text-ink-500">Cliente</span>
-                  <span className="font-semibold text-ink-900 truncate max-w-[220px] text-right">{ipSelected.customer_name ?? 'Não identificado'}</span>
-                </div>
-                <div className="flex items-center justify-between gap-2">
-                  <span className="text-ink-500">Data da venda</span>
-                  <span className="num text-ink-800">{formatDate(ipSelected.sale_date ?? ipSelected.payment_created_at)}</span>
-                </div>
-                {ipSelected.installments > 1 && (
+              <form id="ip-repasse-form" onSubmit={handleSubmitIpRepasse} className="modal-body space-y-4">
+                <div className="p-4 rounded-xl border border-sky-100 bg-sky-50/40 space-y-2 text-sm">
+                  <div className="flex items-center justify-between gap-2 flex-wrap">
+                    <span className="text-ink-500 text-xs uppercase tracking-[0.08em] font-bold">Venda</span>
+                    <span className="num font-bold text-sky-800">
+                      #{String(ipSelected.sale_friendly_number ?? '').padStart(4, '0') || 'Sem número'}
+                    </span>
+                  </div>
                   <div className="flex items-center justify-between gap-2">
-                    <span className="text-ink-500">Parcelamento</span>
-                    <span className="num text-ink-800">{ipSelected.installments}x</span>
+                    <span className="text-ink-500">Cliente</span>
+                    <span className="font-semibold text-ink-900 truncate max-w-[220px] text-right">{ipSelected.customer_name ?? 'Não identificado'}</span>
+                  </div>
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-ink-500">Data da venda</span>
+                    <span className="num text-ink-800">{formatDate(ipSelected.sale_date ?? ipSelected.payment_created_at)}</span>
+                  </div>
+                  {ipSelected.installments > 1 && (
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-ink-500">Parcelamento</span>
+                      <span className="num text-ink-800">{ipSelected.installments}x</span>
+                    </div>
+                  )}
+                </div>
+
+                <div className="grid grid-cols-3 gap-3">
+                  <div className="p-3 rounded-xl border border-ink-100 bg-white">
+                    <div className="text-[10px] font-bold uppercase text-ink-400 tracking-[0.08em]">Bruto</div>
+                    <div className="mt-1 text-lg font-black num text-ink-800">{formatCurrency(ipSelected.bruto)}</div>
+                  </div>
+                  <div className="p-3 rounded-xl border border-rose-100 bg-rose-50/40">
+                    <div className="text-[10px] font-bold uppercase text-rose-500 tracking-[0.08em]">Taxa real</div>
+                    <div className="mt-1 text-lg font-black num text-rose-700">−{formatCurrency(ipSelected.taxa_real)}</div>
+                  </div>
+                  <div className="p-3 rounded-xl border border-emerald-100 bg-emerald-50/50">
+                    <div className="text-[10px] font-bold uppercase text-emerald-600 tracking-[0.08em]">Líquido</div>
+                    <div className="mt-1 text-lg font-black num text-emerald-700">{formatCurrency(ipSelected.liquido)}</div>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-bold text-ink-700 mb-1.5 uppercase tracking-[0.08em]">Valor recebido (R$)</label>
+                    <input
+                      type="text"
+                      value={ipFormAmount}
+                      onChange={(e) => setIpFormAmount(e.target.value)}
+                      disabled={ipLoading}
+                      placeholder="ex: 501,15"
+                      className="w-full h-12 px-3.5 rounded-xl border border-ink-200 bg-white text-sm num focus:outline-none focus:ring-2 focus:ring-sky-500 focus:border-sky-400 disabled:bg-ink-50"
+                    />
+                    <p className="mt-1 text-[10px] text-ink-500">
+                      Preenchido com o líquido esperado. Ajuste se houver diferença real.
+                    </p>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-ink-700 mb-1.5 uppercase tracking-[0.08em]">Data do crédito</label>
+                    <input
+                      type="date"
+                      value={ipFormDate}
+                      onChange={(e) => setIpFormDate(e.target.value)}
+                      disabled={ipLoading}
+                      className="w-full h-12 px-3.5 rounded-xl border border-ink-200 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-sky-500 focus:border-sky-400 disabled:bg-ink-50"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-ink-700 mb-1.5 uppercase tracking-[0.08em]">Observações (opcional)</label>
+                  <textarea
+                    rows={2}
+                    value={ipFormNotes}
+                    onChange={(e) => setIpFormNotes(e.target.value)}
+                    disabled={ipLoading}
+                    placeholder="Ex: comprovante nº 123.456, diferença R$0,15 de tarifário adicional, etc."
+                    className="w-full px-3.5 py-3 rounded-xl border border-ink-200 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-sky-500 focus:border-sky-400 disabled:bg-ink-50 resize-none"
+                  />
+                </div>
+
+                {ipActionError && (
+                  <div className="p-3 rounded-xl border border-rose-200 bg-rose-50 text-rose-800 text-xs">
+                    <div className="font-bold flex items-center gap-1.5">
+                      <AlertCircle className="w-3.5 h-3.5" /> Não foi possível confirmar o repasse
+                    </div>
+                    <div className="mt-0.5 opacity-90">{ipActionError}</div>
                   </div>
                 )}
-              </div>
 
-              <div className="grid grid-cols-3 gap-3">
-                <div className="p-3 rounded-xl border border-ink-100 bg-white">
-                  <div className="text-[10px] font-bold uppercase text-ink-400 tracking-[0.08em]">Bruto</div>
-                  <div className="mt-1 text-lg font-black num text-ink-800">{formatCurrency(ipSelected.bruto)}</div>
-                </div>
-                <div className="p-3 rounded-xl border border-rose-100 bg-rose-50/40">
-                  <div className="text-[10px] font-bold uppercase text-rose-500 tracking-[0.08em]">Taxa real</div>
-                  <div className="mt-1 text-lg font-black num text-rose-700">−{formatCurrency(ipSelected.taxa_real)}</div>
-                </div>
-                <div className="p-3 rounded-xl border border-emerald-100 bg-emerald-50/50">
-                  <div className="text-[10px] font-bold uppercase text-emerald-600 tracking-[0.08em]">Líquido</div>
-                  <div className="mt-1 text-lg font-black num text-emerald-700">{formatCurrency(ipSelected.liquido)}</div>
-                </div>
-              </div>
+                {ipSuccessMsg && (
+                  <div className="p-3 rounded-xl border border-emerald-200 bg-emerald-50 text-emerald-800 text-xs">
+                    <div className="font-bold flex items-center gap-1.5">
+                      <CheckCircle2 className="w-3.5 h-3.5" /> Repasse registrado
+                    </div>
+                    <div className="mt-0.5 opacity-90">{ipSuccessMsg}</div>
+                  </div>
+                )}
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-xs font-bold text-ink-700 mb-1.5 uppercase tracking-[0.08em]">Valor recebido (R$)</label>
-                  <input
-                    type="text"
-                    value={ipFormAmount}
-                    onChange={(e) => setIpFormAmount(e.target.value)}
-                    disabled={ipLoading}
-                    placeholder="ex: 501,15"
-                    className="w-full h-12 px-3.5 rounded-xl border border-ink-200 bg-white text-sm num focus:outline-none focus:ring-2 focus:ring-sky-500 focus:border-sky-400 disabled:bg-ink-50"
-                  />
-                  <p className="mt-1 text-[10px] text-ink-500">
-                    Preenchido com o líquido esperado. Ajuste se houver diferença real.
-                  </p>
-                </div>
-                <div>
-                  <label className="block text-xs font-bold text-ink-700 mb-1.5 uppercase tracking-[0.08em]">Data do crédito</label>
-                  <input
-                    type="date"
-                    value={ipFormDate}
-                    onChange={(e) => setIpFormDate(e.target.value)}
-                    disabled={ipLoading}
-                    className="w-full h-12 px-3.5 rounded-xl border border-ink-200 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-sky-500 focus:border-sky-400 disabled:bg-ink-50"
-                  />
-                </div>
-              </div>
-
-              <div>
-                <label className="block text-xs font-bold text-ink-700 mb-1.5 uppercase tracking-[0.08em]">Observações (opcional)</label>
-                <textarea
-                  rows={2}
-                  value={ipFormNotes}
-                  onChange={(e) => setIpFormNotes(e.target.value)}
+              </form>
+              <div className="modal-footer flex flex-col-reverse sm:flex-row sm:justify-end gap-2">
+                <button
+                  type="button"
                   disabled={ipLoading}
-                  placeholder="Ex: comprovante nº 123.456, diferença R$0,15 de tarifário adicional, etc."
-                  className="w-full px-3.5 py-3 rounded-xl border border-ink-200 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-sky-500 focus:border-sky-400 disabled:bg-ink-50 resize-none"
-                />
+                  onClick={() => !ipLoading && setShowIpConfirmModal(false)}
+                  className="btn-secondary"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  form="ip-repasse-form"
+                  onClick={handleSubmitIpRepasse}
+                  disabled={ipLoading}
+                  className="btn-primary flex items-center justify-center gap-2"
+                >
+                  {ipLoading
+                    ? <span className="animate-pulse">Registrando…</span>
+                    : <><CheckCircle2 className="w-4 h-4" /> Confirmar recebimento</>
+                  }
+                </button>
               </div>
-
-              {ipActionError && (
-                <div className="p-3 rounded-xl border border-rose-200 bg-rose-50 text-rose-800 text-xs">
-                  <div className="font-bold flex items-center gap-1.5">
-                    <AlertCircle className="w-3.5 h-3.5" /> Não foi possível confirmar o repasse
-                  </div>
-                  <div className="mt-0.5 opacity-90">{ipActionError}</div>
-                </div>
-              )}
-
-              {ipSuccessMsg && (
-                <div className="p-3 rounded-xl border border-emerald-200 bg-emerald-50 text-emerald-800 text-xs">
-                  <div className="font-bold flex items-center gap-1.5">
-                    <CheckCircle2 className="w-3.5 h-3.5" /> Repasse registrado
-                  </div>
-                  <div className="mt-0.5 opacity-90">{ipSuccessMsg}</div>
-                </div>
-              )}
-
-            </form>
-            <div className="modal-footer flex flex-col-reverse sm:flex-row sm:justify-end gap-2">
-              <button
-                type="button"
-                disabled={ipLoading}
-                onClick={() => !ipLoading && setShowIpConfirmModal(false)}
-                className="btn-secondary"
-              >
-                Cancelar
-              </button>
-              <button
-                type="submit"
-                form="ip-repasse-form"
-                onClick={handleSubmitIpRepasse}
-                disabled={ipLoading}
-                className="btn-primary flex items-center justify-center gap-2"
-              >
-                {ipLoading
-                  ? <span className="animate-pulse">Registrando…</span>
-                  : <><CheckCircle2 className="w-4 h-4" /> Confirmar recebimento</>
-                }
-              </button>
             </div>
           </div>
-        </div>
+        ),
+        document.body
       )}
 
-      {showPayModal && (
-        <div
-          className="modal-shell"
-          onClick={(e) => { if (e.target === e.currentTarget && !payLoading) setShowPayModal(false) }}
-        >
+      {showPayModal && typeof document !== 'undefined' && createPortal(
+        (
           <div
-            className="modal-content"
-            onClick={(e) => e.stopPropagation()}
+            className="modal-shell"
+            onClick={(e) => { if (e.target === e.currentTarget && !payLoading) setShowPayModal(false) }}
           >
-            <div className="modal-header !bg-violet-50">
-              <div className="flex items-center gap-2.5 min-w-0">
-                <div className="w-9 h-9 rounded-xl bg-violet-600 flex items-center justify-center flex-shrink-0">
-                  <Check className="w-5 h-5 text-white" />
+            <div
+              className="modal-content"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="modal-header !bg-violet-50">
+                <div className="flex items-center gap-2.5 min-w-0">
+                  <div className="w-9 h-9 rounded-xl bg-violet-600 flex items-center justify-center flex-shrink-0">
+                    <Check className="w-5 h-5 text-white" />
+                  </div>
+                  <div className="min-w-0">
+                    <h3 className="modal-title">Registrar pagamento de obrigação</h3>
+                    <p className="text-[11px] text-violet-700 mt-1">
+                      O valor será lançado como SAÍDA / PAGAMENTO_OBRIGACAO no caixa Eveline.
+                    </p>
+                  </div>
                 </div>
-                <div className="min-w-0">
-                  <h3 className="modal-title">Registrar pagamento de obrigação</h3>
-                  <p className="text-[11px] text-violet-700 mt-1">
-                    O valor será lançado como SAÍDA / PAGAMENTO_OBRIGACAO no caixa Eveline.
-                  </p>
-                </div>
-              </div>
-              <button
-                type="button"
-                onClick={() => !payLoading && setShowPayModal(false)}
-                disabled={payLoading}
-                className="btn-icon"
-                aria-label="Fechar"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            <form id="pay-obligation-form" onSubmit={handleSubmitPay} className="modal-body space-y-4">
-              <div>
-                <label className="block text-xs font-bold text-ink-700 mb-1.5 uppercase tracking-[0.08em]">Obrigação a pagar</label>
-                <select
-                  value={paySelectedObligationId}
-                  onChange={(e) => onSelectObligationChange(e.target.value)}
+                <button
+                  type="button"
+                  onClick={() => !payLoading && setShowPayModal(false)}
                   disabled={payLoading}
-                  className="w-full h-12 px-3.5 rounded-xl border border-ink-200 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-violet-400 disabled:bg-ink-50 disabled:text-ink-500"
+                  className="btn-icon"
+                  aria-label="Fechar"
                 >
-                  <option value="">Selecione uma obrigação…</option>
-                  {obligationsRows
-                    .filter(o => o.status !== 'PAGO' && o.status !== 'CANCELADO')
-                    .map(o => {
-                      const remaining = Number(o.remaining_balance ?? o.amount ?? 0)
-                      const original = Number(o.amount ?? 0)
-                      const pctPaid = original > 0 ? Math.min(100, (Number(o.amount_paid ?? 0) / original) * 100) : 0
-                      return (
-                        <option key={String(o.id)} value={String(o.id)}>
-                          {o.creditor_name} — {formatCurrency(remaining)} restante
-                          {pctPaid > 0 ? ` (${pctPaid.toFixed(0)}% pago)` : ''}
-                          {' '}· {o.status}
-                        </option>
-                      )
-                    })
-                  }
-                </select>
-                {paySelectedObligationId && (() => {
-                  const obl = obligationsRows.find(o => String(o.id) === paySelectedObligationId)
-                  if (!obl) return null
-                  const paid = Number(obl.amount_paid ?? 0)
-                  const total = Number(obl.amount ?? 0)
-                  return (
-                    <div className="mt-2 p-3 rounded-xl bg-violet-50/60 border border-violet-100 text-[11px] text-violet-900 space-y-1">
-                      {obl.description && <div><span className="font-semibold">Motivo:</span> {obl.description}</div>}
-                      <div><span className="font-semibold">Valor original:</span> {formatCurrency(total)}</div>
-                      <div><span className="font-semibold">Já pago:</span> {formatCurrency(paid)}</div>
-                      <div><span className="font-semibold">Saldo restante:</span> {formatCurrency(Number(obl.remaining_balance ?? total - paid))}</div>
-                    </div>
-                  )
-                })()}
+                  <X className="w-5 h-5" />
+                </button>
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <form id="pay-obligation-form" onSubmit={handleSubmitPay} className="modal-body space-y-4">
                 <div>
-                  <label className="block text-xs font-bold text-ink-700 mb-1.5 uppercase tracking-[0.08em]">Valor a pagar (R$)</label>
-                  <input
-                    type="number"
-                    step="0.01"
-                    min="0.01"
-                    placeholder="0,00"
-                    value={payAmount}
-                    onChange={(e) => setPayAmount(e.target.value)}
-                    disabled={payLoading}
-                    className="w-full h-12 px-3.5 rounded-xl border border-ink-200 bg-white text-sm num focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-violet-400 disabled:bg-ink-50"
-                  />
-                  <p className="mt-1 text-[10px] text-ink-500">
-                    Use ponto ou vírgula para decimais. Pagamento parcial permitido.
-                  </p>
-                </div>
-                <div>
-                  <label className="block text-xs font-bold text-ink-700 mb-1.5 uppercase tracking-[0.08em]">Data do pagamento</label>
-                  <input
-                    type="date"
-                    value={payDate}
-                    onChange={(e) => setPayDate(e.target.value)}
-                    disabled={payLoading}
-                    className="w-full h-12 px-3.5 rounded-xl border border-ink-200 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-violet-400 disabled:bg-ink-50"
-                  />
-                </div>
-              </div>
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-xs font-bold text-ink-700 mb-1.5 uppercase tracking-[0.08em]">Forma de pagamento</label>
+                  <label className="block text-xs font-bold text-ink-700 mb-1.5 uppercase tracking-[0.08em]">Obrigação a pagar</label>
                   <select
-                    value={payMethod}
-                    onChange={(e) => setPayMethod(e.target.value)}
+                    value={paySelectedObligationId}
+                    onChange={(e) => onSelectObligationChange(e.target.value)}
                     disabled={payLoading}
-                    className="w-full h-12 px-3.5 rounded-xl border border-ink-200 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-violet-400 disabled:bg-ink-50"
+                    className="w-full h-12 px-3.5 rounded-xl border border-ink-200 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-violet-400 disabled:bg-ink-50 disabled:text-ink-500"
                   >
-                    {['PIX','DINHEIRO','DEBITO','CREDITO','BOLETO','TRANSFERENCIA','OUTRO'].map(m => (
-                      <option key={m} value={m}>{paymentMethodLabel(m)}</option>
-                    ))}
+                    <option value="">Selecione uma obrigação…</option>
+                    {obligationsRows
+                      .filter(o => o.status !== 'PAGO' && o.status !== 'CANCELADO')
+                      .map(o => {
+                        const remaining = Number(o.remaining_balance ?? o.amount ?? 0)
+                        const original = Number(o.amount ?? 0)
+                        const pctPaid = original > 0 ? Math.min(100, (Number(o.amount_paid ?? 0) / original) * 100) : 0
+                        return (
+                          <option key={String(o.id)} value={String(o.id)}>
+                            {o.creditor_name} — {formatCurrency(remaining)} restante
+                            {pctPaid > 0 ? ` (${pctPaid.toFixed(0)}% pago)` : ''}
+                            {' '}· {o.status}
+                          </option>
+                        )
+                      })
+                    }
                   </select>
+                  {paySelectedObligationId && (() => {
+                    const obl = obligationsRows.find(o => String(o.id) === paySelectedObligationId)
+                    if (!obl) return null
+                    const paid = Number(obl.amount_paid ?? 0)
+                    const total = Number(obl.amount ?? 0)
+                    return (
+                      <div className="mt-2 p-3 rounded-xl bg-violet-50/60 border border-violet-100 text-[11px] text-violet-900 space-y-1">
+                        {obl.description && <div><span className="font-semibold">Motivo:</span> {obl.description}</div>}
+                        <div><span className="font-semibold">Valor original:</span> {formatCurrency(total)}</div>
+                        <div><span className="font-semibold">Já pago:</span> {formatCurrency(paid)}</div>
+                        <div><span className="font-semibold">Saldo restante:</span> {formatCurrency(Number(obl.remaining_balance ?? total - paid))}</div>
+                      </div>
+                    )
+                  })()}
                 </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-bold text-ink-700 mb-1.5 uppercase tracking-[0.08em]">Valor a pagar (R$)</label>
+                    <input
+                      type="number"
+                      step="0.01"
+                      min="0.01"
+                      placeholder="0,00"
+                      value={payAmount}
+                      onChange={(e) => setPayAmount(e.target.value)}
+                      disabled={payLoading}
+                      className="w-full h-12 px-3.5 rounded-xl border border-ink-200 bg-white text-sm num focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-violet-400 disabled:bg-ink-50"
+                    />
+                    <p className="mt-1 text-[10px] text-ink-500">
+                      Use ponto ou vírgula para decimais. Pagamento parcial permitido.
+                    </p>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-ink-700 mb-1.5 uppercase tracking-[0.08em]">Data do pagamento</label>
+                    <input
+                      type="date"
+                      value={payDate}
+                      onChange={(e) => setPayDate(e.target.value)}
+                      disabled={payLoading}
+                      className="w-full h-12 px-3.5 rounded-xl border border-ink-200 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-violet-400 disabled:bg-ink-50"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-bold text-ink-700 mb-1.5 uppercase tracking-[0.08em]">Forma de pagamento</label>
+                    <select
+                      value={payMethod}
+                      onChange={(e) => setPayMethod(e.target.value)}
+                      disabled={payLoading}
+                      className="w-full h-12 px-3.5 rounded-xl border border-ink-200 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-violet-400 disabled:bg-ink-50"
+                    >
+                      {['PIX','DINHEIRO','DEBITO','CREDITO','BOLETO','TRANSFERENCIA','OUTRO'].map(m => (
+                        <option key={m} value={m}>{paymentMethodLabel(m)}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-ink-700 mb-1.5 uppercase tracking-[0.08em]">
+                      Nº comprovante (opcional)
+                    </label>
+                    <input
+                      type="text"
+                      value={payRef}
+                      onChange={(e) => setPayRef(e.target.value)}
+                      disabled={payLoading}
+                      placeholder="ex: TXID do PIX, nº boleto"
+                      className="w-full h-12 px-3.5 rounded-xl border border-ink-200 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-violet-400 disabled:bg-ink-50"
+                    />
+                    <p className="mt-1 text-[10px] text-ink-500">
+                      Usado para idempotência: mesmo comprovante 2x → NÃO duplica saída.
+                    </p>
+                  </div>
+                </div>
+
                 <div>
-                  <label className="block text-xs font-bold text-ink-700 mb-1.5 uppercase tracking-[0.08em]">
-                    Nº comprovante (opcional)
-                  </label>
-                  <input
-                    type="text"
-                    value={payRef}
-                    onChange={(e) => setPayRef(e.target.value)}
+                  <label className="block text-xs font-bold text-ink-700 mb-1.5 uppercase tracking-[0.08em]">Observações (opcional)</label>
+                  <textarea
+                    rows={2}
+                    value={payNotes}
+                    onChange={(e) => setPayNotes(e.target.value)}
                     disabled={payLoading}
-                    placeholder="ex: TXID do PIX, nº boleto"
-                    className="w-full h-12 px-3.5 rounded-xl border border-ink-200 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-violet-400 disabled:bg-ink-50"
+                    placeholder="Ex: pagamento em dinheiro, segunda parcela, etc."
+                    className="w-full px-3.5 py-3 rounded-xl border border-ink-200 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-violet-400 disabled:bg-ink-50 resize-none"
                   />
-                  <p className="mt-1 text-[10px] text-ink-500">
-                    Usado para idempotência: mesmo comprovante 2x → NÃO duplica saída.
-                  </p>
                 </div>
-              </div>
 
-              <div>
-                <label className="block text-xs font-bold text-ink-700 mb-1.5 uppercase tracking-[0.08em]">Observações (opcional)</label>
-                <textarea
-                  rows={2}
-                  value={payNotes}
-                  onChange={(e) => setPayNotes(e.target.value)}
-                  disabled={payLoading}
-                  placeholder="Ex: pagamento em dinheiro, segunda parcela, etc."
-                  className="w-full px-3.5 py-3 rounded-xl border border-ink-200 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-violet-400 disabled:bg-ink-50 resize-none"
-                />
-              </div>
-
-              {payActionError && (
-                <div className="p-3 rounded-xl border border-rose-200 bg-rose-50 text-rose-800 text-xs">
-                  <div className="font-bold flex items-center gap-1.5"><AlertCircle className="w-3.5 h-3.5" /> Não foi possível registrar</div>
-                  <div className="mt-0.5 opacity-90 break-words">{payActionError}</div>
-                </div>
-              )}
-
-              {paySuccessMsg && (
-                <div className="p-3 rounded-xl border border-emerald-200 bg-emerald-50 text-emerald-800 text-xs">
-                  <div className="font-bold flex items-center gap-1.5"><Check className="w-3.5 h-3.5" /> Sucesso</div>
-                  <div className="mt-0.5 opacity-90 break-words">{paySuccessMsg}</div>
-                </div>
-              )}
-
-            </form>
-            <div className="modal-footer flex flex-col-reverse sm:flex-row sm:justify-end gap-2">
-              <button
-                type="button"
-                onClick={() => !payLoading && setShowPayModal(false)}
-                disabled={payLoading}
-                className="btn-secondary flex-1 sm:flex-none"
-              >
-                Cancelar
-              </button>
-              <button
-                type="submit"
-                form="pay-obligation-form"
-                disabled={payLoading || !paySelectedObligationId}
-                className="btn-primary !bg-violet-600 hover:!bg-violet-700 flex-1 sm:flex-[1.5]"
-              >
-                {payLoading ? (
-                  <>
-                    <span className="w-4 h-4 rounded-full border-2 border-white/40 border-t-white animate-spin" />
-                    Registrando…
-                  </>
-                ) : (
-                  <>
-                    <Check className="w-4 h-4" />
-                    Confirmar pagamento
-                  </>
+                {payActionError && (
+                  <div className="p-3 rounded-xl border border-rose-200 bg-rose-50 text-rose-800 text-xs">
+                    <div className="font-bold flex items-center gap-1.5"><AlertCircle className="w-3.5 h-3.5" /> Não foi possível registrar</div>
+                    <div className="mt-0.5 opacity-90 break-words">{payActionError}</div>
+                  </div>
                 )}
-              </button>
+
+                {paySuccessMsg && (
+                  <div className="p-3 rounded-xl border border-emerald-200 bg-emerald-50 text-emerald-800 text-xs">
+                    <div className="font-bold flex items-center gap-1.5"><Check className="w-3.5 h-3.5" /> Sucesso</div>
+                    <div className="mt-0.5 opacity-90 break-words">{paySuccessMsg}</div>
+                  </div>
+                )}
+
+              </form>
+              <div className="modal-footer flex flex-col-reverse sm:flex-row sm:justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => !payLoading && setShowPayModal(false)}
+                  disabled={payLoading}
+                  className="btn-secondary flex-1 sm:flex-none"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  form="pay-obligation-form"
+                  disabled={payLoading || !paySelectedObligationId}
+                  className="btn-primary !bg-violet-600 hover:!bg-violet-700 flex-1 sm:flex-[1.5]"
+                >
+                  {payLoading ? (
+                    <>
+                      <span className="w-4 h-4 rounded-full border-2 border-white/40 border-t-white animate-spin" />
+                      Registrando…
+                    </>
+                  ) : (
+                    <>
+                      <Check className="w-4 h-4" />
+                      Confirmar pagamento
+                    </>
+                  )}
+                </button>
+              </div>
             </div>
           </div>
-        </div>
+        ),
+        document.body
       )}
     </div>
   )

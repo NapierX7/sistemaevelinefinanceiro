@@ -736,6 +736,8 @@ export async function listObligationsPendentes(): Promise<ObligationRow[]> {
     creditor_name: String(d.creditor_name ?? d.credor ?? d.creditor ?? 'Credor'),
     description: d.description ?? d.descricao ?? null,
     amount: Number(d.amount ?? d.valor ?? 0),
+    amount_paid: Number(d.amount_paid ?? d.valor_pago ?? 0),
+    remaining_balance: Number(d.amount_remaining ?? d.remaining_balance ?? Math.max(0, Number(d.amount ?? d.valor ?? 0) - Number(d.amount_paid ?? d.valor_pago ?? 0))),
     status: (['PENDENTE','PAGO','PARCIAL','CANCELADO'].includes(String(d.status ?? ''))
       ? String(d.status) as any
       : 'PENDENTE'),
@@ -927,12 +929,21 @@ export async function dashboardFinancial(range: DashboardDateRange): Promise<Das
   const sup: any = supabase
   const endExclusiveISO = addDay(range.endInclusive) + 'T00:00:00'
   const startISO = range.startInclusive + 'T00:00:00'
-  const { data, error } = await sup
-    .from('v_dashboard_financial')
+  const queryRange = (source: 'v_dashboard_financial' | 'financial_transactions') => sup
+    .from(source)
     .select('*')
     .gte('trans_date', startISO)
     .lt('trans_date', endExclusiveISO)
     .order('trans_date', { ascending: false })
+
+  let { data, error } = await queryRange('v_dashboard_financial')
+  // Compatibilidade enquanto o PATCH 016 ainda nao foi executado: a view antiga
+  // omite payment_source, portanto consulta a tabela-base sob a mesma RLS.
+  if (!error && Array.isArray(data) && data.some((row: any) => !Object.prototype.hasOwnProperty.call(row, 'payment_source'))) {
+    const fallback = await queryRange('financial_transactions')
+    data = fallback.data
+    error = fallback.error
+  }
   if (error) {
     console.error('[services.dashboardFinancial] erro:', error, { startISO, endExclusiveISO })
     throw new Error(`Dashboard Financeiro: ${error.message || String(error)}`)
@@ -1071,7 +1082,8 @@ export async function dashboardStock(): Promise<DashboardStockRow[]> {
 // ================================================================
 
 export async function listAllInfinitePayReceivables(): Promise<InfinitePayReceivable[]> {
-  if (!usingSupabase) return (Demo as any).demoListInfinitePayReceivables?.() ?? []
+  if (!usingSupabase) return Demo.demoListInfinitePayReceivables()
+
   const sup: any = supabase
 
   // ============================================================
@@ -1178,7 +1190,7 @@ export async function listAllInfinitePayReceivables(): Promise<InfinitePayReceiv
       sale_payment_id: sp.id,
       sale_id: sp.sale_id,
       sale_friendly_number: sale?.friendly_number ?? null,
-      sale_date: sale?.sale_date ?? sp.trans_date ?? sp.created_at ?? null,
+      sale_date: sale?.sale_date ?? sp.created_at ?? null,
       customer_name: sale?.customer_name ?? null,
       provider_snapshot: (sp as any).provider_snapshot ?? null,
       method: sp.method ?? (sp as any).payment_method_snapshot ?? null,
@@ -1211,9 +1223,8 @@ export async function confirmRepasseInfinitePay(p: ConfirmRepasseParams): Promis
   const dateStr = p.trans_date?.slice(0, 10) ?? new Date().toISOString().slice(0, 10)
   const iso = `${dateStr}T12:00:00.000Z`
 
-  if (!usingSupabase) {
-    return ((Demo as any).demoConfirmRepasseInfinitePay?.(p) ?? { ok: true, message: 'Repasse confirmado (modo demo).' })
-  }
+  if (!usingSupabase) return Demo.demoConfirmRepasseInfinitePay(p)
+
 
   const sup: any = supabase
 
@@ -1288,4 +1299,291 @@ export async function confirmRepasseInfinitePay(p: ConfirmRepasseParams): Promis
 
   setTimeout(__reloadDashboard, 50)
   return { ok: true, message: `Repasse de ${new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(amt)} registrado com sucesso.`, transacao_id: inserted?.id }
+}
+
+// ================================================================
+// FONTE OFICIAL DE RESULTADO OPERACIONAL (1 implementação — Dashboard + Financeiro consomem ela)
+// Fórmula canônica, 100% baseada em snapshots históricos de v_dashboard_sales.
+//
+// Retorna KPIs de vendas do período SEM depender de filtros, páginas, React ou
+// lógica duplicada em componentes.
+// ================================================================
+export interface SalesPeriodKpis {
+  faturamento: number;
+  recebido: number;
+  a_receber: number;
+  custo_mercadorias: number;
+  custo_rateio_aquisicao: number;
+  custo_taxas: number;
+  custo_embalagem: number;
+  custo_frete_extras: number;
+  descontos: number;
+  lucro_real: number;
+  margem_percent: number;
+  pedidos: number;
+  pecas: number;
+  ticket_medio: number;
+}
+
+export function computeSalesPeriodKpis(rows: DashboardSaleRow[]): SalesPeriodKpis {
+  const r = Array.isArray(rows) ? rows : []
+  let faturamento = 0
+  let recebido = 0
+  let a_receber = 0
+  let custoMerc = 0
+  let custoAlloc = 0
+  let custoTaxas = 0
+  let custoEmb = 0
+  let custoFrete = 0
+  let descontos = 0
+  let pedidos = 0
+  let pecas = 0
+
+  for (const v of r) {
+    const tc = Number((v as any).total_customer ?? 0)
+    faturamento += tc > 0 ? tc : Number(v.revenue ?? 0)
+    recebido += Number(v.amount_received ?? 0)
+
+    const ar = Number(v.amount_receivable ?? 0)
+    if (ar > 0) a_receber += ar
+    else {
+      const fallback = Math.max(0, (tc > 0 ? tc : Number(v.revenue ?? 0)) - Number(v.amount_received ?? 0))
+      if (fallback > 0.009) a_receber += fallback
+    }
+
+    custoMerc += Number(v.items_cost ?? 0)
+    custoAlloc += Number(v.allocated_purchase_cost ?? 0)
+    custoTaxas += Number(v.payment_fees ?? 0)
+    custoEmb += Number(v.packaging_cost ?? 0)
+    custoFrete += Number(v.extra_costs ?? 0)
+    descontos += Number(v.total_discounts ?? 0)
+    pecas += Number(v.pieces_sold ?? (v as any).total_items ?? 0)
+    pedidos += 1
+  }
+
+  const lucro_real = faturamento - (custoMerc + custoAlloc + custoTaxas + custoEmb + custoFrete)
+  const margem_percent = faturamento > 0 ? (lucro_real / faturamento) * 100 : 0
+  const ticket_medio = pedidos > 0 ? faturamento / pedidos : 0
+
+  return {
+    faturamento: +faturamento.toFixed(2),
+    recebido: +recebido.toFixed(2),
+    a_receber: +a_receber.toFixed(2),
+    custo_mercadorias: +custoMerc.toFixed(2),
+    custo_rateio_aquisicao: +custoAlloc.toFixed(2),
+    custo_taxas: +custoTaxas.toFixed(2),
+    custo_embalagem: +custoEmb.toFixed(2),
+    custo_frete_extras: +custoFrete.toFixed(2),
+    descontos: +descontos.toFixed(2),
+    lucro_real: +lucro_real.toFixed(2),
+    margem_percent: +margem_percent.toFixed(2),
+    pedidos,
+    pecas: +pecas.toFixed(2),
+    ticket_medio: +ticket_medio.toFixed(2),
+  }
+}
+
+// ================================================================
+// FONTE OFICIAL: Movimentações FINANCEIRAS do período (v_dashboard_financial)
+//   - Entradas / Saídas CONFIRMADAS → saldo do período (NÃO é posição atual de caixa).
+//   - "A classificar" considera payment_source NULL. payment_method 'NAO_INFORMADO'
+//     não significa desclassificado se payment_source estiver preenchido.
+//   - Exclui categoria 'AJUSTE_CONCILIACAO' dos totais do período (ela só afeta
+//     a reconciliação acumulada do caixa, não o resultado do mês).
+//   - Exclui categoria 'REPASSE_INFINITEPAY' da soma de faturamento/resultado,
+//     mas a mantém nas "entradas do período" (pois representa dinheiro que caiu).
+// ================================================================
+export interface FinancialPeriodKpis {
+  entradas_confirmadas: number;
+  saidas_confirmadas: number;
+  saldo_periodo: number;
+  entradas_nao_classificadas: number;
+  saidas_nao_classificadas: number;
+  total_pendentes_classificar: number;
+}
+
+const CATEGORY_NOT_PERIOD_RESULT = new Set(['AJUSTE_CONCILIACAO'])
+
+export function computeFinancialPeriodKpis(rows: DashboardFinancialRow[]): FinancialPeriodKpis {
+  const r = Array.isArray(rows) ? rows : []
+  let ent = 0
+  let sai = 0
+  let entNc = 0
+  let saiNc = 0
+  let pend = 0
+  for (const t of r) {
+    const statusOk = String(t.status ?? '') === 'CONFIRMADO'
+    const valor = Number(t.amount ?? 0)
+    const isEnt = String(t.trans_type ?? '') === 'ENTRADA'
+    const abs = Math.abs(valor)
+    const ps = (t.payment_source ?? null) as string | null
+    const psFilled = ps !== null && String(ps).trim() !== ''
+    const cat = String(t.category ?? '')
+    const skipPeriodSum = CATEGORY_NOT_PERIOD_RESULT.has(cat)
+
+    if (statusOk && !skipPeriodSum) {
+      if (isEnt) ent += abs
+      else sai += abs
+    }
+    if (!psFilled) {
+      if (statusOk) {
+        if (isEnt) entNc += abs
+        else saiNc += abs
+      }
+      pend += 1
+    }
+  }
+  return {
+    entradas_confirmadas: +ent.toFixed(2),
+    saidas_confirmadas: +sai.toFixed(2),
+    saldo_periodo: +(ent - sai).toFixed(2),
+    entradas_nao_classificadas: +entNc.toFixed(2),
+    saidas_nao_classificadas: +saiNc.toFixed(2),
+    total_pendentes_classificar: pend,
+  }
+}
+
+// ================================================================
+// FONTE OFICIAL: Obrigações / Valores a restituir
+//   - remaining = MAX(amount - amount_paid, 0)
+//   - total_pendente = SUM(remaining)
+//   - Barra de progresso = amount_paid / amount
+// ================================================================
+export interface ConsolidatedObligation {
+  creditor: string;
+  original: number;
+  pago: number;
+  restante: number;
+  qtd: number;
+  progresso_pct: number;
+  status: string;
+}
+export interface ConsolidatedObligations {
+  linhas: ConsolidatedObligation[];
+  totalOriginal: number;
+  totalPago: number;
+  totalRemaining: number;
+}
+
+export function consolidateObligations(rows: ObligationRow[]): ConsolidatedObligations {
+  const r = Array.isArray(rows) ? rows : []
+  const map = new Map<string, ConsolidatedObligation & { _statuses: Map<string, number> }>()
+  for (const o of r) {
+    const name = String(o.creditor_name ?? o.description ?? 'Outros').trim() || 'Outros'
+    const amt = Number(o.amount ?? 0)
+    const paid = Number(o.amount_paid ?? 0)
+    const rem = Math.max(0, amt - paid)
+    const status = String(o.status ?? 'PENDENTE')
+    const prev = map.get(name)
+    if (!prev) {
+      const stMap = new Map<string, number>()
+      stMap.set(status, 1)
+      map.set(name, { creditor: name, original: amt, pago: paid, restante: rem, qtd: 1, progresso_pct: amt > 0 ? (paid / amt) * 100 : 0, status, _statuses: stMap })
+    } else {
+      prev.original += amt
+      prev.pago += paid
+      prev.restante += rem
+      prev.qtd += 1
+      const c = (prev._statuses.get(status) ?? 0) + 1
+      prev._statuses.set(status, c)
+      // Status agregado: PAGO se todos pagos; CANCELADO se todos cancelados; PARCIAL se houver algum pago parcial; senão PENDENTE.
+      const allStatus = Array.from(prev._statuses.keys())
+      const todosPago = allStatus.length === 1 && allStatus[0] === 'PAGO'
+      const todosCancel = allStatus.length === 1 && allStatus[0] === 'CANCELADO'
+      const temParcial = prev._statuses.has('PARCIAL') || (prev.pago > 0 && prev.restante > 0.009)
+      let agg: string
+      if (todosPago) agg = 'PAGO'
+      else if (todosCancel) agg = 'CANCELADO'
+      else if (temParcial) agg = 'PARCIAL'
+      else agg = 'PENDENTE'
+      prev.status = agg
+      prev.progresso_pct = prev.original > 0 ? (prev.pago / prev.original) * 100 : 0
+    }
+  }
+  const linhas = Array.from(map.values()).map(({ _statuses, ...rest }) => ({
+    ...rest,
+    original: +rest.original.toFixed(2),
+    pago: +rest.pago.toFixed(2),
+    restante: +rest.restante.toFixed(2),
+    progresso_pct: +rest.progresso_pct.toFixed(2),
+  }))
+  linhas.sort((a, b) => b.restante - a.restante)
+  const totalOriginal = +linhas.reduce((s, v) => s + v.original, 0).toFixed(2)
+  const totalPago = +linhas.reduce((s, v) => s + v.pago, 0).toFixed(2)
+  const totalRemaining = +linhas.reduce((s, v) => s + v.restante, 0).toFixed(2)
+  return { linhas, totalOriginal, totalPago, totalRemaining }
+}
+
+// ================================================================
+// FONTE OFICIAL: Normalizar label de método de pagamento para o bloco
+// "Vendas por pagamento" do Dashboard. Evita concatenar snapshots/notes
+// antigas gerando "Pix Direto · Pix · Pix - pagamento parcial R$69,90".
+// ================================================================
+export function normalizePaymentLabel(p: {
+  provider_snapshot?: string | null;
+  method?: string | null;
+  modality_snapshot?: string | null;
+  installments?: number | null;
+}): string {
+  const provRaw = String(p.provider_snapshot ?? '').trim()
+  const methodRaw = String(p.method ?? '').trim().toUpperCase()
+  const modRaw = String(p.modality_snapshot ?? '').trim()
+  const parc = Number(p.installments ?? 0) || 1
+
+  const methodLabelMap: Record<string, string> = {
+    PIX: 'Pix',
+    CREDITO: 'Crédito',
+    DEBITO: 'Débito',
+    BOLETO: 'Boleto',
+    DINHEIRO: 'Dinheiro',
+    OUTRO: 'Outro',
+  }
+  const methodLabel: string = methodLabelMap[methodRaw] || (methodRaw ? methodRaw.charAt(0) + methodRaw.slice(1).toLowerCase() : '')
+
+  // Provider normalizado
+  let prov = provRaw
+  const provL = prov.toLowerCase()
+  if (provL.includes('pix direto')) prov = 'Pix Direto'
+  else if (provL.includes('pix')) prov = 'Pix Direto'
+  else if (provL.includes('dinheiro')) prov = 'Dinheiro'
+  else if (provL.includes('infinite')) prov = 'InfinitePay'
+  else if (provL.includes('mercado') || provL.includes('mercadopago')) prov = 'Mercado Pago'
+  else if (provL.includes('maquininha') || provL.includes('maquininha')) prov = 'Maquininha'
+  else if (provL.includes('link')) prov = 'Link'
+
+  // Modality normalizado (remover frases do tipo "pagamento parcial R$xx")
+  let mod = modRaw
+  if (mod) {
+    mod = mod
+      .replace(/pagamento\s*parcial[^·]*$/i, '')
+      .replace(/R\$\s*\d+[.,]?\d*/gi, '')
+      .replace(/\s*-\s*$/, '')
+      .trim()
+    const modL = mod.toLowerCase()
+    if (modL.includes('pix') && modL.includes('vista')) mod = 'Pix à vista'
+    else if (modL.includes('vista')) mod = 'À vista'
+    else if (modL.includes('maquin') || modL.includes('maquininha')) mod = 'Maquininha'
+    else if (modL.includes('link')) mod = 'Link'
+    if (mod === prov) mod = ''
+    if (mod && methodLabel && mod.toLowerCase() === methodLabel.toLowerCase()) mod = ''
+  }
+
+  const parts: string[] = []
+  if (prov) parts.push(prov)
+  else if (methodLabel) parts.push(methodLabel)
+  if (methodLabel && parts[parts.length - 1] !== methodLabel && parts[parts.length - 1].toLowerCase() !== methodLabel.toLowerCase()) {
+    parts.push(methodLabel)
+  }
+  if (mod && !parts.includes(mod) && parts[parts.length - 1]?.toLowerCase() !== mod.toLowerCase()) {
+    parts.push(mod)
+  }
+  // Deduplica em cadeia (ex.: "Pix Direto · Pix Direto" → só um)
+  const dedup: string[] = []
+  for (const part of parts) {
+    const last = dedup[dedup.length - 1]?.toLowerCase()
+    if (!last || last !== part.toLowerCase()) dedup.push(part)
+  }
+  let out = dedup.filter(Boolean).join(' · ') || 'Sem pagamento'
+  if (parc > 1) out += ` · ${parc}x`
+  return out
 }
