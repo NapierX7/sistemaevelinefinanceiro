@@ -37,6 +37,21 @@ select
 from public.financial_transactions;
 
 grant select on public.v_dashboard_financial to authenticated;
+grant select on public.obligations to authenticated;
+grant select on public.v_dashboard_obligations to authenticated;
+
+do $$
+begin
+  if not exists (
+    select 1 from pg_policies
+    where schemaname='public' and tablename='obligations'
+      and policyname='obligations_select_authenticated'
+  ) then
+    create policy obligations_select_authenticated on public.obligations
+      for select to authenticated using ((select auth.uid()) is not null);
+  end if;
+end
+$$;
 revoke all on public.v_dashboard_financial from anon;
 
 create or replace function public.__resolve_sale_payment_source(

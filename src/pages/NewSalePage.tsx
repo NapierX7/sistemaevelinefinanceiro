@@ -82,10 +82,9 @@ export default function NewSalePage() {
   const [editFeePercent, setEditFeePercent] = useState(false)
   const [feePercentActual, setFeePercentActual] = useState('0')
 
-  const [packagingSelection, setPackagingSelection] = useState<'GRANDE' | 'PEQUENA' | 'SEM' | 'OUTRA'>('SEM')
+  const [packagingSelection, setPackagingSelection] = useState<'GRANDE' | 'PEQUENA'>('PEQUENA')
   const [packagingTypeId, setPackagingTypeId] = useState<UUID | ''>('')
-  const [packagingIsFree, setPackagingIsFree] = useState(false)
-  const [packagingCostInput, setPackagingCostInput] = useState('0')
+  const [packagingCostInput, setPackagingCostInput] = useState('7.08')
   const [extraCosts, setExtraCosts] = useState<{ id: string; description: string; category: string; amount: string }[]>([])
 
   useEffect(() => {
@@ -147,26 +146,35 @@ export default function NewSalePage() {
   }, [feeRule])
 
   const packagingSuggestedCost = useMemo(() => {
-    if (packagingTypes.length === 0) {
-      return packagingSelection === 'GRANDE' ? 5 : packagingSelection === 'PEQUENA' ? 2 : 0
-    }
-    if (packagingSelection === 'GRANDE') {
-      const grande = packagingTypes.find(p => p.name.toLowerCase().includes('gran'))
-      if (grande) return Number(grande.unit_cost ?? 0)
-    }
-    if (packagingSelection === 'PEQUENA') {
-      const pequena = packagingTypes.find(p => p.name.toLowerCase().includes('peq'))
-      if (pequena) return Number(pequena.unit_cost ?? 0)
-    }
-    const def = packagingTypes.find(p => p.is_default)
-    return packagingSelection === 'OUTRA' ? Number(def?.unit_cost ?? 0) : 0
+    const code = packagingSelection
+    const registered = packagingTypes.find(p =>
+      p.code?.toUpperCase() === code ||
+      p.name.toLocaleLowerCase('pt-BR').includes(code === 'GRANDE' ? 'grande' : 'pequena')
+    )
+    return Number(registered?.unit_cost ?? (code === 'GRANDE' ? 8.28 : 7.08))
   }, [packagingSelection, packagingTypes])
 
   useEffect(() => {
-    if (!packagingCostInput || parseBrl(packagingCostInput) === 0) {
-      setPackagingCostInput(packagingSuggestedCost.toFixed(2))
-    }
-  }, [packagingSuggestedCost, packagingSelection])
+    if (cart.length === 0) return
+
+    const normalize = (value: string) =>
+      value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
+    const containsJeansPants = cart.some(({ product }) => {
+      const description = normalize(product.name + ' ' + (product.sku ?? ''))
+      return description.includes('jeans') && description.includes('calca')
+    })
+    const recommended: 'GRANDE' | 'PEQUENA' =
+      cart.reduce((total, item) => total + item.quantity, 0) > 1 || containsJeansPants ? 'GRANDE' : 'PEQUENA'
+    const registered = packagingTypes.find(p =>
+      p.code?.toUpperCase() === recommended ||
+      p.name.toLocaleLowerCase('pt-BR').includes(recommended === 'GRANDE' ? 'grande' : 'pequena')
+    )
+    const cost = Number(registered?.unit_cost ?? (recommended === 'GRANDE' ? 8.28 : 7.08))
+
+    setPackagingSelection(recommended)
+    setPackagingTypeId(registered?.id ?? '')
+    setPackagingCostInput(cost.toFixed(2))
+  }, [cart, packagingTypes])
 
   const addProduct = (product: Product) => {
     setCart(prev => {
@@ -246,7 +254,7 @@ export default function NewSalePage() {
 
   const economiaTaxa = feeExpectedCalc - feeActualBrl
 
-  const packagingCostBrl = useMemo(() => packagingIsFree ? 0 : parseBrl(packagingCostInput), [packagingCostInput, packagingIsFree])
+  const packagingCostBrl = useMemo(() => parseBrl(packagingCostInput), [packagingCostInput])
 
   const extraCostsTotal = useMemo(() => extraCosts.reduce((s, c) => s + parseBrl(c.amount), 0), [extraCosts])
 
@@ -376,7 +384,7 @@ export default function NewSalePage() {
           tipo_snapshot: packagingSelection,
           custo_snapshot: packagingSuggestedCost,
           custom_cost: packagingCostBrl,
-          is_free: packagingIsFree,
+          is_free: false,
         },
         extra_costs: extraCosts
           .filter(c => c.description.trim() && parseBrl(c.amount) > 0)
@@ -508,7 +516,7 @@ export default function NewSalePage() {
         <StepPackaging
           packagingSelection={packagingSelection} setPackagingSelection={setPackagingSelection}
           packagingTypes={packagingTypes} packagingTypeId={packagingTypeId} setPackagingTypeId={setPackagingTypeId}
-          packagingIsFree={packagingIsFree} setPackagingIsFree={setPackagingIsFree}
+
           packagingCostInput={packagingCostInput} setPackagingCostInput={setPackagingCostInput}
           packagingSuggestedCost={packagingSuggestedCost} packagingCostBrl={packagingCostBrl}
           extraCosts={extraCosts} addExtraCost={addExtraCost}
@@ -526,7 +534,7 @@ export default function NewSalePage() {
           selectedProvider={selectedProvider} selectedModality={selectedModality}
           paymentMethod={paymentMethod} installments={installments}
           feeExpectedCalc={feeExpectedCalc} feeActualBrl={feeActualBrl} economiaTaxa={economiaTaxa}
-          packagingSelection={packagingSelection} packagingCostBrl={packagingCostBrl} packagingIsFree={packagingIsFree}
+          packagingSelection={packagingSelection} packagingCostBrl={packagingCostBrl}
           extraCosts={extraCosts} extraCostsTotal={extraCostsTotal}
           custoMercadorias={custoMercadorias} custoTotal={custoTotal} lucroReal={lucroReal} margem={margem}
         />
@@ -1206,15 +1214,13 @@ function StepPayment({
 
 function StepPackaging({
   packagingSelection, setPackagingSelection, packagingTypes, packagingTypeId, setPackagingTypeId,
-  packagingIsFree, setPackagingIsFree, packagingCostInput, setPackagingCostInput,
+  packagingCostInput,
   packagingSuggestedCost, packagingCostBrl, extraCosts, addExtraCost,
   updateExtraCost, removeExtraCost, extraCostsTotal, totalAdicionais
 }: any) {
   const opcoes = [
-    { k: 'GRANDE', label: 'Embalagem Grande', sub: 'Caixa grande, vários itens', defaultCost: packagingTypes.find((p: PackagingType) => p.name.toLowerCase().includes('gran'))?.unit_cost ?? 5 },
-    { k: 'PEQUENA', label: 'Embalagem Pequena', sub: 'Caixa/envelope pequeno', defaultCost: packagingTypes.find((p: PackagingType) => p.name.toLowerCase().includes('peq'))?.unit_cost ?? 2 },
-    { k: 'SEM', label: 'Sem embalagem', sub: 'Entregue sem embalagem', defaultCost: 0 },
-    { k: 'OUTRA', label: 'Outra / Customizada', sub: 'Informe custo manual', defaultCost: (packagingTypes.find((p: PackagingType) => p.is_default)?.unit_cost) ?? 0 },
+    { k: 'GRANDE', label: 'Sacola Grande', sub: 'Automática: mais de 1 peça ou calça jeans', defaultCost: packagingTypes.find((p: PackagingType) => p.code === 'GRANDE')?.unit_cost ?? 8.28 },
+    { k: 'PEQUENA', label: 'Sacola Pequena', sub: 'Automática: 1 peça que não seja calça jeans', defaultCost: packagingTypes.find((p: PackagingType) => p.code === 'PEQUENA')?.unit_cost ?? 7.08 },
   ] as const
   return (
     <div className="space-y-4">
@@ -1228,17 +1234,17 @@ function StepPackaging({
             return (
               <button
                 key={o.k}
-                onClick={() => setPackagingSelection(o.k)}
+                disabled
                 className={cn(
                   'p-3 rounded-xl border-2 text-left transition min-h-[100px] flex flex-col',
                   active ? 'border-brand-700 bg-brand-50/60 ring-2 ring-brand-100' :
-                    'border-ink-100 bg-white hover:border-ink-200 hover:bg-ink-50/40'
+                    'border-ink-100 bg-white opacity-55'
                 )}
               >
                 <div className="text-sm font-bold text-ink-900">{o.label}</div>
                 <div className="text-[11px] text-ink-500 mt-1 flex-1">{o.sub}</div>
                 <div className="mt-2 text-base font-black num">
-                  {Number(o.defaultCost) > 0 ? formatCurrency(Number(o.defaultCost)) : 'Grátis'}
+                  {formatCurrency(Number(o.defaultCost))}
                 </div>
                 {active && <span className="chip bg-brand-900 text-white mt-2 self-start"><Check className="w-3 h-3" /> Selecionada</span>}
               </button>
@@ -1246,53 +1252,24 @@ function StepPackaging({
           })}
         </div>
 
-        {packagingSelection !== 'SEM' && packagingTypes.length > 0 && (
-          <div className="mb-4 max-w-md">
-            <label className="label">Tipo cadastrado (opcional)</label>
-            <div className="relative">
-              <select
-                value={packagingTypeId}
-                onChange={e => setPackagingTypeId(e.target.value)}
-                className="select w-full"
-              >
-                <option value="">Selecione o tipo (somente para rastreabilidade)…</option>
-                {packagingTypes.map((p: PackagingType) => (
-                  <option key={p.id} value={p.id}>{p.name} · {formatCurrency(p.unit_cost)}</option>
-                ))}
-              </select>
-              <ChevronDown className="w-4 h-4 absolute right-3 top-1/2 -translate-y-1/2 text-ink-400 pointer-events-none" />
-            </div>
-          </div>
-        )}
 
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-          <label className="flex items-start gap-3 cursor-pointer select-none p-3 rounded-lg bg-emerald-50/60 border border-emerald-100">
-            <input
-              type="checkbox"
-              checked={packagingIsFree}
-              onChange={e => setPackagingIsFree(e.target.checked)}
-              className="mt-0.5 w-4 h-4 accent-emerald-700"
-            />
-            <div>
-              <div className="text-sm font-bold text-emerald-900">Embalagem cortesia / Gratuita</div>
-              <div className="text-[11px] text-emerald-700 mt-0.5">
-                Quando marcado, custo real da embalagem = 0, independentemente do valor informado.
-              </div>
+          <div className="p-3 rounded-lg bg-violet-50/60 border border-violet-100">
+            <div className="text-sm font-bold text-violet-900">Seleção automática</div>
+            <div className="text-[11px] text-violet-700 mt-0.5">
+              A regra vigente é aplicada ao carrinho e o custo fica registrado como snapshot da venda.
             </div>
-          </label>
+          </div>
           <div>
-            <label className="label">Custo embalagem (real, R$)</label>
+            <label className="label">Custo gerencial da embalagem</label>
             <input
               type="text"
-              inputMode="decimal"
-              disabled={packagingIsFree}
-              value={packagingIsFree ? '0,00' : packagingCostInput}
-              onChange={e => setPackagingCostInput(e.target.value)}
-              placeholder="0,00"
-              className="input num"
+              value={packagingCostInput}
+              readOnly
+              className="input num bg-ink-50"
             />
             <p className="text-[11px] text-ink-500 mt-1">
-              Sugerido: {formatCurrency(packagingSuggestedCost)} · editável.
+              {formatCurrency(packagingSuggestedCost)} reduz o lucro, sem gerar nova saída de caixa.
             </p>
           </div>
         </div>
@@ -1379,7 +1356,7 @@ function StepReview({
   pixDiscount, totalCliente, source, customerName, customerPhone,
   selectedProvider, selectedModality, paymentMethod, installments,
   feeExpectedCalc, feeActualBrl, economiaTaxa,
-  packagingSelection, packagingCostBrl, packagingIsFree,
+  packagingSelection, packagingCostBrl,
   extraCosts, extraCostsTotal, custoMercadorias, custoTotal, lucroReal, margem
 }: any) {
   return (
@@ -1526,7 +1503,6 @@ function StepReview({
                   packagingSelection === 'PEQUENA' ? 'Pequena' :
                     packagingSelection === 'SEM' ? 'Sem embalagem' : 'Outra'}
               </div>
-              {packagingIsFree && <span className="chip bg-emerald-100 text-emerald-800 mt-1.5">Cortesia / Gratuita</span>}
             </div>
             <div className="text-right">
               <div className="text-[11px] text-ink-500">Custo real</div>

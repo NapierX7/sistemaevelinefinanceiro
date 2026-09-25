@@ -120,13 +120,17 @@
 
   /* ====== MODAL / BOTTOM SHEET padrão responsivo ====== */
   .modal-backdrop {
-    @apply fixed inset-0 z-50 bg-ink-900/50 backdrop-blur-sm animate-in fade-in duration-150;
+    @apply fixed inset-0 bg-ink-900/50 backdrop-blur-sm animate-in fade-in duration-150;
+    z-index: 1000;
   }
   .modal-shell {
-    @apply fixed inset-0 z-50 flex items-center sm:items-center justify-center p-0 sm:p-4;
+    @apply fixed inset-0 flex items-center sm:items-center justify-center p-0 sm:p-4;
+    z-index: 1001;
   }
   .modal-content {
     @apply relative w-full bg-white shadow-panel border border-ink-100 overflow-hidden flex flex-col;
+    filter: none;
+    backdrop-filter: none;
     /* MOBILE: bottom sheet */
     border-radius: 1.25rem 1.25rem 0 0;
     max-height: calc(100dvh - 0px);

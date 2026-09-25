@@ -1340,6 +1340,8 @@ export function computeSalesPeriodKpis(rows: DashboardSaleRow[]): SalesPeriodKpi
   let pecas = 0
 
   for (const v of r) {
+    const saleStatus = String(v.status ?? '').toUpperCase()
+    if (saleStatus === 'CANCELADA' || saleStatus === 'REEMBOLSADA') continue
     const tc = Number((v as any).total_customer ?? 0)
     faturamento += tc > 0 ? tc : Number(v.revenue ?? 0)
     recebido += Number(v.amount_received ?? 0)

@@ -587,7 +587,7 @@ export default function DashboardPage() {
                 {(loadingIp || ipError) ? '—' : formatCurrency(aRepassarInfinitePay)}
               </div>
               <span className="chip bg-sky-50 text-sky-700 text-[10px] font-bold">
-                {(loadingIp || ipError) ? '—' : `${ipLinhasARepassar.length} ${pluralize(ipLinhasARepassar.length, 'venda', 'vendas')} pendentes`}
+                {(loadingIp || ipError) ? '—' : `${pluralize(ipLinhasARepassar.length, 'venda', 'vendas')} pendentes`}
               </span>
               {!loadingIp && !ipError && totalRepassadoInfinitePay > 0 && (
                 <span className="chip bg-emerald-50 text-emerald-700 text-[10px]">
@@ -654,7 +654,7 @@ export default function DashboardPage() {
             </div>
             <div className="mt-2 text-[11px] text-ink-400 line-clamp-2">
               {receivablesTotal && !receivError
-                ? `${receivablesTotal.vendas_pendentes_qtd ?? 0} ${pluralize(receivablesTotal.vendas_pendentes_qtd ?? 0, 'venda', 'vendas')} pendente(s).`
+                ? `${pluralize(receivablesTotal.vendas_pendentes_qtd ?? 0, 'venda', 'vendas')} pendente(s).`
                 : 'Não entrou no caixa ainda.'}
             </div>
           </div>
@@ -664,8 +664,9 @@ export default function DashboardPage() {
       {/* MODAL LISTA IP — 2 ABAS: PENDENTES / REPASSADAS */}
       {showIpListModal && typeof document !== 'undefined' && createPortal(
         (
-          <div className="modal-shell" onClick={() => setShowIpListModal(false)}>
-            <div className="modal-backdrop" aria-hidden />
+          <>
+            <div className="modal-backdrop" aria-hidden onClick={() => setShowIpListModal(false)} />
+            <div className="modal-shell" onClick={() => setShowIpListModal(false)}>
           <div className="modal-content modal-wide" onClick={e => e.stopPropagation()} role="dialog" aria-modal="true">
             <div className="modal-header bg-sky-50/60">
               <div className="flex items-center gap-2 min-w-0">
@@ -847,6 +848,7 @@ export default function DashboardPage() {
             </div>
           </div>
         </div>
+        </>
         ),
         document.body
       )}
@@ -1050,7 +1052,7 @@ export default function DashboardPage() {
                   <AlertBlock
                     icon={<AlertTriangle className="w-4 h-4" />}
                     tone="rose"
-                    title={`${stock.out_of_stock_skus} ${pluralize(stock.out_of_stock_skus, 'produto', 'produtos')} sem estoque · ${stock.in_stock_skus ?? 0} ${pluralize(Number(stock.in_stock_skus ?? 0), 'com', 'com')}`}
+                    title={`${pluralize(stock.out_of_stock_skus, 'produto', 'produtos')} sem estoque · ${stock.in_stock_skus ?? 0} com estoque`}
                     items={[]}
                   />
                 </div>
