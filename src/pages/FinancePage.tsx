@@ -969,7 +969,7 @@ function DespesaModal({
           <div className="min-w-0">
             <h2 className="modal-title">Lançar despesa operacional</h2>
             <p className="text-xs text-ink-500 mt-0.5">
-              Sacolas, cheirinho, frete avulso, marketing — RPC registrar_despesa + view v_dashboard_financial.
+              Compra de sacolas/embalagens, cheirinho, frete avulso, marketing — registre aqui somente o desembolso real. O consumo da embalagem em uma venda já entra no custo gerencial e não deve gerar outra saída de caixa.
             </p>
           </div>
           <button onClick={onClose} className="btn-icon" aria-label="Fechar">

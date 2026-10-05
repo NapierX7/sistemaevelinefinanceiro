@@ -1009,7 +1009,6 @@ export function demoUpdateSalePayment(payment_id: UUID, patch: any): any | null 
   if (!p) return null
   if (patch.method !== undefined) p.method = patch.method
   if (patch.amount !== undefined) p.amount = Number(patch.amount)
-  if (patch.trans_date !== undefined) p.trans_date = patch.trans_date
   if (patch.provider_snapshot !== undefined) p.provider_snapshot = patch.provider_snapshot
   if (patch.modality_snapshot !== undefined) p.modality_snapshot = patch.modality_snapshot
   if (patch.fee_expected_snapshot !== undefined) p.fee_expected_snapshot = Number(patch.fee_expected_snapshot ?? 0)

@@ -14,7 +14,7 @@
 --      Dinheiro Pix/InfinitePay recebido parcial hoje é CONFIRMADO na conta.
 --   3. Upsert deterministic 1 FT ativa VENDA: CONFIRMADO first, updated_at DESC.
 --      Evita duplicação Cristina #16 (2x FT VENDA por related_sale_id).
---   4. sale_payments.trans_date EXISTE como coluna opcional (confirmado types).
+--   4. sale_payments NÃO possui trans_date no schema real; a data do pagamento é inferida por created_at e datas financeiras ficam em financial_transactions.
 --      Mantida como DATE optional; sale.sale_date usado como fallback sempre.
 --
 -- Objetivo: Ao editar uma venda no Histórico (sales + sale_payments),
@@ -250,11 +250,6 @@ BEGIN
         fee_real_snapshot   = COALESCE((p_payment_patch->>'fee_real_snapshot')::NUMERIC,         sp.fee_real_snapshot),
         fee_percent_snapshot= COALESCE((p_payment_patch->>'fee_percent_snapshot')::NUMERIC,      sp.fee_percent_snapshot),
         installments        = COALESCE(NULLIF((p_payment_patch->>'installments')::INTEGER, NULL), sp.installments),
-        trans_date          = CASE
-                                WHEN (p_payment_patch->>'trans_date') IS NOT NULL THEN
-                                  COALESCE(((p_payment_patch->>'trans_date')::TIMESTAMPTZ)::DATE, sp.trans_date)
-                                ELSE sp.trans_date
-                              END,
         notes               = CASE
                                 WHEN (p_payment_patch ? 'notes') THEN
                                   NULLIF(btrim((p_payment_patch->>'notes')::TEXT), '')

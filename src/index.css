@@ -120,7 +120,7 @@
 
   /* ====== MODAL / BOTTOM SHEET padrão responsivo ====== */
   .modal-backdrop {
-    @apply fixed inset-0 bg-ink-900/50 backdrop-blur-sm animate-in fade-in duration-150;
+    @apply fixed inset-0 bg-ink-900/50 animate-in fade-in duration-150;
     z-index: 1000;
   }
   .modal-shell {

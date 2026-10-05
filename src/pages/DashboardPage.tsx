@@ -1052,7 +1052,7 @@ export default function DashboardPage() {
                   <AlertBlock
                     icon={<AlertTriangle className="w-4 h-4" />}
                     tone="rose"
-                    title={`${pluralize(stock.out_of_stock_skus, 'produto', 'produtos')} sem estoque · ${stock.in_stock_skus ?? 0} com estoque`}
+                    title={`${stock.out_of_stock_skus} ${stock.out_of_stock_skus === 1 ? 'produto' : 'produtos'} sem estoque · ${stock.in_stock_skus ?? 0} com estoque`}
                     items={[]}
                   />
                 </div>

@@ -308,7 +308,6 @@ export interface SalePayment {
   fee_expected_snapshot: Money;
   fee_real_snapshot: Money;
   amount: Money;
-  trans_date?: string;
   notes?: string | null;
   notes_snapshot?: string | null;
   installments_snapshot?: number;

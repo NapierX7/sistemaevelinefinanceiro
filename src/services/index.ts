@@ -602,8 +602,6 @@ export async function receivePurchase(purchase_entry_id: UUID): Promise<{
       quantity_available: qty,
       unit_cost: uc,
       allocated_purchase_cost: allocPerUnit,
-      supplier_id: null,
-      notes: 'Recebimento automático - ' + (entryData?.entry_date ?? nowDate),
       created_at: nowIso,
       updated_at: nowIso,
     })
@@ -683,7 +681,7 @@ export async function listInventoryMovements(): Promise<InventoryMovement[]> {
 export async function listInventoryBatches(product_id?: UUID): Promise<InventoryBatch[]> {
   if (!usingSupabase) return Demo.demoListBatches(product_id)
   let q = (supabase!).from('inventory_batches')
-    .select('id, product_id, variant_id, purchase_entry_id, purchase_item_id, received_at, quantity_received, quantity_available, unit_cost, allocated_purchase_cost, supplier_id, notes, created_at, updated_at')
+    .select('id, product_id, variant_id, purchase_entry_id, purchase_item_id, received_at, quantity_received, quantity_available, unit_cost, allocated_purchase_cost, created_at, updated_at')
   if (product_id) q = q.eq('product_id', product_id)
   const { data, error } = await q.order('received_at', { ascending: false })
   if (error) { console.error('[services] listInventoryBatches error:', error); throw error }

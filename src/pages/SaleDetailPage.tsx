@@ -825,7 +825,7 @@ export default function SaleDetailPage() {
                   <div className="flex flex-wrap items-center gap-2 pt-0.5">
                     <span className="chip bg-ink-100 text-ink-700">
                       <strong className="mr-1">#{idx + 1}</strong>
-                      {p.trans_date ? <span className="text-ink-500 font-medium num mr-1">{formatDate(p.trans_date)}</span> : null}
+                      {p.created_at ? <span className="text-ink-500 font-medium num mr-1">{formatDate(p.created_at)}</span> : null}
                       {p.method ? paymentMethodLabel(p.method) : 'Método'}
                     </span>
                     <span className="chip bg-ink-100 text-ink-700">
@@ -926,11 +926,6 @@ export default function SaleDetailPage() {
                   </div>
                 </div>
                 <div className="flex items-center gap-2">
-                  {packaging?.is_free && (
-                    <span className="chip bg-emerald-100 text-emerald-800">
-                      <Check className="w-3 h-3" /> Cortesia / Gratuita
-                    </span>
-                  )}
                   <div className="text-right">
                     <div className="text-[11px] text-ink-500">Custo real</div>
                     <div className="text-lg font-black num text-ink-900">{formatCurrency(packCostActual)}</div>
